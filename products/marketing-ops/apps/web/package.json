@@ -1,0 +1,30 @@
+{
+  "name": "@marketing-ops/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "clean": "rimraf .next coverage",
+    "dev": "next dev --turbopack --port 3000",
+    "lint": "eslint app src --max-warnings=0",
+    "start": "next start --port 3000",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@marketing-ops/domain": "workspace:*",
+    "@marketing-ops/test-fixtures": "workspace:*",
+    "@marketing-ops/ui": "workspace:*",
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "rimraf": "6.1.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}
