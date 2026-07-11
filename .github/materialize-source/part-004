@@ -1,0 +1,443 @@
+    db.flush()
+    record_audit(
+        db,
+        organization_id=context.organization.id,
+        actor_user_id=context.user.id,
+        action="catalog.created",
+        entity_type="catalog",
+        entity_id=catalog.id,
+        payload={"name": catalog.name, "kind": catalog.kind},
+    )
+    db.commit()
+    db.refresh(catalog)
+    return _catalog_read(db, catalog)
+
+
+@router.get("/{catalog_id}/records", response_model=list[CatalogRecordRead])
+def list_records(catalog_id: str, context: Context, db: DbSession) -> list[CatalogRecord]:
+    catalog = _get_catalog(db, context, catalog_id)
+    return list(
+        db.scalars(
+            select(CatalogRecord)
+            .where(CatalogRecord.catalog_id == catalog.id, CatalogRecord.active.is_(True))
+            .order_by(CatalogRecord.external_id)
+            .limit(1000)
+        )
+    )
+
+
+@router.post(
+    "/{catalog_id}/records",
+    response_model=CatalogRecordRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_record(
+    catalog_id: str,
+    payload: CatalogRecordCreate,
+    db: DbSession,
+    context: RequestContext = Depends(require_role("bucket_admin")),
+) -> CatalogRecord:
+    catalog = _get_catalog(db, context, catalog_id)
+    record = CatalogRecord(
+        organization_id=context.organization.id,
+        catalog_id=catalog.id,
+        **payload.model_dump(),
+    )
+    db.add(record)
+    record_audit(
+        db,
+        organization_id=context.organization.id,
+        actor_user_id=context.user.id,
+        action="catalog.record_created",
+        entity_type="catalog",
+        entity_id=catalog.id,
+        payload={"external_id": record.external_id},
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@router.post("/{catalog_id}/import", response_model=CatalogRead)
+def import_csv(
+    catalog_id: str,
+    db: DbSession,
+    context: RequestContext = Depends(require_role("bucket_admin")),
+    file: UploadFile = File(...),
+) -> CatalogRead:
+    catalog = _get_catalog(db, context, catalog_id)
+    content = file.file.read(10 * 1024 * 1024 + 1)
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Catalog file exceeds 10 MB")
+    try:
+        text = content.decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(text))
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Catalog must be UTF-8 CSV") from exc
+    imported = 0
+    for row in reader:
+        normalized = {key.strip(): value.strip() for key, value in row.items() if key}
+        external_id = (
+            normalized.get("external_id") or normalized.get("id") or normalized.get("customer_id")
+        )
+        aliases = [
+            value.strip() for value in normalized.pop("aliases", "").split("|") if value.strip()
+        ]
+        db.add(
+            CatalogRecord(
+                organization_id=context.organization.id,
+                catalog_id=catalog.id,
+                external_id=external_id,
+                data=normalized,
+                aliases=aliases,
+            )
+        )
+        imported += 1
+        if imported > 25000:
+            raise HTTPException(status_code=413, detail="Catalog import exceeds 25,000 rows")
+    record_audit(
+        db,
+        organization_id=context.organization.id,
+        actor_user_id=context.user.id,
+        action="catalog.imported",
+        entity_type="catalog",
+        entity_id=catalog.id,
+        payload={"rows": imported, "filename": file.filename},
+    )
+    db.commit()
+    return _catalog_read(db, catalog)
+SOA_EOF_054bbee0196544a1
+
+mkdir -p apps/api/app/api/routes
+cat > apps/api/app/api/routes/documents.py <<'SOA_EOF_dc6a423c021c4f2f'
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from datetime import UTC, datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
+from sqlalchemy import func, or_, select
+
+from app.api.deps import Context, DbSession, RequestContext, require_role
+from app.core.config import get_settings
+from app.domain import SalesOrderPayload
+from app.models import AuditEvent, Document, ExtractedField, ExtractionRun, ReviewTask, Stream
+from app.schemas import (
+    ApprovalOverrideRequest,
+    AuditEventRead,
+    DocumentDetail,
+    DocumentListResponse,
+    DocumentRead,
+    FieldUpdate,
+)
+from app.services.audit import record_audit
+from app.services.jobs import enqueue_document
+from app.services.storage import build_storage_key, get_storage
+from app.services.validation import validate_sales_order
+
+router = APIRouter(prefix="/documents", tags=["documents"])
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".txt"}
+
+
+def _document_read(document: Document) -> DocumentRead:
+    response = DocumentRead.model_validate(document)
+    response.stream_name = document.stream.name if document.stream else None
+    response.review_status = document.review_task.status if document.review_task else None
+    return response
+
+
+def _get_document(db: DbSession, context: RequestContext, document_id: str) -> Document:
+    document = db.get(Document, document_id)
+    if not document or document.organization_id != context.organization.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+
+def _complete_approval(
+    *,
+    db: DbSession,
+    context: RequestContext,
+    document: Document,
+    action: str,
+    override_reason: str | None = None,
+) -> None:
+    if document.status in {"exported", "rejected", "archived"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A document in {document.status} status cannot be approved",
+        )
+
+    document.status = "approved"
+    if document.review_task:
+        document.review_task.status = "approved"
+        document.review_task.assigned_user_id = context.user.id
+        document.review_task.completed_at = datetime.now(UTC)
+    record_audit(
+        db,
+        organization_id=context.organization.id,
+        actor_user_id=context.user.id,
+        action=action,
+        entity_type="document",
+        entity_id=document.id,
+        payload={
+            "validation_summary": document.validation_summary,
+            **({"override_reason": override_reason} if override_reason else {}),
+        },
+    )
+
+
+def _set_json_path(root: dict, path: str, value: str | None) -> None:
+    parts = re.split(r"\.(?![^\[]*\])", path)
+    cursor: object = root
+    for index, part in enumerate(parts):
+        match = re.fullmatch(r"([a-zA-Z0-9_]+)\[(\d+)\]", part)
+        is_last = index == len(parts) - 1
+        if match:
+            key, list_index_raw = match.groups()
+            list_index = int(list_index_raw)
+            if not isinstance(cursor, dict):
+                raise ValueError("Invalid field path")
+            values = cursor.setdefault(key, [])
+            if not isinstance(values, list):
+                raise ValueError("Invalid field path")
+            while len(values) <= list_index:
+                values.append({})
+            if is_last:
+                values[list_index] = value
+                return
+            cursor = values[list_index]
+            continue
+        if not isinstance(cursor, dict):
+            raise ValueError("Invalid field path")
+        if is_last:
+            cursor[part] = value
+            return
+        cursor = cursor.setdefault(part, {})
+
+
+@router.get("", response_model=DocumentListResponse)
+def list_documents(
+    context: Context,
+    db: DbSession,
+    stream_id: str | None = None,
+    document_status: Annotated[str | None, Query(alias="status")] = None,
+    search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+) -> DocumentListResponse:
+    conditions = [Document.organization_id == context.organization.id]
+    if stream_id:
+        conditions.append(Document.stream_id == stream_id)
+    if document_status:
+        statuses = [value.strip() for value in document_status.split(",") if value.strip()]
+        conditions.append(Document.status.in_(statuses))
+    if search:
+        term = f"%{search.lower()}%"
+        conditions.append(
+            or_(
+                func.lower(Document.filename).like(term),
+                func.lower(Document.canonical_data["po_number"].as_string()).like(term),
+                func.lower(Document.canonical_data["customer_name"].as_string()).like(term),
+            )
+        )
+
+    total = db.scalar(select(func.count(Document.id)).where(*conditions)) or 0
+    documents = db.scalars(
+        select(Document)
+        .where(*conditions)
+        .order_by(Document.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return DocumentListResponse(
+        items=[_document_read(document) for document in documents],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/upload", response_model=list[DocumentRead], status_code=status.HTTP_201_CREATED)
+def upload_documents(
+    stream_id: Annotated[str, Form()],
+    files: Annotated[list[UploadFile], File()],
+    db: DbSession,
+    context: RequestContext = Depends(require_role("reviewer")),
+) -> list[DocumentRead]:
+    settings = get_settings()
+    stream = db.get(Stream, stream_id)
+    if not stream or stream.organization_id != context.organization.id:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required")
+
+    storage = get_storage()
+    created: list[Document] = []
+    for upload in files:
+        filename = upload.filename or "document"
+        extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if extension not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {filename}")
+        content = upload.file.read(settings.max_upload_mb * 1024 * 1024 + 1)
+        if len(content) > settings.max_upload_mb * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{filename} exceeds the {settings.max_upload_mb} MB limit",
+            )
+        if not content:
+            raise HTTPException(status_code=400, detail=f"{filename} is empty")
+
+        document = Document(
+            organization_id=context.organization.id,
+            stream_id=stream.id,
+            filename=filename,
+            mime_type=upload.content_type or "application/octet-stream",
+            storage_key="pending",
+            sha256=hashlib.sha256(content).hexdigest(),
+            source="upload",
+            status="received",
+            created_by_user_id=context.user.id,
+        )
+        db.add(document)
+        db.flush()
+        document.storage_key = build_storage_key(
+            context.organization.id, stream.id, document.id, filename
+        )
+        storage.put(document.storage_key, content, document.mime_type)
+        enqueue_document(db, context.organization.id, document.id)
+        record_audit(
+            db,
+            organization_id=context.organization.id,
+            actor_user_id=context.user.id,
+            action="document.uploaded",
+            entity_type="document",
+            entity_id=document.id,
+            payload={
+                "filename": filename,
+                "stream_id": stream.id,
+                "size_bytes": len(content),
+                "sha256": document.sha256,
+            },
+        )
+        created.append(document)
+
+    db.commit()
+    for document in created:
+        db.refresh(document)
+    return [_document_read(document) for document in created]
+
+
+@router.get("/{document_id}", response_model=DocumentDetail)
+def get_document(document_id: str, context: Context, db: DbSession) -> DocumentDetail:
+    document = _get_document(db, context, document_id)
+    runs = db.scalars(
+        select(ExtractionRun)
+        .where(ExtractionRun.document_id == document.id)
+        .order_by(ExtractionRun.created_at.desc())
+    ).all()
+    base = _document_read(document).model_dump()
+    return DocumentDetail(
+        **base,
+        fields=sorted(document.fields, key=lambda field: field.path),
+        review_task=document.review_task,
+        extraction_runs=[
+            {
+                "id": run.id,
+                "provider": run.provider,
+                "model": run.model,
+                "ocr_engine": run.ocr_engine,
+                "status": run.status,
+                "latency_ms": run.latency_ms,
+                "estimated_cost_usd": run.estimated_cost_usd,
+                "created_at": run.created_at.isoformat(),
+                "provider_failures": run.raw_response.get("provider_failures", []),
+                "quality_warnings": run.raw_response.get("quality_warnings", []),
+            }
+            for run in runs
+        ],
+    )
+
+
+@router.get("/{document_id}/file")
+def get_document_file(document_id: str, context: Context, db: DbSession) -> Response:
+    document = _get_document(db, context, document_id)
+    content = get_storage().get(document.storage_key)
+    safe_filename = document.filename.replace('"', "")
+    return Response(
+        content=content,
+        media_type=document.mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Cache-Control": "private, max-age=60",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.patch("/{document_id}/fields/{field_id}", response_model=DocumentDetail)
+def update_field(
+    document_id: str,
+    field_id: str,
+    payload: FieldUpdate,
+    db: DbSession,
+    context: RequestContext = Depends(require_role("reviewer")),
+) -> DocumentDetail:
+    document = _get_document(db, context, document_id)
+    field = db.get(ExtractedField, field_id)
+    if (
+        not field
+        or field.document_id != document.id
+        or field.organization_id != context.organization.id
+    ):
+        raise HTTPException(status_code=404, detail="Field not found")
+    before = field.normalized_value
+    field.normalized_value = payload.normalized_value
+    field.corrected_by_user_id = context.user.id
+    field.corrected_at = datetime.now(UTC)
+    field.confidence = 1.0
+
+    canonical = copy.deepcopy(document.canonical_data)
+    try:
+        _set_json_path(canonical, field.path, payload.normalized_value)
+        validated_payload = SalesOrderPayload.model_validate(canonical)
+        canonical = validated_payload.model_dump(mode="json")
+        validation = validate_sales_order(
+            validated_payload,
+            expected_currency=document.stream.currency,
+            config=document.stream.validation_config,
+        )
+        document.validation_summary = validation.summary()
+        field.validation_status = validation.status_for(field.path)
+        field.validation_messages = validation.messages_for(field.path)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid value for {field.label}: {exc}"
+        ) from exc
+    document.canonical_data = canonical
+
+    if document.review_task:
+        document.review_task.status = "in_review"
+        document.review_task.assigned_user_id = context.user.id
+        document.review_task.started_at = document.review_task.started_at or datetime.now(UTC)
+    document.status = "in_review"
+    record_audit(
+        db,
+        organization_id=context.organization.id,
+        actor_user_id=context.user.id,
+        action="field.corrected",
+        entity_type="document",
+        entity_id=document.id,
+        payload={"field_path": field.path, "before": before, "after": payload.normalized_value},
+    )
+    db.commit()
+    return get_document(document_id, context, db)
+
+
+@router.post("/{document_id}/claim", response_model=DocumentDetail)
+def claim_document(
+    document_id: str
