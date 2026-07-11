@@ -22,8 +22,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'
-          cache: pnpm
-          cache-dependency-path: products/marketing-ops/pnpm-lock.yaml
       - name: Generate deterministic lockfile
         working-directory: products/marketing-ops
         run: pnpm install --lockfile-only
