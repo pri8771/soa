@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat > .env.example <<'SOA_EOF_a3046da0d15a27e8'
+# Runtime
+APP_ENV=development
+APP_NAME=SOA Document Operations
+SECRET_KEY=replace-with-at-least-32-random-characters
+DATABASE_URL=sqlite:///./data/soa.db
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+PUBLIC_API_URL=http://localhost:8000
+
+# Local storage (default). Use STORAGE_BACKEND=s3 for R2/S3.
+STORAGE_BACKEND=local
+LOCAL_STORAGE_PATH=./data/storage
+S3_ENDPOINT_URL=
+S3_BUCKET=
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_REGION=auto
+
+# AI providers
+DEFAULT_LLM_PROVIDER=heuristic
+LOCAL_LLM_BASE_URL=http://localhost:11434/v1
+LOCAL_LLM_MODEL=qwen2.5:7b-instruct
+LOCAL_LLM_API_KEY=ollama
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-sonnet-5
+
+# Processing
+AUTO_APPROVE_THRESHOLD=0.96
+CRITICAL_FIELD_THRESHOLD=0.92
+MAX_UPLOAD_MB=50
+MAX_DOCUMENT_PAGES=100
+WORKER_POLL_SECONDS=2
+WORKER_MAX_ATTEMPTS=3
+OCR_LANGUAGES=eng
+
+# Local bootstrap
+SEED_DEMO=true
+DEMO_ADMIN_EMAIL=admin@demo.example
+DEMO_ADMIN_PASSWORD=demo1234
+SOA_EOF_a3046da0d15a27e8
+
+mkdir -p .github/workflows
+cat > .github/workflows/ci.yml <<'SOA_EOF_b803fcb7f17ed923'
+name: CI
+
+on:
+  push:
+    branches: [main, "agent/**", "phase-**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: API, migrations, and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+      - name: Install backend
+        run: python -m pip install --upgrade pip && pip install -e 'apps/api[dev]'
+      - name: Lint and format check
+        working-directory: apps/api
+        run: |
+          ruff check app tests alembic
+          ruff format --check app tests alembic
+      - name: Unit and API tests
+        working-directory: apps/api
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=70
+      - name: Verify database migrations
+        working-directory: apps/api
+        env:
+          APP_ENV: development
+          SECRET_KEY: ci-secret-key-with-more-than-thirty-two-characters
+          DATABASE_URL: sqlite:///./data/migration-ci.db
+        run: |
+          mkdir -p data
+          alembic upgrade head
+          alembic check
+          rm -f data/migration-ci.db
+      - name: End-to-end local smoke test
+        env:
+          APP_ENV: development
+          SECRET_KEY: ci-secret-key-with-more-than-thirty-two-characters
+          DATABASE_URL: sqlite:///./apps/api/data/smoke-ci.db
+          STORAGE_BACKEND: local
+          LOCAL_STORAGE_PATH: ./apps/api/data/smoke-storage
+          DEFAULT_LLM_PROVIDER: heuristic
+          SEED_DEMO: "true"
+          WORKER_POLL_SECONDS: "0.25"
+        run: |
+          cleanup() {
+            kill "${API_PID:-}" "${WORKER_PID:-}" 2>/dev/null || true
+            rm -rf apps/api/data/smoke-ci.db apps/api/data/smoke-storage
+          }
+          trap cleanup EXIT
+          uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port 8000 > /tmp/soa-api.log 2>&1 &
+          API_PID=$!
+          (cd apps/api && python -m app.worker) > /tmp/soa-worker.log 2>&1 &
+          WORKER_PID=$!
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8000/health/ready && break
+            sleep 1
+          done
+          python scripts/smoke_test.py
+
+  frontend:
+    name: Web typecheck, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend
+        working-directory: apps/web
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Unit tests
+        working-directory: apps/web
+        run: npm test -- --run
+      - name: Production build
+        working-directory: apps/web
+        run: npm run build
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - working-directory: apps/web
+        run: npm ci && npm audit --audit-level=high
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e apps/api pip-audit && pip-audit
+SOA_EOF_b803fcb7f17ed923
+
+cat > .gitignore <<'SOA_EOF_bc37d034bad56458'
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Runtime
+.env
+.env.local
+storage/
+*.db
+*.sqlite3
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+SOA_EOF_bc37d034bad56458
+
+cat > CONTRIBUTING.md <<'SOA_EOF_eca12c0a30e25b4b'
+# Contributing to SOA
+
+SOA is a multi-tenant document-operations product. Changes must preserve evidence, deterministic validation, tenant boundaries, and replayability—not merely make a demo appear to work.
+
+## Local setup
+
+```bash
+cp .env.example .env
+make install
+make dev
+```
+
+Use the synthetic sample documents in `sample-data/`. Never commit customer documents, provider keys, database files, or exported payloads.
+
+## Required checks
+
+Before opening a pull request:
+
+```bash
+make check
+```
+
+For changes that touch ingestion, extraction, validation, review, or job orchestration, also run:
+
+```bash
+make smoke
+```
+
+## Architectural invariants
+
+- Every tenant-owned record and operation is organization-scoped on the server.
+- Uploaded documents are untrusted content; they never become instructions or gain arbitrary tool/network access.
+- OCR and LLM providers remain behind adapters and return the canonical schema.
+- Every field presented for approval retains source evidence and extraction provenance.
+- Processing stages are idempotent and retry-safe.
+- Blocking validation errors cannot be silently approved; supervisor overrides require a reason and audit event.
+- Schema, prompt, rule, provider, and workflow changes must be versionable and regression-testable.
+- Local SQLite/filesystem mode and PostgreSQL/S3-compatible mode must remain supported through configuration, not forks.
+
+## Pull request expectations
+
+A pull request should explain the user impact, architecture impact, test evidence, migration requirements, security implications, and rollback path. UI changes should include relevant states: loading, empty, error, permission denied, low confidence, validation failure, and success.
+
+The canonical implementation contract is [`docs/MASTER_BUILD_PLAN.md`](docs/MASTER_BUILD_PLAN.md).
+SOA_EOF_eca12c0a30e25b4b
+
+cat > Makefile <<'SOA_EOF_76ed074a9305c040'
+SHELL := /bin/bash
+
+.PHONY: help install dev api web worker test lint format build check smoke migrate seed compose-up compose-down
+
+help:
+	@echo "SOA commands"
+	@echo "  make install      Install API and web dependencies"
+	@echo "  make dev          Run API, worker, and web locally"
+	@echo "  make test         Run backend and frontend tests"
+	@echo "  make lint         Run Ruff and TypeScript checks"
+	@echo "  make build        Build the production web bundle"
+	@echo "  make check        Run lint, tests, migration check, and build"
+	@echo "  make smoke        Run the synthetic end-to-end API smoke test"
+	@echo "  make compose-up   Start the complete Docker stack"
+
+install:
+	python3 -m venv .venv
+	. .venv/bin/activate && pip install -e 'apps/api[dev]'
+	cd apps/web && npm install
+
+api:
+	. .venv/bin/activate && cd apps/api && uvicorn app.main:app --reload --port 8000
+
+worker:
+	. .venv/bin/activate && cd apps/api && python -m app.worker
+
+web:
+	cd apps/web && npm run dev -- --host 0.0.0.0
+
+dev:
+	./scripts/dev.sh
+
+test:
+	. .venv/bin/activate && cd apps/api && pytest
+	cd apps/web && npm test -- --run
+
+lint:
+	. .venv/bin/activate && cd apps/api && ruff check app tests alembic && ruff format --check app tests alembic
+	cd apps/web && npm run typecheck
+
+format:
+	. .venv/bin/activate && cd apps/api && ruff format app tests alembic
+	cd apps/web && npm run format
+
+build:
+	cd apps/web && npm run build
+
+migrate:
+	. .venv/bin/activate && cd apps/api && alembic upgrade head
+
+check: lint test build
+	@tmp_db="data/migration-check-$$(date +%s).db"; \
+	cd apps/api && mkdir -p data && \
+	APP_ENV=development SECRET_KEY=local-check-secret-with-more-than-thirty-two-characters DATABASE_URL="sqlite:///./$$tmp_db" ../../.venv/bin/alembic upgrade head && \
+	APP_ENV=development SECRET_KEY=local-check-secret-with-more-than-thirty-two-characters DATABASE_URL="sqlite:///./$$tmp_db" ../../.venv/bin/alembic check && \
+	rm -f "$$tmp_db"
+
+smoke:
+	. .venv/bin/activate && python scripts/smoke_test.py
+
+seed:
+	. .venv/bin/activate && cd apps/api && python -m app.seed
+
+compose-up:
+	docker compose up --build
+
+compose-down:
+	docker compose down -v
+SOA_EOF_76ed074a9305c040
+
+cat > README.md <<'SOA_EOF_b335630551682c19'
+# SOA — Document Operations Platform
+
+SOA is a local-first, multi-tenant B2B intelligent document processing platform. The first production workflow converts incoming purchase orders into validated, reviewable, ERP-ready sales orders. The same platform primitives support invoices, remittances, delivery documents, claims, and other document streams.
+
+## What is implemented
+
+- Multi-tenant organizations, roles, processes, and location-specific streams
+- Upload and asynchronous processing for PDF and image documents
+- Native PDF text extraction plus Tesseract OCR fallback
+- Local OpenAI-compatible model support
