@@ -1,0 +1,459 @@
+ (including Ollama), Gemini support, and adapters for OpenAI and Anthropic
+- Structured sales-order extraction, deterministic normalization, field evidence, confidence, and validation
+- Human review queue, split-pane document review, line-item editing, approval, rejection, and reprocessing
+- Hard validation approval gates with reasoned, role-restricted, immutable supervisor overrides
+- Catalog/reference-data foundations and outbound integration profiles
+- Operational dashboards, processing analytics, audit events, health probes, quotas, and provider status
+- SQLite/local-filesystem development mode and PostgreSQL/S3-compatible production mode
+- Docker Compose, CI, tests, deployment notes, security controls, and release gates
+
+## Fastest local start
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Open `http://localhost:5173` and sign in with:
+
+- Email: `admin@demo.example`
+- Password: `demo1234`
+
+The default configuration uses deterministic heuristic extraction, so the app works without any cloud key. To use Ollama:
+
+```bash
+docker compose --profile local-ai up --build
+# In another terminal, pull a model:
+docker exec -it soa-build-ollama-1 ollama pull qwen2.5:7b-instruct
+```
+
+Set `DEFAULT_LLM_PROVIDER=local` in `.env`. For Gemini, set `GEMINI_API_KEY` and `DEFAULT_LLM_PROVIDER=gemini`.
+
+## Development without Docker
+
+```bash
+cp .env.example .env
+make install
+make dev
+```
+
+The API runs on port 8000, the web app on port 5173, and a dedicated worker processes queued documents.
+
+Run the complete validation suite before publishing a change:
+
+```bash
+make check
+make smoke # requires the local API and worker to be running
+```
+
+## Architecture
+
+The repository uses a modular-monolith control plane and a separate worker process:
+
+```text
+Browser → React web app → FastAPI API → PostgreSQL/SQLite
+                              │
+                              ├─ object storage (local or S3/R2)
+                              └─ durable database job queue → worker
+                                                           ├─ native PDF parser
+                                                           ├─ Tesseract OCR
+                                                           ├─ local/Gemini/OpenAI/Claude extraction
+                                                           ├─ validation and confidence
+                                                           └─ review or auto-approval
+```
+
+All provider and infrastructure choices sit behind adapters. Moving from free-tier services to paid capacity is configuration and migration work—not an application rewrite.
+
+## Important documents
+
+- [Master build and delivery plan](docs/MASTER_BUILD_PLAN.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [UX and design system](docs/UX_SYSTEM.md)
+- [Security model](docs/SECURITY.md)
+- [Provider guide](docs/PROVIDER_GUIDE.md)
+- [Operations runbook](docs/OPERATIONS.md)
+- [Production release checklist](docs/PRODUCTION_CHECKLIST.md)
+
+## Current safety posture
+
+The local demo is intended for development and controlled pilots. Before processing confidential production documents, complete every P0 release gate in `docs/PRODUCTION_CHECKLIST.md`, replace all default secrets, enable managed backups, validate tenant isolation, confirm provider data terms, and complete an independent penetration test.
+SOA_EOF_b335630551682c19
+
+cat > SECURITY.md <<'SOA_EOF_f6ed156e4bf5c791'
+# Security Policy
+
+SOA processes untrusted documents and potentially confidential business data. Security issues should be handled privately rather than opened as public GitHub issues.
+
+## Reporting a vulnerability
+
+Report a suspected vulnerability through GitHub's private vulnerability reporting feature for this repository. Include:
+
+- affected component and environment;
+- reproduction steps or a minimal proof of concept;
+- expected and observed behavior;
+- likely impact, especially any cross-tenant, authentication, file-processing, or data-disclosure impact;
+- suggested remediation when known.
+
+Do not include real customer documents, credentials, API keys, or personal data in a report. Use synthetic fixtures and redact sensitive values.
+
+## Response priorities
+
+The project treats the following as urgent: cross-tenant access, authentication bypass, remote code execution through document conversion, credential disclosure, unrestricted outbound model/tool access, unsigned webhook acceptance, and destructive actions without authorization or audit evidence.
+
+Security architecture, release controls, AI-specific threats, and production requirements are maintained in [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/PRODUCTION_CHECKLIST.md`](docs/PRODUCTION_CHECKLIST.md).
+
+## Supported versions
+
+Until the first tagged production release, only the latest commit on the active release branch receives fixes. Production customers should run an explicitly tagged and supported release, not an arbitrary development commit.
+SOA_EOF_f6ed156e4bf5c791
+
+mkdir -p apps/api
+cat > apps/api/.dockerignore <<'SOA_EOF_713d28c77dd37d04'
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+data/
+*.db
+*.sqlite3
+.env
+.venv/
+htmlcov/
+SOA_EOF_713d28c77dd37d04
+
+mkdir -p apps/api
+cat > apps/api/Dockerfile <<'SOA_EOF_9ada278a9adf2846'
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+RUN pip install .
+
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /data/storage && chown -R appuser:appuser /app /data
+USER appuser
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8000/health/ready || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+SOA_EOF_9ada278a9adf2846
+
+mkdir -p apps/api
+cat > apps/api/alembic.ini <<'SOA_EOF_150d243eebccba3d'
+# A generic, single database configuration.
+
+[alembic]
+# path to migration scripts.
+# this is typically a path given in POSIX (e.g. forward slashes)
+# format, relative to the token %(here)s which refers to the location of this
+# ini file
+script_location = %(here)s/alembic
+
+# template used to generate migration file names; The default value is %%(rev)s_%%(slug)s
+# Uncomment the line below if you want the files to be prepended with date and time
+# see https://alembic.sqlalchemy.org/en/latest/tutorial.html#editing-the-ini-file
+# for all available tokens
+# file_template = %%(year)d_%%(month).2d_%%(day).2d_%%(hour).2d%%(minute).2d-%%(rev)s_%%(slug)s
+# Or organize into date-based subdirectories (requires recursive_version_locations = true)
+# file_template = %%(year)d/%%(month).2d/%%(day).2d_%%(hour).2d%%(minute).2d_%%(second).2d_%%(rev)s_%%(slug)s
+
+# sys.path path, will be prepended to sys.path if present.
+# defaults to the current working directory.  for multiple paths, the path separator
+# is defined by "path_separator" below.
+prepend_sys_path = .
+
+
+# timezone to use when rendering the date within the migration file
+# as well as the filename.
+# If specified, requires the tzdata library which can be installed by adding
+# `alembic[tz]` to the pip requirements.
+# string value is passed to ZoneInfo()
+# leave blank for localtime
+# timezone =
+
+# max length of characters to apply to the "slug" field
+# truncate_slug_length = 40
+
+# set to 'true' to run the environment during
+# the 'revision' command, regardless of autogenerate
+# revision_environment = false
+
+# set to 'true' to allow .pyc and .pyo files without
+# a source .py file to be detected as revisions in the
+# versions/ directory
+# sourceless = false
+
+# version location specification; This defaults
+# to <script_location>/versions.  When using multiple version
+# directories, initial revisions must be specified with --version-path.
+# The path separator used here should be the separator specified by "path_separator"
+# below.
+# version_locations = %(here)s/bar:%(here)s/bat:%(here)s/alembic/versions
+
+# path_separator; This indicates what character is used to split lists of file
+# paths, including version_locations and prepend_sys_path within configparser
+# files such as alembic.ini.
+# The default rendered in new alembic.ini files is "os", which uses os.pathsep
+# to provide os-dependent path splitting.
+#
+# Note that in order to support legacy alembic.ini files, this default does NOT
+# take place if path_separator is not present in alembic.ini.  If this
+# option is omitted entirely, fallback logic is as follows:
+#
+# 1. Parsing of the version_locations option falls back to using the legacy
+#    "version_path_separator" key, which if absent then falls back to the legacy
+#    behavior of splitting on spaces and/or commas.
+# 2. Parsing of the prepend_sys_path option falls back to the legacy
+#    behavior of splitting on spaces, commas, or colons.
+#
+# Valid values for path_separator are:
+#
+# path_separator = :
+# path_separator = ;
+# path_separator = space
+# path_separator = newline
+#
+# Use os.pathsep. Default configuration used for new projects.
+path_separator = os
+
+# set to 'true' to search source files recursively
+# in each "version_locations" directory
+# new in Alembic version 1.10
+# recursive_version_locations = false
+
+# the output encoding used when revision files
+# are written from script.py.mako
+# output_encoding = utf-8
+
+# database URL.  This is consumed by the user-maintained env.py script only.
+# other means of configuring database URLs may be customized within the env.py
+# file.
+sqlalchemy.url = sqlite:///./data/soa.db
+
+
+[post_write_hooks]
+# post_write_hooks defines scripts or Python functions that are run on newly generated
+# revision scripts. See the documentation for further detail and examples
+
+# format using "black" - use the console_scripts runner, against the "black" entrypoint
+# hooks = black
+# black.type = console_scripts
+# black.entrypoint = black
+# black.options = -l 79 REVISION_SCRIPT_FILENAME
+
+# lint with attempts to fix using "ruff" - use the module runner, against the "ruff" module
+# hooks = ruff
+# ruff.type = module
+# ruff.module = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Alternatively, use the exec runner to execute a binary found on your PATH
+# hooks = ruff
+# ruff.type = exec
+# ruff.executable = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Logging configuration.  This is also consumed by the user-maintained
+# env.py script only.
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARNING
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARNING
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+SOA_EOF_150d243eebccba3d
+
+mkdir -p apps/api/alembic
+cat > apps/api/alembic/README <<'SOA_EOF_3964dd42ef620e79'
+Generic single-database configuration.
+SOA_EOF_3964dd42ef620e79
+
+mkdir -p apps/api/alembic
+cat > apps/api/alembic/env.py <<'SOA_EOF_d19c3534573500e2'
+from __future__ import annotations
+
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
+from app import models  # noqa: F401
+from app.core.config import get_settings
+from app.db import Base
+
+config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+target_metadata = Base.metadata
+
+
+def run_migrations_offline() -> None:
+    context.configure(
+        url=config.get_main_option("sqlalchemy.url"),
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+SOA_EOF_d19c3534573500e2
+
+mkdir -p apps/api/alembic
+cat > apps/api/alembic/script.py.mako <<'SOA_EOF_7be5a8f692578046'
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, Sequence[str], None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    ${downgrades if downgrades else "pass"}
+SOA_EOF_7be5a8f692578046
+
+mkdir -p apps/api/alembic/versions
+cat > apps/api/alembic/versions/8cc848a1b749_initial_document_operations_schema.py <<'SOA_EOF_0a41b85d608daa96'
+"""initial document operations schema
+
+Revision ID: 8cc848a1b749
+Revises:
+Create Date: 2026-07-11 00:17:58.776495
+
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "8cc848a1b749"
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table(
+        "organizations",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("name", sa.String(length=160), nullable=False),
+        sa.Column("slug", sa.String(length=80), nullable=False),
+        sa.Column("plan", sa.String(length=32), nullable=False),
+        sa.Column("settings", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_organizations_slug"), "organizations", ["slug"], unique=True)
+    op.create_table(
+        "users",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("email", sa.String(length=320), nullable=False),
+        sa.Column("display_name", sa.String(length=160), nullable=False),
+        sa.Column("password_hash", sa.Text(), nullable=False),
+        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
+    op.create_table(
+        "audit_events",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("organization_id", sa.String(length=36), nullable=False),
+        sa.Column("actor_user_id", sa.String(length=36), nullable=True),
+        sa.Column("action", sa.String(length=128), nullable=False),
+        sa.Column("entity_type", sa.String(length=80), nullable=False),
+        sa.Column("entity_id", sa.String(length=80), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+      
