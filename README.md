@@ -27,17 +27,22 @@ A stream is an active operational bucket such as `UK Sales Orders`, `Spain Sales
 
 ## Phase 0 status
 
-The repository is being established around a **free-first, paid-ready** architecture. Development and a controlled demonstration should run mostly within free allowances, while production capabilities remain portable to paid plans without redesigning the application.
+The repository is being established around a **local-first, free-first, paid-ready** architecture. The complete mock vertical slice must run locally without cloud dependencies. Development and a controlled demonstration should fit mostly within free allowances, while customer pilots and production can upgrade services without redesigning the product.
 
-The canonical documentation set is intentionally small:
+## Canonical implementation documentation
+
+The documentation set is intentionally small and authoritative:
 
 - [`docs/PRODUCT.md`](docs/PRODUCT.md) — product scope, users, workflows, requirements, and release boundaries
+- [`docs/DELIVERY_PLAN.md`](docs/DELIVERY_PLAN.md) — master start-to-finish implementation and production-readiness plan
+- [`docs/BUILD_BACKLOG.md`](docs/BUILD_BACKLOG.md) — dependency-ordered tasks, acceptance criteria, required tests, and release gates
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design, modules, entities, tenancy, and processing lifecycle
+- [`docs/UI_UX_BLUEPRINT.md`](docs/UI_UX_BLUEPRINT.md) — premium design system, screens, Review Studio, interaction, accessibility, and UX gates
 - [`docs/AI_OCR.md`](docs/AI_OCR.md) — OCR/LLM pipeline, provider abstraction, evidence, confidence, and evaluation
 - [`docs/SECURITY_OPERATIONS.md`](docs/SECURITY_OPERATIONS.md) — security baseline, quality gates, reliability, and operational readiness
-- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — free-first stack and explicit upgrade paths
-- [`docs/DELIVERY_PLAN.md`](docs/DELIVERY_PLAN.md) — vertical-slice plan, backlog order, and production gates
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — architectural decisions and unresolved decisions
+- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — local/free-first stack and explicit paid/provider upgrade paths
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — accepted architecture decisions and explicitly deferred provider choices
+- [`AGENTS.md`](AGENTS.md) — mandatory execution rules for Codex and other coding agents
 
 ## Initial production slice
 
@@ -49,7 +54,7 @@ Create organization
 → Extract header and line items
 → Match customer, ship-to, and materials
 → Validate critical values
-→ Review uncertain fields with source evidence
+→ Review uncertain values with source evidence
 → Approve
 → Export canonical JSON / deliver to an integration
 → Inspect the immutable audit timeline
@@ -58,19 +63,26 @@ Create organization
 ## Engineering principles
 
 1. Tenant isolation is enforced server-side and tested as a security invariant.
-2. Every extracted value retains page, bounding box, source text, method, model, configuration version, and correction history.
+2. Every extracted value retains page, bounding box when genuinely available, source text, method, model, configuration version, and correction history.
 3. OCR and LLM providers sit behind stable interfaces; no workflow depends directly on one vendor.
-4. Long-running processing is asynchronous, idempotent, retryable, observable, and replayable.
+4. Long-running processing is asynchronous, durable, idempotent, retryable, observable, and replayable.
 5. LLM output is schema-constrained and never trusted without deterministic normalization and validation.
 6. Human corrections become evaluation data; they never silently retrain or alter production behavior.
 7. Free-tier infrastructure may limit capacity, but must not create disposable architecture.
+8. The Review Studio and evidence-first UX are production requirements, not post-MVP polish.
+
+## Building with Codex
+
+Codex should implement one backlog task or tightly coupled dependency group at a time. Before coding, it must read `AGENTS.md` and the canonical documents relevant to the task. Every change must include tests, tenant/security analysis, user-facing states, telemetry where needed, and rollback notes.
+
+Recommended execution order begins at `FND-001` in [`docs/BUILD_BACKLOG.md`](docs/BUILD_BACKLOG.md). Do not ask an agent to implement the entire platform in one unreviewable change.
 
 ## Source of truth
 
-Product planning also exists in the Notion **Sales Order Automation — Restart Hub**. Repository documentation is the implementation-facing contract; Notion remains the planning, research, backlog, and discussion workspace.
+Product research and planning also exist in the Notion **Sales Order Automation — Restart Hub**. Repository documentation is the implementation-facing contract; Notion remains the research, backlog-discussion, and project-planning workspace. Requirements should not be duplicated into new documents when an authoritative repository section already exists.
 
 ## Current phase
 
-**Phase 0 — Foundation and product lock**
+**Phase 0 — Foundation, product lock, and implementation handoff**
 
-No production customer documents should be processed until the security, privacy, reliability, provider-contract, backup, and release requirements in this repository are satisfied.
+No production customer documents should be processed until the accuracy, security, privacy, reliability, provider-contract, backup, usability, and release requirements in this repository are satisfied.
