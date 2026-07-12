@@ -79,6 +79,10 @@ jobs:
   visual-and-a11y:
     name: Visual regression and accessibility (Playwright)
     runs-on: ubuntu-latest
+    # Skipped when the push is itself a baseline-update request (see the
+    # update-visual-baselines job below) — the new baselines land in a
+    # follow-up commit and are validated on the next run.
+    if: ${{ !contains(github.event.head_commit.message, '[update-baselines]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -103,6 +107,45 @@ jobs:
             apps/web/test-results/
             apps/web/playwright-report/
           retention-days: 7
+
+  # Playwright screenshots depend on the renderer's font stack, so baselines
+  # generated on a developer machine drift by a few pixels from the CI
+  # runner. CI rendering is canonical: pushing a commit whose message
+  # contains "[update-baselines]" regenerates every baseline on the same
+  # runner image the visual job uses and commits the result back to the
+  # branch. Review the image diff like any code change.
+  update-visual-baselines:
+    name: Regenerate Playwright baselines
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[update-baselines]') }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm --filter @soa/web exec playwright install chromium --with-deps
+      - name: Build web app
+        run: pnpm --filter @soa/web run build
+      - name: Regenerate baselines
+        run: pnpm --filter @soa/web exec playwright test --update-snapshots
+      - name: Commit and push updated baselines
+        run: |
+          if [ -z "$(git status --porcelain -- apps/web/e2e/__screenshots__)" ]; then
+            echo "Baselines already match CI rendering; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/web/e2e/__screenshots__
+          git commit -m "Adopt CI-rendered Playwright baselines"
+          git push origin "HEAD:${{ github.ref_name }}"
 
   migrations:
     name: Migration upgrade/downgrade check
