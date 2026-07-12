@@ -21,3 +21,17 @@ describe("router", () => {
     expect(screen.getByRole("link", { name: "Go to overview" })).toBeInTheDocument();
   });
 });
+
+describe("app shell routes", () => {
+  it("renders the shell with permission-aware navigation at /app/:org/overview", async () => {
+    await renderAt("/app/northstar/overview");
+    expect(await screen.findByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByTestId("current-organization")).toHaveTextContent("northstar");
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+  });
+
+  it("renders placeholder screens for unbuilt areas", async () => {
+    await renderAt("/app/northstar/review");
+    expect(await screen.findByText("Review is not built yet")).toBeInTheDocument();
+  });
+});

@@ -6,8 +6,10 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 
+import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
 import { NotFound } from "../screens/NotFound";
+import { makePlaceholderScreen } from "../screens/Placeholder";
 import { Workbench } from "../screens/Workbench";
 
 const rootRoute = createRootRoute({
@@ -27,7 +29,37 @@ const workbenchRoute = createRoute({
   component: Workbench,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, workbenchRoute]);
+const appRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/app/$organizationSlug",
+  component: AppLayout,
+});
+
+// Area screens: placeholders until their owning epics land (see Placeholder).
+// The generic keeps each path a literal type so router links stay type-safe.
+function areaRoute<const P extends string>(path: P, title: string, epic: string) {
+  return createRoute({
+    getParentRoute: () => appRoute,
+    path,
+    component: makePlaceholderScreen(title, epic),
+  });
+}
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  workbenchRoute,
+  appRoute.addChildren([
+    areaRoute("overview", "Overview", "ANA"),
+    areaRoute("documents", "Documents", "ING"),
+    areaRoute("review", "Review", "REV"),
+    areaRoute("processes", "Processes", "CFG"),
+    areaRoute("streams", "Streams", "CFG"),
+    areaRoute("catalogs", "Catalogs", "CAT"),
+    areaRoute("integrations", "Integrations", "EXP"),
+    areaRoute("analytics", "Analytics", "ANA"),
+    areaRoute("settings", "Settings", "TEN/SEC"),
+  ]),
+]);
 
 export function createAppRouter(history?: RouterHistory) {
   return createRouter({ routeTree, history });
