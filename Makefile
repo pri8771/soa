@@ -81,3 +81,7 @@ eval: ## Golden document evaluation
 .PHONY: build
 build: ## Build all apps
 	pnpm run build
+
+.PHONY: check-docs
+check-docs: ## Validate documentation links and documented commands
+	python3 scripts/check_docs.py

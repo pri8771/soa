@@ -76,6 +76,14 @@ jobs:
         if: always()
         run: docker compose -f infrastructure/local/docker-compose.yml down
 
+  docs:
+    name: Documentation links and commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docs
+        run: python3 scripts/check_docs.py
+
   security:
     name: Dependency and secret scans
     runs-on: ubuntu-latest
