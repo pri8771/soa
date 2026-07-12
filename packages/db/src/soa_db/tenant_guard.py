@@ -27,6 +27,8 @@ RLS_PROTECTED_TABLES = (
     "memberships",
     "roles",
     "role_assignments",
+    "processes",  # 0011
+    "process_versions",  # 0011
 )
 
 
