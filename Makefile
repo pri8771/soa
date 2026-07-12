@@ -34,7 +34,7 @@ migrate: ## Apply database migrations
 
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data
-	@echo "ERROR: seed runner not implemented yet (FND-011)." && exit 1
+	@echo "ERROR: seed framework exists (soa-fixtures) but the database sink arrives with DB-001/TEN-004." && exit 1
 
 .PHONY: dev
 dev: ## Run web, API, and worker with reload

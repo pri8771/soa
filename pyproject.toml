@@ -3,18 +3,19 @@ name = "soa-workspace"
 version = "0.0.0"
 description = "SOA monorepo workspace root (not an installable package)"
 requires-python = ">=3.11"
-dependencies = ["soa-api", "soa-worker", "soa-config"]
+dependencies = ["soa-api", "soa-worker", "soa-config", "soa-fixtures"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker", "packages/config"]
+members = ["apps/api", "apps/worker", "packages/config", "packages/test-fixtures"]
 
 [tool.uv.sources]
 soa-api = { workspace = true }
 soa-worker = { workspace = true }
 soa-config = { workspace = true }
+soa-fixtures = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -28,7 +29,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["apps/api/src", "apps/worker/src", "packages/config/src"]
+src = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src"]
 
 [tool.ruff.lint]
 select = [
@@ -44,11 +45,11 @@ select = [
 [tool.mypy]
 strict = true
 warn_unreachable = true
-files = ["apps/api/src", "apps/worker/src", "packages/config/src"]
-mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src"]
+files = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src"]
+mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src"]
 explicit_package_bases = true
 
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests", "packages/test-fixtures/tests"]
 asyncio_mode = "auto"
 addopts = "-q --import-mode=importlib"

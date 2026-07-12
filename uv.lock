@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "soa-api",
     "soa-config",
+    "soa-fixtures",
     "soa-worker",
     "soa-workspace",
 ]
@@ -891,6 +892,11 @@ requires-dist = [
 ]
 
 [[package]]
+name = "soa-fixtures"
+version = "0.1.0"
+source = { editable = "packages/test-fixtures" }
+
+[[package]]
 name = "soa-worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
@@ -914,6 +920,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "soa-api" },
     { name = "soa-config" },
+    { name = "soa-fixtures" },
     { name = "soa-worker" },
 ]
 
@@ -930,6 +937,7 @@ dev = [
 requires-dist = [
     { name = "soa-api", editable = "apps/api" },
     { name = "soa-config", editable = "packages/config" },
+    { name = "soa-fixtures", editable = "packages/test-fixtures" },
     { name = "soa-worker", editable = "apps/worker" },
 ]
 
