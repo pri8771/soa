@@ -1,41 +1,23 @@
-"""Typed worker settings.
+"""Worker settings — extends the shared service settings base.
 
-Settings load from environment variables prefixed with ``SOA_WORKER_`` and
-fail fast on invalid combinations.
+Values load from ``SOA_WORKER_``-prefixed environment variables. Production
+safety rules (no debug, no dev secrets/credentials) live in ``soa_config``.
 """
 
-from enum import StrEnum
-from typing import Self
+from pydantic import Field
+from pydantic_settings import SettingsConfigDict
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from soa_config import BaseServiceSettings, Environment
 
-
-class Environment(StrEnum):
-    DEVELOPMENT = "development"
-    TEST = "test"
-    STAGING = "staging"
-    PRODUCTION = "production"
+__all__ = ["Environment", "WorkerSettings", "load_settings"]
 
 
-class WorkerSettings(BaseSettings):
+class WorkerSettings(BaseServiceSettings):
     model_config = SettingsConfigDict(env_prefix="SOA_WORKER_", frozen=True)
 
     service_name: str = "soa-worker"
-    environment: Environment = Environment.DEVELOPMENT
-    debug: bool = False
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
-
-    @property
-    def is_production(self) -> bool:
-        return self.environment is Environment.PRODUCTION
-
-    @model_validator(mode="after")
-    def _forbid_debug_in_production(self) -> Self:
-        if self.is_production and self.debug:
-            raise ValueError("debug must not be enabled in production")
-        return self
 
 
 def load_settings() -> WorkerSettings:

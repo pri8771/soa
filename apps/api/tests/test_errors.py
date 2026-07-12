@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
@@ -10,8 +10,18 @@ class _Payload(BaseModel):
     quantity: int
 
 
+def make_settings(environment: Environment) -> ApiSettings:
+    if environment is Environment.PRODUCTION:
+        return ApiSettings(
+            environment=environment,
+            secret_key=SecretStr("test-production-secret-key-0123456789"),
+            database_url=SecretStr("postgresql+asyncpg://svc:managed-pw@db.internal:5432/soa"),
+        )
+    return ApiSettings(environment=environment)
+
+
 def app_with_routes(environment: Environment) -> FastAPI:
-    app = create_app(ApiSettings(environment=environment))
+    app = create_app(make_settings(environment))
 
     @app.post("/echo")
     async def echo(payload: _Payload) -> _Payload:

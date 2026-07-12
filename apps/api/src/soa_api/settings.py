@@ -1,40 +1,22 @@
-"""Typed application settings.
+"""API settings — extends the shared service settings base.
 
-Settings load from environment variables prefixed with ``SOA_API_``.
-Startup fails fast on invalid combinations (for example ``debug=True`` in
-production) rather than degrading silently.
+Values load from ``SOA_API_``-prefixed environment variables. Production
+safety rules (no debug, no dev secrets/credentials) live in ``soa_config``.
 """
 
-from enum import StrEnum
-from typing import Self
+from pydantic import Field
+from pydantic_settings import SettingsConfigDict
 
-from pydantic import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from soa_config import Environment, WebServiceSettings
 
-
-class Environment(StrEnum):
-    DEVELOPMENT = "development"
-    TEST = "test"
-    STAGING = "staging"
-    PRODUCTION = "production"
+__all__ = ["ApiSettings", "Environment", "load_settings"]
 
 
-class ApiSettings(BaseSettings):
+class ApiSettings(WebServiceSettings):
     model_config = SettingsConfigDict(env_prefix="SOA_API_", frozen=True)
 
     service_name: str = "soa-api"
-    environment: Environment = Environment.DEVELOPMENT
-    debug: bool = False
-
-    @property
-    def is_production(self) -> bool:
-        return self.environment is Environment.PRODUCTION
-
-    @model_validator(mode="after")
-    def _forbid_debug_in_production(self) -> Self:
-        if self.is_production and self.debug:
-            raise ValueError("debug must not be enabled in production")
-        return self
+    port: int = Field(default=8000, ge=1, le=65535)
 
 
 def load_settings() -> ApiSettings:
