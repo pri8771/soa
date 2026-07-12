@@ -8,6 +8,8 @@
 
 import { expect, test } from "@playwright/test";
 
+import { installSessionMock } from "./session";
+
 const SECTIONS = [
   "buttons",
   "fields",
@@ -38,6 +40,7 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 test("app shell (light)", async ({ page }) => {
+  await installSessionMock(page);
   await page.goto("/app/northstar/overview");
   await page.getByRole("navigation", { name: "Primary" }).waitFor();
   await expect(page).toHaveScreenshot("app-shell-light.png");

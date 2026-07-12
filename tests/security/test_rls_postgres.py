@@ -13,7 +13,7 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from soa_api.domain.tenancy import Workspace
 from soa_db import DatabaseSessions, create_database_engine
@@ -37,6 +37,22 @@ ORG_B = uuid.uuid4()
 async def db() -> DatabaseSessions:
     assert POSTGRES_URL is not None
     sessions = DatabaseSessions(create_database_engine(POSTGRES_URL))
+    # Superusers and BYPASSRLS roles skip row-level security entirely, which
+    # would make every assertion below pass-by-accident or fail confusingly.
+    # Refuse to run as one — CI connects as the non-superuser `soa_app` role.
+    async with sessions.session_scope() as session:
+        can_bypass = (
+            await session.execute(
+                text("select rolsuper or rolbypassrls from pg_roles where rolname = current_user")
+            )
+        ).scalar_one()
+    if can_bypass:
+        await sessions.dispose()
+        pytest.fail(
+            "SOA_TEST_POSTGRES_URL connects as a role that bypasses row-level "
+            "security (superuser or BYPASSRLS). Point it at a non-superuser "
+            "application role — these tests are meaningless otherwise."
+        )
     yield sessions
     # Clean up rows created by this test run (bind each tenant to delete).
     for org in (ORG_A, ORG_B):

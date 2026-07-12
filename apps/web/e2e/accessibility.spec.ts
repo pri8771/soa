@@ -8,6 +8,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+import { installSessionMock } from "./session";
+
 async function expectNoCriticalViolations(page: Page) {
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   const blocking = results.violations.filter((violation) =>
@@ -28,6 +30,7 @@ test("workbench has no critical accessibility violations", async ({ page }) => {
 });
 
 test("app shell has no critical accessibility violations", async ({ page }) => {
+  await installSessionMock(page);
   await page.goto("/app/northstar/overview");
   await page.getByRole("navigation", { name: "Primary" }).waitFor();
   await expectNoCriticalViolations(page);

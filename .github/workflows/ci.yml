@@ -136,9 +136,19 @@ jobs:
         run: uv run alembic downgrade base
       - name: Re-upgrade to head
         run: uv run alembic upgrade head
+      # The bootstrap user created by the postgres image is a SUPERUSER and
+      # superusers bypass row-level security entirely — RLS tests must run
+      # as a plain application role, exactly like production.
+      - name: Create non-superuser application role
+        run: |
+          psql "postgresql://soa_dev:soa_dev_password@localhost:5432/soa" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE soa_app LOGIN PASSWORD 'soa_app_password' NOSUPERUSER NOBYPASSRLS;
+          GRANT USAGE ON SCHEMA public TO soa_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO soa_app;
+          SQL
       - name: RLS isolation tests (real PostgreSQL)
         env:
-          SOA_TEST_POSTGRES_URL: postgresql+asyncpg://soa_dev:soa_dev_password@localhost:5432/soa
+          SOA_TEST_POSTGRES_URL: postgresql+asyncpg://soa_app:soa_app_password@localhost:5432/soa
         run: uv run pytest tests/security -m postgres -v
 
   docs:
