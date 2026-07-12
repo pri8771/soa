@@ -29,6 +29,21 @@ A stream is an active operational bucket such as `UK Sales Orders`, `Spain Sales
 
 The repository is being established around a **local-first, free-first, paid-ready** architecture. The complete mock vertical slice must run locally without cloud dependencies. Development and a controlled demonstration should fit mostly within free allowances, while customer pilots and production can upgrade services without redesigning the product.
 
+## Getting started
+
+Prerequisites: Node 22 (`.nvmrc`), pnpm 10, Python 3.11 (`.python-version`), [uv](https://docs.astral.sh/uv/), Docker, and GNU Make.
+
+```bash
+make bootstrap       # install toolchains/dependencies and copy env template
+make lint            # ruff + eslint + prettier checks
+make typecheck       # mypy + tsc
+make test            # fast unit and component tests
+make build           # build all apps
+make help            # list every command
+```
+
+Commands whose backing capability is not yet implemented (for example `make migrate` before DB-001) fail loudly with a pointer to the backlog task that delivers them. The full command contract is defined in [`docs/DELIVERY_PLAN.md`](docs/DELIVERY_PLAN.md) §7.1.
+
 ## Canonical implementation documentation
 
 The documentation set is intentionally small and authoritative:
