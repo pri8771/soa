@@ -1,0 +1,9 @@
+pnpm-lock.yaml
+uv.lock
+dist/
+build/
+coverage/
+.venv/
+prototype/
+docs/
+*.md
