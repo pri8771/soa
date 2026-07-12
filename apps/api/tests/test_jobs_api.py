@@ -226,3 +226,22 @@ async def test_internal_jobs_admin_permission_is_not_tenant_grantable(
     assert "jobs.admin" not in org_admin["permissions"]
     assert "jobs.read" in org_admin["permissions"]
     assert "jobs.manage" in org_admin["permissions"]
+
+
+async def test_queue_stats_counts_only_this_tenant(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = create_org(client)
+    await seed_job(db, org_id, job_type="a", status=JobStatus.PENDING)
+    await seed_job(db, org_id, job_type="b", status=JobStatus.PENDING)
+    await seed_job(db, org_id, job_type="c", status=JobStatus.DEAD_LETTER, attempts=2)
+    await seed_job(db, uuid.uuid4(), job_type="theirs", status=JobStatus.PENDING)
+
+    response = client.get("/orgs/northstar/jobs/stats", headers=ADMIN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["by_status"]["pending"] == 2
+    assert body["by_status"]["dead_letter"] == 1
+    assert body["by_status"]["running"] == 0
+    assert body["oldest_pending_run_after"] is not None

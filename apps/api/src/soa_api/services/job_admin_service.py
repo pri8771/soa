@@ -11,8 +11,10 @@ Replay and cancel are audited with the operator's required reason.
 """
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_db.audit import ActorType, record_audit_event
@@ -51,6 +53,42 @@ async def list_jobs(
         stmt = stmt.where(Job.id > request.after)
     rows = list((await session.execute(stmt)).scalars().all())
     return build_page(rows, request.limit, id_of=lambda job: job.id)
+
+
+@dataclass(frozen=True)
+class QueueStats:
+    """Queue health snapshot for one tenant (JOB-007)."""
+
+    by_status: dict[str, int]
+    oldest_pending_run_after: datetime | None
+
+
+async def queue_stats(session: AsyncSession, context: OrganizationContext) -> QueueStats:
+    counts = (
+        await session.execute(
+            select(Job.status, func.count())
+            .where(Job.organization_id == context.organization_id)
+            .group_by(Job.status)
+        )
+    ).all()
+    by_status = {str(status): 0 for status in JobStatus}
+    for job_status, count in counts:
+        by_status[str(job_status)] = int(count)
+    oldest_pending = (
+        await session.execute(
+            select(Job)
+            .where(
+                Job.organization_id == context.organization_id,
+                Job.status == JobStatus.PENDING,
+            )
+            .order_by(Job.run_after)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return QueueStats(
+        by_status=by_status,
+        oldest_pending_run_after=oldest_pending.run_after if oldest_pending else None,
+    )
 
 
 async def get_job(

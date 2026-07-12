@@ -61,6 +61,12 @@ export const NAV_ITEMS = [
     icon: "⇄",
   },
   {
+    label: "Jobs",
+    to: "/app/$organizationSlug/jobs",
+    permission: "jobs.read",
+    icon: "⏱",
+  },
+  {
     label: "Analytics",
     to: "/app/$organizationSlug/analytics",
     permission: "analytics.read",

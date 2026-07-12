@@ -27,6 +27,8 @@ export const DEFAULT_ME = {
         "catalogs.read",
         "integrations.read",
         "analytics.read",
+        "jobs.read",
+        "jobs.manage",
       ],
     },
     {

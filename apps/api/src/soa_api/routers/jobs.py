@@ -20,6 +20,7 @@ from soa_api.services.job_admin_service import (
     cancel_job,
     get_job,
     list_jobs,
+    queue_stats,
     replay_job,
 )
 from soa_db import CursorRequest, InvalidCursorError, decode_cursor
@@ -97,6 +98,26 @@ async def list_organization_jobs(
         items=[JobResponse.from_model(job) for job in page.items],
         has_more=page.has_more,
         next_cursor=page.next_cursor,
+    )
+
+
+class QueueStatsResponse(BaseModel):
+    by_status: dict[str, int]
+    oldest_pending_run_after: str | None
+
+
+# NOTE: declared before /jobs/{job_id} so "stats" is not parsed as a job id.
+@router.get("/orgs/{organization_slug}/jobs/stats")
+async def get_queue_stats(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("jobs.read"))],
+    session: DbSession,
+) -> QueueStatsResponse:
+    stats = await queue_stats(session, authorized.org_context)
+    return QueueStatsResponse(
+        by_status=stats.by_status,
+        oldest_pending_run_after=(
+            stats.oldest_pending_run_after.isoformat() if stats.oldest_pending_run_after else None
+        ),
     )
 
 

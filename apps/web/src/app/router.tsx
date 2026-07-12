@@ -8,6 +8,7 @@ import {
 
 import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
+import { JobsQueue } from "../screens/JobsQueue";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
 import { SelectOrganization } from "../screens/SelectOrganization";
@@ -52,6 +53,12 @@ function areaRoute<const P extends string>(path: P, title: string, epic: string)
   });
 }
 
+const jobsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "jobs",
+  component: JobsQueue,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -64,6 +71,7 @@ const routeTree = rootRoute.addChildren([
     areaRoute("streams", "Streams", "CFG"),
     areaRoute("catalogs", "Catalogs", "CAT"),
     areaRoute("integrations", "Integrations", "EXP"),
+    jobsRoute,
     areaRoute("analytics", "Analytics", "ANA"),
     areaRoute("settings", "Settings", "TEN/SEC"),
   ]),

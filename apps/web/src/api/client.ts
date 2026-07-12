@@ -81,3 +81,67 @@ export interface MeResponse {
 export function fetchMe(): Promise<MeResponse> {
   return apiFetch<MeResponse>("/me");
 }
+
+// --- Jobs (JOB-006/007) ---
+
+export interface JobSummary {
+  id: string;
+  job_type: string;
+  status: "pending" | "running" | "succeeded" | "dead_letter" | "cancelled";
+  priority: number;
+  attempts: number;
+  max_attempts: number;
+  run_after: string;
+  created_at: string;
+  finished_at: string | null;
+  last_error: string | null;
+  correlation_id: string | null;
+}
+
+export interface JobsPage {
+  items: JobSummary[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface QueueStats {
+  by_status: Record<string, number>;
+  oldest_pending_run_after: string | null;
+}
+
+export function fetchJobs(
+  organizationSlug: string,
+  options: { status?: string; cursor?: string } = {},
+): Promise<JobsPage> {
+  const params = new URLSearchParams();
+  if (options.status) params.set("job_status", options.status);
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return apiFetch<JobsPage>(`/orgs/${organizationSlug}/jobs${query}`);
+}
+
+export function fetchJobStats(organizationSlug: string): Promise<QueueStats> {
+  return apiFetch<QueueStats>(`/orgs/${organizationSlug}/jobs/stats`);
+}
+
+export function replayJob(
+  organizationSlug: string,
+  jobId: string,
+  reason: string,
+): Promise<JobSummary> {
+  return apiFetch<JobSummary>(`/orgs/${organizationSlug}/jobs/${jobId}/replay`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function cancelJob(
+  organizationSlug: string,
+  jobId: string,
+  reason: string,
+): Promise<JobSummary> {
+  return apiFetch<JobSummary>(`/orgs/${organizationSlug}/jobs/${jobId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
