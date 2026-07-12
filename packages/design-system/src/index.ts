@@ -63,3 +63,18 @@ export {
   type StatusTone,
 } from "./components/status";
 export { ToastProvider, useToast, type ToastItem } from "./components/toast";
+export {
+  ConfidenceIndicator,
+  confidenceLevel,
+  type ConfidenceLevel,
+  type ConnectionHealth,
+  ConnectionStatusCard,
+  type DocumentState,
+  formatSlaRemaining,
+  SlaIndicator,
+  type Stage,
+  StageProgress,
+  StatusIndicator,
+  UsageMeter,
+  ValidationSummary,
+} from "./components/operational";

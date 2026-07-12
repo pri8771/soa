@@ -485,3 +485,91 @@ textarea.soa-field-input {
   font-size: 16px;
   cursor: pointer;
 }
+
+/* ---------- Operational composites (DSN-007) ---------- */
+.soa-validation-summary {
+  display: inline-flex;
+  gap: var(--soa-space-1);
+}
+.soa-stage-progress {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--soa-space-1);
+}
+.soa-stage {
+  display: flex;
+  align-items: center;
+  gap: var(--soa-space-2);
+  font: var(--soa-font-body-sm);
+  color: var(--soa-text-secondary);
+}
+.soa-stage[data-status="done"] .soa-stage-marker {
+  color: var(--soa-success);
+}
+.soa-stage[data-status="active"] {
+  color: var(--soa-text-primary);
+  font-weight: 650;
+}
+.soa-stage[data-status="active"] .soa-stage-marker {
+  color: var(--soa-accent);
+}
+.soa-stage[data-status="failed"] {
+  color: var(--soa-critical);
+}
+.soa-connection-card {
+  border: 1px solid var(--soa-border);
+  border-radius: var(--soa-radius-panel);
+  padding: var(--soa-space-4);
+  background: var(--soa-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--soa-space-2);
+}
+.soa-connection-card[data-health="failed"] {
+  border-color: var(--soa-critical);
+}
+.soa-connection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--soa-space-3);
+}
+.soa-connection-name {
+  font: var(--soa-font-heading-md);
+  color: var(--soa-text-primary);
+}
+.soa-connection-checked {
+  margin: 0;
+  font: var(--soa-font-caption);
+  color: var(--soa-text-muted);
+}
+.soa-usage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soa-space-1);
+  min-width: 220px;
+}
+.soa-usage-meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--soa-space-3);
+}
+.soa-usage-meter-label {
+  font: var(--soa-font-label);
+  color: var(--soa-text-secondary);
+}
+.soa-usage-meter-value {
+  font: var(--soa-font-caption);
+  color: var(--soa-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.soa-usage-meter[data-near-limit="true"] .soa-usage-meter-value {
+  color: var(--soa-warning);
+  font-weight: 700;
+}
+.soa-usage-meter[data-near-limit="true"] .soa-progress-fill {
+  background: var(--soa-warning);
+}
