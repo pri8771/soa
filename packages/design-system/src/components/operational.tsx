@@ -119,13 +119,7 @@ export function SlaIndicator({
 // Validation summary
 // ---------------------------------------------------------------------------
 
-export function ValidationSummary({
-  errors,
-  warnings,
-}: {
-  errors: number;
-  warnings: number;
-}) {
+export function ValidationSummary({ errors, warnings }: { errors: number; warnings: number }) {
   if (errors === 0 && warnings === 0) {
     return <Badge tone="success">Valid</Badge>;
   }

@@ -109,9 +109,10 @@ describe("UsageMeter", () => {
   it("announces the fraction and warns near the limit", () => {
     render(<UsageMeter label="Documents this month" used={950} limit={1000} unit="docs" />);
     expect(screen.getByText(/950 \/ 1,000 docs — near limit/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Documents this month usage" }),
-    ).toHaveAttribute("aria-valuenow", "95");
+    expect(screen.getByRole("progressbar", { name: "Documents this month usage" })).toHaveAttribute(
+      "aria-valuenow",
+      "95",
+    );
   });
 
   it("stays quiet away from the limit", () => {
