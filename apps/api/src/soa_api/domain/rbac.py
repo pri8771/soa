@@ -52,28 +52,44 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "credentials.manage",
         "audit.read",
         "analytics.read",
+        "jobs.read",
+        "jobs.manage",
+        "jobs.admin",
     }
 )
 
+#: Permissions reserved for platform operators (JOB-006 "internal controls
+#: are separately permissioned"). Tenants can neither hold them via system
+#: role templates nor grant them through custom roles — only platform-level
+#: provisioning may assign them.
+INTERNAL_PERMISSIONS: frozenset[str] = frozenset({"jobs.admin"})
+
+#: Everything a tenant organization may grant its own members.
+TENANT_GRANTABLE_PERMISSIONS: frozenset[str] = PERMISSION_REGISTRY - INTERNAL_PERMISSIONS
+
 
 class UnknownPermissionError(Exception):
-    def __init__(self, permission: str) -> None:
+    def __init__(self, permission: str, *, reason: str = "permissions fail closed") -> None:
         self.permission = permission
-        super().__init__(f"unknown permission {permission!r} — permissions fail closed")
+        super().__init__(f"unknown permission {permission!r} — {reason}")
 
 
-def validate_permissions(permissions: Iterable[str]) -> list[str]:
+def validate_permissions(permissions: Iterable[str], *, allow_internal: bool = False) -> list[str]:
     validated: list[str] = []
     for permission in permissions:
         if permission not in PERMISSION_REGISTRY:
             raise UnknownPermissionError(permission)
+        if not allow_internal and permission in INTERNAL_PERMISSIONS:
+            raise UnknownPermissionError(
+                permission, reason="internal permissions are not tenant-grantable"
+            )
         validated.append(permission)
     return sorted(set(validated))
 
 
 # System role templates (docs/PRODUCT.md §2 user roles).
 SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
-    "org-admin": PERMISSION_REGISTRY,  # full access template
+    "org-admin": TENANT_GRANTABLE_PERMISSIONS,  # full tenant access template
     "supervisor": frozenset(
         {
             "organization.read",
@@ -88,6 +104,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "catalogs.read",
             "analytics.read",
             "audit.read",
+            "jobs.read",
         }
     ),
     "reviewer": frozenset(
@@ -111,6 +128,8 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "credentials.manage",
             "documents.read",
             "streams.read",
+            "jobs.read",
+            "jobs.manage",
         }
     ),
     "auditor": frozenset(
@@ -125,6 +144,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "catalogs.read",
             "integrations.read",
             "analytics.read",
+            "jobs.read",
         }
     ),
 }
@@ -297,5 +317,7 @@ async def permissions_for_membership(
     roles = (await session.execute(stmt)).scalars().all()
     combined: set[str] = set()
     for role in roles:
-        combined.update(validate_permissions(role.permissions))
+        # allow_internal: platform-provisioned roles may hold internal
+        # permissions; tenants still cannot grant them (create_custom_role).
+        combined.update(validate_permissions(role.permissions, allow_internal=True))
     return frozenset(combined)
