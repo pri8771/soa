@@ -4,7 +4,7 @@
 >
 > **Purpose:** record decisions that implementation agents must treat as constraints, plus unresolved choices that require evidence before selection.
 
-A material change to an accepted decision requires a new or superseding ADR in this file or in `docs/adr/`. A pull request must not silently reverse an accepted decision.
+A material change to an accepted decision requires a new or superseding ADR in this file (a standalone `docs/adr/` directory is created when the first ADR outgrows it). A pull request must not silently reverse an accepted decision.
 
 Status values:
 

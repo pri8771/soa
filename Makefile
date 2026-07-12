@@ -34,11 +34,14 @@ migrate: ## Apply database migrations
 
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data
-	@echo "ERROR: seed framework exists (soa-fixtures) but the database sink arrives with DB-001/TEN-004." && exit 1
+	@echo "ERROR: soa-fixtures defines the demo tenant, but the database SeedSink is not built yet (arrives with the ING epic's intake fixtures)." && exit 1
 
 .PHONY: dev
 dev: ## Run web, API, and worker with reload
-	@echo "ERROR: dev runner not implemented yet (FND-003/004/005)." && exit 1
+	@echo "ERROR: combined dev runner not built yet — run these in separate terminals for now:" && \
+	 echo "  uv run uvicorn soa_api.main:app --reload" && \
+	 echo "  uv run soa-worker" && \
+	 echo "  pnpm --filter @soa/web run dev" && exit 1
 
 .PHONY: lint
 lint: ## Lint Python and TypeScript
@@ -63,16 +66,18 @@ test: ## Fast unit and component tests
 	pnpm run test
 
 .PHONY: test-integration
-test-integration: ## Integration tests (requires local services)
-	@echo "ERROR: integration suite not implemented yet (DB-001 onward)." && exit 1
+test-integration: ## PostgreSQL-only tests (SET SOA_TEST_POSTGRES_URL; make local-up first)
+	@if [ -z "$$SOA_TEST_POSTGRES_URL" ]; then \
+	 echo "ERROR: set SOA_TEST_POSTGRES_URL to a non-superuser PostgreSQL URL (see ci.yml migrations job)."; exit 1; fi
+	uv run pytest -m postgres -v
 
 .PHONY: test-e2e
 test-e2e: ## End-to-end tests
 	@echo "ERROR: e2e suite not implemented yet (REV/ING epics)." && exit 1
 
 .PHONY: test-security
-test-security: ## Security and cross-tenant tests
-	@echo "ERROR: security suite not implemented yet (TEN-011 onward)." && exit 1
+test-security: ## Security and cross-tenant tests (RLS tests skip without SOA_TEST_POSTGRES_URL)
+	uv run pytest tests/security -v
 
 .PHONY: eval
 eval: ## Golden document evaluation
