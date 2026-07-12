@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main, qa, dev]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy
+      - name: Pytest
+        run: uv run pytest
+
+  web:
+    name: Web lint, types, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prettier check
+        run: pnpm run format:check
+      - name: ESLint
+        run: pnpm run lint
+      - name: TypeScript
+        run: pnpm run typecheck
+      - name: Vitest
+        run: pnpm run test
+      - name: Production build
+        run: pnpm run build
+
+  local-services:
+    name: Local services health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: docker compose -f infrastructure/local/docker-compose.yml up -d --wait
+      - name: Check service health
+        run: ./infrastructure/local/check-services.sh
+      - name: Data survives restart
+        run: |
+          docker compose -f infrastructure/local/docker-compose.yml exec -T postgres \
+            psql -U soa_dev -d soa -c "CREATE TABLE ci_persistence_probe (id int);"
+          docker compose -f infrastructure/local/docker-compose.yml restart postgres
+          docker compose -f infrastructure/local/docker-compose.yml up -d --wait
+          docker compose -f infrastructure/local/docker-compose.yml exec -T postgres \
+            psql -U soa_dev -d soa -c "SELECT * FROM ci_persistence_probe;"
+      - name: Stop services
+        if: always()
+        run: docker compose -f infrastructure/local/docker-compose.yml down
+
+  security:
+    name: Dependency and secret scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Python dependency audit
+        run: |
+          uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/requirements.txt
+          uvx pip-audit --strict -r /tmp/requirements.txt
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Migration checks (alembic upgrade/downgrade smoke against a clean
+  # database) are added to this workflow by DB-001, which introduces the
+  # first migration structure. Deliberately absent rather than faked.
