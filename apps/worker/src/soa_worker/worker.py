@@ -68,8 +68,11 @@ class Worker:
             loop.add_signal_handler(sig, self.request_stop)
 
     async def _heartbeat_loop(self) -> None:
-        # Skeleton: records liveness locally. JOB-004 extends this to renew
-        # database job locks so long handlers are not reclaimed mid-run.
+        # Records process liveness locally. The DB-backed claim loop
+        # (claim_next_jobs / heartbeat / recover_expired_locks from
+        # soa_db.jobs, JOB-003/004) is wired into main.py when the first
+        # real job handlers land with the ING/PRC epics — until then the
+        # worker has nothing to execute and polls idle by design.
         while True:
             self.last_heartbeat_at = time.monotonic()
             logger.debug("worker heartbeat")
