@@ -72,6 +72,15 @@ class InvalidJobTransition(Exception):
         super().__init__(f"illegal job transition: {current!r} -> {requested!r}")
 
 
+class JobLockError(Exception):
+    """Raised when a worker touches a job whose lock it does not hold."""
+
+    def __init__(self, *, job_id: uuid.UUID, worker_id: str, reason: str) -> None:
+        self.job_id = job_id
+        self.worker_id = worker_id
+        super().__init__(f"job {job_id}: {reason} (worker {worker_id!r})")
+
+
 class Job(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "jobs"
 
@@ -237,3 +246,89 @@ async def claim_next_jobs(
         job.attempts += 1
     await session.flush()
     return jobs
+
+
+def heartbeat(
+    job: Job,
+    *,
+    worker_id: str,
+    lock_duration: timedelta = timedelta(minutes=5),
+    now: datetime | None = None,
+) -> None:
+    """Extend the lock for a long-running execution (JOB-004).
+
+    Only the lock owner may extend; anything else is a bug or an expired
+    claim that recovery already handed to someone else.
+    """
+    current = now or utcnow()
+    if job.status != JobStatus.RUNNING:
+        raise JobLockError(
+            job_id=job.id, worker_id=worker_id, reason=f"cannot heartbeat a {job.status} job"
+        )
+    if job.lock_owner != worker_id:
+        raise JobLockError(
+            job_id=job.id,
+            worker_id=worker_id,
+            reason=f"lock is held by {job.lock_owner!r}",
+        )
+    job.heartbeat_at = current
+    job.lock_expires_at = current + lock_duration
+
+
+def return_to_queue(job: Job, *, worker_id: str) -> None:
+    """Graceful cancellation: a terminating worker hands its claim back
+    (JOB-004). The attempt is refunded — an interrupted run is not a
+    failure, and repeated deploys must not dead-letter healthy jobs.
+    """
+    if job.status != JobStatus.RUNNING or job.lock_owner != worker_id:
+        raise JobLockError(
+            job_id=job.id,
+            worker_id=worker_id,
+            reason=f"cannot return a job in state {job.status} owned by {job.lock_owner!r}",
+        )
+    job.status = JobStatus.PENDING
+    job.lock_owner = None
+    job.lock_expires_at = None
+    job.heartbeat_at = None
+    job.attempts = max(0, job.attempts - 1)
+
+
+async def recover_expired_locks(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    now: datetime | None = None,
+) -> list[Job]:
+    """Return crashed workers' jobs to the queue (JOB-004).
+
+    Only RUNNING jobs with an expired lock are touched — succeeded,
+    cancelled, and dead-letter jobs are never resurrected, whatever their
+    lock columns say. A job that expired on its final permitted attempt
+    goes to dead_letter instead of looping forever.
+    """
+    current = now or utcnow()
+    stmt = (
+        select(Job)
+        .where(Job.status == JobStatus.RUNNING, Job.lock_expires_at < current)
+        .order_by(Job.lock_expires_at)
+        .limit(limit)
+    )
+    if session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    expired = list((await session.execute(stmt)).scalars().all())
+    for job in expired:
+        previous_owner = job.lock_owner
+        job.lock_owner = None
+        job.lock_expires_at = None
+        job.heartbeat_at = None
+        if job.attempts >= job.max_attempts:
+            job.status = JobStatus.DEAD_LETTER
+            job.finished_at = current
+            job.last_error = (
+                f"lock held by {previous_owner!r} expired on final attempt "
+                f"{job.attempts}/{job.max_attempts}"
+            )[:500]
+        else:
+            job.status = JobStatus.PENDING
+    await session.flush()
+    return expired

@@ -9,7 +9,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
-from soa_db.jobs import InvalidJobTransition, Job, JobStatus, claim_next_jobs, enqueue_job
+from soa_db.jobs import (
+    InvalidJobTransition,
+    Job,
+    JobLockError,
+    JobStatus,
+    claim_next_jobs,
+    enqueue_job,
+    heartbeat,
+    recover_expired_locks,
+    return_to_queue,
+)
 from soa_db.mixins import UuidPrimaryKeyMixin
 
 
@@ -264,3 +274,108 @@ async def test_starved_low_priority_jobs_jump_the_queue(sessions: DatabaseSessio
     async with sessions.session_scope() as session:
         claimed = await claim_next_jobs(session, worker_id="w-1", limit=1, now=now)
         assert [job.job_type for job in claimed] == ["starved-low"]
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat, timeout, and recovery (JOB-004).
+# ---------------------------------------------------------------------------
+
+
+async def claim_one(sessions: DatabaseSessions, worker_id: str, **enqueue_kwargs: object) -> None:
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="work", payload={}, **enqueue_kwargs)  # type: ignore[arg-type]
+    async with sessions.session_scope() as session:
+        await claim_next_jobs(session, worker_id=worker_id)
+
+
+async def test_heartbeat_extends_lock_for_the_owner(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a")
+    later = utcnow() + timedelta(minutes=3)
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        heartbeat(job, worker_id="worker-a", lock_duration=timedelta(minutes=5), now=later)
+        assert job.heartbeat_at == later
+        assert job.lock_expires_at == later + timedelta(minutes=5)
+
+
+async def test_heartbeat_rejects_non_owners_and_non_running_jobs(
+    sessions: DatabaseSessions,
+) -> None:
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        with pytest.raises(JobLockError):
+            heartbeat(job, worker_id="worker-b")
+    pending = make_job()
+    with pytest.raises(JobLockError):
+        heartbeat(pending, worker_id="worker-a")
+
+
+async def test_graceful_return_refunds_the_attempt(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        return_to_queue(job, worker_id="worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        assert job.status == JobStatus.PENDING
+        assert job.attempts == 0
+        assert job.lock_owner is None
+        assert job.lock_expires_at is None
+        # The returned job is immediately claimable by another worker.
+        reclaimed = await claim_next_jobs(session, worker_id="worker-b")
+        assert [j.id for j in reclaimed] == [job.id]
+
+
+async def test_graceful_return_requires_lock_ownership(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        with pytest.raises(JobLockError):
+            return_to_queue(job, worker_id="worker-b")
+
+
+async def test_expired_locks_return_to_queue(sessions: DatabaseSessions) -> None:
+    moment = utcnow()
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        recovered = await recover_expired_locks(session, now=moment + timedelta(hours=1))
+        assert len(recovered) == 1
+        assert recovered[0].status == JobStatus.PENDING
+        assert recovered[0].lock_owner is None
+    async with sessions.session_scope() as session:
+        # Attempt is NOT refunded for a crash: the run consumed real work.
+        job = (await session.execute(select(Job))).scalar_one()
+        assert job.attempts == 1
+
+
+async def test_unexpired_locks_are_left_alone(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        recovered = await recover_expired_locks(session)
+        assert recovered == []
+
+
+async def test_expiry_on_final_attempt_dead_letters(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a", max_attempts=1)
+    async with sessions.session_scope() as session:
+        recovered = await recover_expired_locks(session, now=utcnow() + timedelta(hours=1))
+        (job,) = recovered
+        assert job.status == JobStatus.DEAD_LETTER
+        assert job.last_error is not None
+        assert "worker-a" in job.last_error
+        assert job.finished_at is not None
+
+
+async def test_completed_jobs_are_never_resurrected(sessions: DatabaseSessions) -> None:
+    """A finished job with stale lock columns must not return to the queue."""
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        job.status = JobStatus.SUCCEEDED  # worker crashed before clearing locks
+    async with sessions.session_scope() as session:
+        recovered = await recover_expired_locks(session, now=utcnow() + timedelta(hours=1))
+        assert recovered == []
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        assert job.status == JobStatus.SUCCEEDED
