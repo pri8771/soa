@@ -22,6 +22,7 @@ from soa_api.auth.dev_identity import DEV_USER_HEADER, authenticate_dev_user
 from soa_api.auth.errors import AuthenticationError
 from soa_api.auth.principal import Principal
 from soa_api.dependencies import DbSession, Dependencies, get_dependencies
+from soa_db.tenant_guard import bind_tenant
 
 
 async def get_current_principal(
@@ -81,7 +82,7 @@ def require_permission(
     ) -> AuthorizedContext:
         service = AuthorizationService(session)
         try:
-            return await service.authorize(
+            authorized = await service.authorize(
                 principal,
                 organization_slug=organization_slug,
                 required_permission=permission,
@@ -91,5 +92,9 @@ def require_permission(
                 status_code=_DENY_STATUS[exc.reason],
                 detail=str(exc),
             ) from None
+        # RLS defense in depth: bind the transaction to the authorized
+        # tenant so unscoped queries fail closed at the database (TEN-010).
+        await bind_tenant(session, authorized.organization.id)
+        return authorized
 
     return dependency

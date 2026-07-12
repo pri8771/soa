@@ -26,6 +26,7 @@ from soa_api.domain.tenancy import Organization, OrganizationRepository
 from soa_api.services import tenancy_service
 from soa_db import CursorRequest, InvalidCursorError, decode_cursor
 from soa_db.mixins import VersionConflictError
+from soa_db.tenant_guard import bind_user
 
 router = APIRouter(tags=["organizations"])
 
@@ -138,6 +139,7 @@ async def list_my_organizations(
     session: DbSession,
 ) -> list[OrganizationResponse]:
     user = await tenancy_service.ensure_user(session, principal)
+    await bind_user(session, user.id)  # RLS: self-scoped membership reads
     memberships = await tenancy_service.list_memberships_for_user(session, user.id)
     org_repo = OrganizationRepository(session)
     organizations: list[OrganizationResponse] = []

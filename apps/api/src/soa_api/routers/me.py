@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from soa_api.auth.dependency import CurrentPrincipal
 from soa_api.dependencies import DbSession
 from soa_api.services.tenancy_service import ensure_user, list_memberships_for_user
+from soa_db.tenant_guard import bind_user
 
 router = APIRouter(tags=["me"])
 
@@ -28,6 +29,7 @@ class MeResponse(BaseModel):
 @router.get("/me")
 async def me(principal: CurrentPrincipal, session: DbSession) -> MeResponse:
     user = await ensure_user(session, principal)
+    await bind_user(session, user.id)  # RLS: self-scoped membership reads
     memberships = await list_memberships_for_user(session, user.id)
     return MeResponse(
         user_id=str(user.id),

@@ -53,6 +53,7 @@ mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages
 explicit_package_bases = true
 
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests", "packages/test-fixtures/tests", "packages/db/tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests", "packages/test-fixtures/tests", "packages/db/tests", "tests"]
+markers = ["postgres: requires a real PostgreSQL database (SOA_TEST_POSTGRES_URL)"]
 asyncio_mode = "auto"
 addopts = "-q --import-mode=importlib"

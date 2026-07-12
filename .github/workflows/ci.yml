@@ -108,6 +108,10 @@ jobs:
         run: uv run alembic downgrade base
       - name: Re-upgrade to head
         run: uv run alembic upgrade head
+      - name: RLS isolation tests (real PostgreSQL)
+        env:
+          SOA_TEST_POSTGRES_URL: postgresql+asyncpg://soa_dev:soa_dev_password@localhost:5432/soa
+        run: uv run pytest tests/security -m postgres -v
 
   docs:
     name: Documentation links and commands
@@ -135,7 +139,3 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Migration checks (alembic upgrade/downgrade smoke against a clean
-  # database) are added to this workflow by DB-001, which introduces the
-  # first migration structure. Deliberately absent rather than faked.

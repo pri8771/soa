@@ -20,6 +20,7 @@ from soa_api.domain.rbac import RoleRepository, assign_role, seed_system_roles
 from soa_api.domain.tenancy import Organization, OrganizationRepository
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.repository import OrganizationContext
+from soa_db.tenant_guard import bind_tenant
 
 
 class SlugTakenError(Exception):
@@ -75,6 +76,8 @@ async def create_organization(
     user = await ensure_user(session, principal)
     organization = org_repo.add(Organization(name=name, slug=slug))
     await session.flush()
+    # Bind the new tenant so RLS-protected inserts below pass WITH CHECK.
+    await bind_tenant(session, organization.id)
 
     context = OrganizationContext(organization_id=organization.id)
     roles = await seed_system_roles(session, context, actor_id=f"user:{user.id}")
@@ -145,6 +148,9 @@ async def accept_invitation(
     if organization is None:
         raise NoInvitationError(organization_slug)
     user = await ensure_user(session, principal)
+    # The invited membership row has no user_id yet, so tenant binding (not
+    # user binding) is what makes it visible under RLS.
+    await bind_tenant(session, organization.id)
     context = OrganizationContext(organization_id=organization.id)
     membership = await MembershipRepository(session, context).get_by_invited_email(user.email)
     if membership is None or membership.status != MembershipStatus.INVITED:
