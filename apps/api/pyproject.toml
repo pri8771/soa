@@ -9,10 +9,13 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "pyjwt[crypto]>=2.10",
+    "soa-fixtures",
 ]
 
 [tool.uv.sources]
 soa-config = { workspace = true }
+soa-fixtures = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

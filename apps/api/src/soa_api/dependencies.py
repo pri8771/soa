@@ -8,11 +8,15 @@ module-level globals.
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 
 from soa_api.settings import ApiSettings
 from soa_config.telemetry import Telemetry
+
+if TYPE_CHECKING:
+    from soa_api.auth.oidc import OidcTokenValidator
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
 
@@ -27,6 +31,7 @@ class ReadinessResult:
 class Dependencies:
     settings: ApiSettings
     telemetry: Telemetry = field(default_factory=Telemetry.noop)
+    oidc_validator: "OidcTokenValidator | None" = None
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:

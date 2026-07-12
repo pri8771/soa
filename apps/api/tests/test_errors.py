@@ -16,6 +16,10 @@ def make_settings(environment: Environment) -> ApiSettings:
             environment=environment,
             secret_key=SecretStr("test-production-secret-key-0123456789"),
             database_url=SecretStr("postgresql+asyncpg://svc:managed-pw@db.internal:5432/soa"),
+            auth_dev_mode=False,
+            oidc_issuer="https://id.example.com/",
+            oidc_audience="soa-api",
+            oidc_jwks_url="https://id.example.com/.well-known/jwks.json",
         )
     return ApiSettings(environment=environment)
 

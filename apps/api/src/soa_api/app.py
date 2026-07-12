@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response
 
 import soa_api
+from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import health
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     settings: ApiSettings | None = None,
     telemetry: Telemetry | None = None,
+    oidc_validator: "OidcTokenValidator | None" = None,
 ) -> FastAPI:
     """Create the API application.
 
@@ -27,6 +29,13 @@ def create_app(
     instead of serving with unsafe defaults.
     """
     resolved = settings if settings is not None else load_settings()
+    if oidc_validator is None and resolved.oidc_issuer:
+        assert resolved.oidc_audience and resolved.oidc_jwks_url  # settings validation
+        oidc_validator = OidcTokenValidator(
+            issuer=resolved.oidc_issuer,
+            audience=resolved.oidc_audience,
+            jwks_fetcher=httpx_jwks_fetcher(resolved.oidc_jwks_url),
+        )
     resolved_telemetry = (
         telemetry
         if telemetry is not None
@@ -45,7 +54,9 @@ def create_app(
         redoc_url=None,
         openapi_url="/openapi.json" if not resolved.is_production else None,
     )
-    app.state.dependencies = Dependencies(settings=resolved, telemetry=resolved_telemetry)
+    app.state.dependencies = Dependencies(
+        settings=resolved, telemetry=resolved_telemetry, oidc_validator=oidc_validator
+    )
 
     @app.middleware("http")
     async def correlation_middleware(
