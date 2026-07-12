@@ -3,7 +3,12 @@ name = "soa-api"
 version = "0.1.0"
 description = "SOA HTTP API and control plane"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
 
 [build-system]
 requires = ["hatchling"]
