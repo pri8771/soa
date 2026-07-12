@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
 from soa_db.jobs import (
+    FailureClass,
     InvalidJobTransition,
     Job,
     JobLockError,
@@ -17,7 +18,10 @@ from soa_db.jobs import (
     claim_next_jobs,
     enqueue_job,
     heartbeat,
+    mark_failed,
+    mark_succeeded,
     recover_expired_locks,
+    retry_backoff,
     return_to_queue,
 )
 from soa_db.mixins import UuidPrimaryKeyMixin
@@ -379,3 +383,127 @@ async def test_completed_jobs_are_never_resurrected(sessions: DatabaseSessions) 
     async with sessions.session_scope() as session:
         job = (await session.execute(select(Job))).scalar_one()
         assert job.status == JobStatus.SUCCEEDED
+
+
+# ---------------------------------------------------------------------------
+# Retry and dead-letter policy (JOB-005).
+# ---------------------------------------------------------------------------
+
+
+async def test_mark_succeeded_clears_locks_and_is_terminal(sessions: DatabaseSessions) -> None:
+    moment = utcnow()
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        mark_succeeded(job, worker_id="worker-a", now=moment)
+        assert job.status == JobStatus.SUCCEEDED
+        assert job.lock_owner is None
+        assert job.finished_at == moment
+        assert job.last_error is None
+    async with sessions.session_scope() as session:
+        assert await claim_next_jobs(session, worker_id="worker-b") == []
+
+
+async def test_permanent_failure_dead_letters_immediately(sessions: DatabaseSessions) -> None:
+    await claim_one(sessions, "worker-a", max_attempts=5)
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        mark_failed(
+            job,
+            worker_id="worker-a",
+            error="schema validation failed: missing purchase_order_number",
+            failure_class=FailureClass.PERMANENT,
+        )
+        assert job.status == JobStatus.DEAD_LETTER
+        assert job.attempts == 1, "attempt history stays visible"
+        assert job.finished_at is not None
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        assert "purchase_order_number" in (job.last_error or "")
+
+
+async def test_transient_failure_reschedules_with_growing_backoff(
+    sessions: DatabaseSessions,
+) -> None:
+    moment = utcnow()
+    await claim_one(sessions, "worker-a", max_attempts=5)
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        mark_failed(
+            job,
+            worker_id="worker-a",
+            error="upstream timeout",
+            failure_class=FailureClass.TRANSIENT,
+            now=moment,
+        )
+        assert job.status == JobStatus.PENDING
+        assert job.run_after == moment + timedelta(seconds=10)
+    # Second attempt fails: backoff doubles.
+    async with sessions.session_scope() as session:
+        claimed = await claim_next_jobs(
+            session, worker_id="worker-a", now=moment + timedelta(minutes=1)
+        )
+        (job,) = claimed
+        mark_failed(
+            job,
+            worker_id="worker-a",
+            error="upstream timeout",
+            failure_class=FailureClass.TRANSIENT,
+            now=moment,
+        )
+        assert job.attempts == 2
+        assert job.run_after == moment + timedelta(seconds=20)
+
+
+async def test_backoff_is_capped() -> None:
+    assert retry_backoff(1) == timedelta(seconds=10)
+    assert retry_backoff(4) == timedelta(seconds=80)
+    assert retry_backoff(50) == timedelta(minutes=10)
+
+
+async def test_retry_hint_overrides_backoff(sessions: DatabaseSessions) -> None:
+    moment = utcnow()
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        mark_failed(
+            job,
+            worker_id="worker-a",
+            error="provider rate limit",
+            failure_class=FailureClass.TRANSIENT,
+            retry_in=timedelta(minutes=7),
+            now=moment,
+        )
+        assert job.run_after == moment + timedelta(minutes=7)
+
+
+async def test_transient_failure_on_final_attempt_dead_letters(
+    sessions: DatabaseSessions,
+) -> None:
+    await claim_one(sessions, "worker-a", max_attempts=1)
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        mark_failed(
+            job,
+            worker_id="worker-a",
+            error="upstream timeout",
+            failure_class=FailureClass.TRANSIENT,
+        )
+        assert job.status == JobStatus.DEAD_LETTER
+
+
+async def test_completion_and_failure_require_lock_ownership(
+    sessions: DatabaseSessions,
+) -> None:
+    await claim_one(sessions, "worker-a")
+    async with sessions.session_scope() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+        with pytest.raises(JobLockError):
+            mark_succeeded(job, worker_id="worker-b")
+        with pytest.raises(JobLockError):
+            mark_failed(
+                job,
+                worker_id="worker-b",
+                error="x",
+                failure_class=FailureClass.TRANSIENT,
+            )

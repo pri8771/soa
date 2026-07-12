@@ -49,6 +49,19 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class FailureClass(StrEnum):
+    """How a handler classifies a failure (JOB-005).
+
+    TRANSIENT (network blip, provider timeout, lock contention) retries with
+    bounded exponential backoff. PERMANENT (invalid input, security
+    violation, unprocessable document) never retries — repeating the attempt
+    can only repeat the outcome, and security failures must not be hammered.
+    """
+
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+
+
 TERMINAL_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.CANCELLED})
 """States a job can never leave. dead_letter is inspectable and replayable."""
 
@@ -291,6 +304,76 @@ def return_to_queue(job: Job, *, worker_id: str) -> None:
     job.lock_expires_at = None
     job.heartbeat_at = None
     job.attempts = max(0, job.attempts - 1)
+
+
+def _require_lock(job: Job, worker_id: str, action: str) -> None:
+    if job.status != JobStatus.RUNNING or job.lock_owner != worker_id:
+        raise JobLockError(
+            job_id=job.id,
+            worker_id=worker_id,
+            reason=f"cannot {action} a job in state {job.status} owned by {job.lock_owner!r}",
+        )
+
+
+#: Backoff for transient failures: 10s, 20s, 40s, ... capped at 10 minutes.
+RETRY_BACKOFF_BASE = timedelta(seconds=10)
+RETRY_BACKOFF_CAP = timedelta(minutes=10)
+
+
+def retry_backoff(attempts: int) -> timedelta:
+    """Bounded exponential backoff for the given completed attempt count."""
+    # Cap the exponent first: 2**10 already exceeds the cap, and huge
+    # attempt counts must not overflow timedelta arithmetic.
+    exponent = min(max(0, attempts - 1), 10)
+    scaled = RETRY_BACKOFF_BASE * int(2**exponent)
+    return min(scaled, RETRY_BACKOFF_CAP)
+
+
+def mark_succeeded(job: Job, *, worker_id: str, now: datetime | None = None) -> None:
+    """Complete a job (JOB-005). Only the lock owner may complete it."""
+    current = now or utcnow()
+    _require_lock(job, worker_id, "complete")
+    job.status = JobStatus.SUCCEEDED
+    job.lock_owner = None
+    job.lock_expires_at = None
+    job.heartbeat_at = None
+    job.finished_at = current
+    job.last_error = None
+
+
+def mark_failed(
+    job: Job,
+    *,
+    worker_id: str,
+    error: str,
+    failure_class: FailureClass,
+    retry_in: timedelta | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Record a failed execution (JOB-005).
+
+    PERMANENT failures dead-letter immediately regardless of remaining
+    attempts. TRANSIENT failures reschedule with bounded exponential
+    backoff — or the handler's explicit ``retry_in`` hint (a provider's
+    Retry-After, for example) — until attempts are exhausted, then
+    dead-letter. ``attempts`` was counted at claim time and is preserved
+    through every transition, so the history stays visible.
+
+    ``error`` must be a SAFE summary: no payload contents, no secrets.
+    """
+    current = now or utcnow()
+    _require_lock(job, worker_id, "fail")
+    job.lock_owner = None
+    job.lock_expires_at = None
+    job.heartbeat_at = None
+    job.last_error = error[:500]
+    if failure_class is FailureClass.PERMANENT or job.attempts >= job.max_attempts:
+        job.status = JobStatus.DEAD_LETTER
+        job.finished_at = current
+        return
+    delay = retry_in if retry_in is not None else retry_backoff(job.attempts)
+    job.status = JobStatus.PENDING
+    job.run_after = current + delay
 
 
 async def recover_expired_locks(
