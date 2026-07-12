@@ -1,13 +1,23 @@
-"""Job schema and state-machine tests (JOB-001)."""
+"""Job schema, state-machine, and transactional-enqueue tests (JOB-001/002)."""
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import String, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Mapped, mapped_column
 
-from soa_db import Base, DatabaseSessions, create_database_engine
-from soa_db.jobs import InvalidJobTransition, Job, JobStatus
+from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
+from soa_db.jobs import InvalidJobTransition, Job, JobStatus, enqueue_job
+from soa_db.mixins import UuidPrimaryKeyMixin
+
+
+class Document(UuidPrimaryKeyMixin, Base):
+    """Stand-in domain entity for transaction-boundary tests."""
+
+    __tablename__ = "test_document"
+    title: Mapped[str] = mapped_column(String(50))
 
 
 @pytest.fixture
@@ -118,3 +128,63 @@ async def test_database_rejects_unknown_status_values(sessions: DatabaseSessions
     with pytest.raises(IntegrityError):
         async with sessions.session_scope() as session:
             await session.execute(update(Job).values(status="exploded"))
+
+
+async def test_domain_change_and_job_commit_atomically(sessions: DatabaseSessions) -> None:
+    async with sessions.session_scope() as session:
+        session.add(Document(title="PO-1001"))
+        await enqueue_job(
+            session,
+            job_type="document.extract",
+            payload={"title": "PO-1001"},
+            correlation_id="corr-1",
+        )
+    async with sessions.session_scope() as session:
+        documents = (await session.execute(select(Document))).scalars().all()
+        jobs = (await session.execute(select(Job))).scalars().all()
+    assert len(documents) == 1
+    assert len(jobs) == 1
+    assert jobs[0].correlation_id == "corr-1"
+
+
+async def test_rolled_back_domain_change_creates_no_job(sessions: DatabaseSessions) -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        async with sessions.session_scope() as session:
+            session.add(Document(title="PO-1002"))
+            await enqueue_job(session, job_type="document.extract", payload={})
+            raise RuntimeError("boom")
+    async with sessions.session_scope() as session:
+        documents = (await session.execute(select(Document))).scalars().all()
+        jobs = (await session.execute(select(Job))).scalars().all()
+    assert documents == []
+    assert jobs == []
+
+
+async def test_enqueue_with_dedupe_key_absorbs_duplicates(sessions: DatabaseSessions) -> None:
+    async with sessions.session_scope() as session:
+        first = await enqueue_job(
+            session, job_type="document.extract", payload={}, dedupe_key="extract:doc-9"
+        )
+        await session.flush()
+        first_id = first.id
+    async with sessions.session_scope() as session:
+        second = await enqueue_job(
+            session, job_type="document.extract", payload={}, dedupe_key="extract:doc-9"
+        )
+        assert second.id == first_id
+    async with sessions.session_scope() as session:
+        jobs = (await session.execute(select(Job))).scalars().all()
+    assert len(jobs) == 1
+
+
+async def test_scheduled_job_records_future_run_after(sessions: DatabaseSessions) -> None:
+    later = utcnow() + timedelta(hours=2)
+    async with sessions.session_scope() as session:
+        await enqueue_job(
+            session, job_type="report.nightly", payload={}, run_after=later, priority=200
+        )
+    async with sessions.session_scope() as session:
+        stored = (await session.execute(select(Job))).scalar_one()
+        assert stored.run_after == later
+        assert stored.priority == 200
+        assert stored.status == JobStatus.PENDING

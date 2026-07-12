@@ -29,7 +29,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Index, String, event
+from sqlalchemy import CheckConstraint, Index, String, event, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.orm.base import NO_VALUE
 
@@ -134,3 +135,52 @@ def _guard_status_transition(target: Job, value: str, oldvalue: object, initiato
         return
     if (str(oldvalue), str(value)) not in _ALLOWED_TRANSITIONS:
         raise InvalidJobTransition(current=str(oldvalue), requested=str(value))
+
+
+async def enqueue_job(
+    session: AsyncSession,
+    *,
+    job_type: str,
+    payload: dict[str, Any],
+    organization_id: uuid.UUID | None = None,
+    dedupe_key: str | None = None,
+    correlation_id: str | None = None,
+    priority: int = 100,
+    run_after: datetime | None = None,
+    max_attempts: int = 5,
+    payload_schema_version: int = 1,
+) -> Job:
+    """Stage a job in the caller's transaction (JOB-002).
+
+    Enqueued in the SAME session as the domain change, so a commit persists
+    both and a rollback discards both — committed changes never lose their
+    follow-up job and rolled-back changes create none.
+
+    With a ``dedupe_key``, a second enqueue returns the existing job (in any
+    state) instead of creating a duplicate; intents that must legitimately
+    re-run encode the stage/run in the key. The unique constraint backs this
+    up against concurrent writers — an IntegrityError there means another
+    transaction already enqueued the same intent.
+
+    ``run_after`` in the future makes a scheduled job: it stays pending and
+    is not claimable until then (JOB-003).
+    """
+    if dedupe_key is not None:
+        existing = (
+            await session.execute(select(Job).where(Job.dedupe_key == dedupe_key))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+    job = Job(
+        job_type=job_type,
+        payload=payload,
+        organization_id=organization_id,
+        dedupe_key=dedupe_key,
+        correlation_id=correlation_id,
+        priority=priority,
+        max_attempts=max_attempts,
+        payload_schema_version=payload_schema_version,
+        **({"run_after": run_after} if run_after is not None else {}),
+    )
+    session.add(job)
+    return job
