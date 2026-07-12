@@ -11,11 +11,13 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pyjwt[crypto]>=2.10",
     "soa-fixtures",
+    "soa-db",
 ]
 
 [tool.uv.sources]
 soa-config = { workspace = true }
 soa-fixtures = { workspace = true }
+soa-db = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
