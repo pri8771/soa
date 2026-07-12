@@ -3,7 +3,13 @@ name = "soa-worker"
 version = "0.1.0"
 description = "SOA asynchronous document-processing worker"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
+
+[project.scripts]
+soa-worker = "soa_worker.main:main"
 
 [build-system]
 requires = ["hatchling"]

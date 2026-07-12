@@ -673,6 +673,16 @@ requires-dist = [
 name = "soa-worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+]
 
 [[package]]
 name = "soa-workspace"
