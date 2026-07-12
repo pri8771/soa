@@ -10,13 +10,16 @@ surface end-to-end as the non-superuser application role.
 
 import os
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
-from soa_db import DatabaseSessions, create_database_engine
+from soa_db import DatabaseSessions
 
 POSTGRES_URL = os.environ.get("SOA_TEST_POSTGRES_URL")
 
@@ -33,11 +36,17 @@ NON_MEMBER = {"X-Dev-User": "user:supervisor"}
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> Iterator[TestClient]:
     assert POSTGRES_URL is not None
-    db = DatabaseSessions(create_database_engine(POSTGRES_URL))
+    # NullPool + the TestClient context manager keep every asyncpg
+    # connection inside one event loop: pooled connections created in one
+    # request's loop must never be reused from another ("Future attached
+    # to a different loop").
+    engine = create_async_engine(POSTGRES_URL, poolclass=NullPool)
+    db = DatabaseSessions(engine)
     app = create_app(ApiSettings(environment=Environment.TEST), db=db)
-    return TestClient(app, raise_server_exceptions=False)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
 
 
 def test_full_tenant_flow_under_rls(client: TestClient) -> None:
