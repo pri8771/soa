@@ -189,10 +189,10 @@ jobs:
           GRANT USAGE ON SCHEMA public TO soa_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO soa_app;
           SQL
-      - name: RLS isolation tests (real PostgreSQL)
+      - name: PostgreSQL-only tests (RLS isolation, SKIP LOCKED claiming)
         env:
           SOA_TEST_POSTGRES_URL: postgresql+asyncpg://soa_app:soa_app_password@localhost:5432/soa
-        run: uv run pytest tests/security -m postgres -v
+        run: uv run pytest -m postgres -v
 
   docs:
     name: Documentation links and commands

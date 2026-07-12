@@ -38,7 +38,11 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: "pnpm run preview -- --port 4173 --strictPort",
+    // `pnpm run x -- --flag` forwards the literal `--`, which vite treats as
+    // end-of-options — the port/host flags were silently ignored and vite
+    // bound to `localhost` (IPv6 ::1 on newer Node), unreachable at the
+    // 127.0.0.1 readiness URL. `pnpm exec` forwards flags verbatim.
+    command: "pnpm exec vite preview --port 4173 --strictPort --host 127.0.0.1",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

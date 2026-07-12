@@ -25,11 +25,12 @@ resurrecting a succeeded or cancelled job.
 """
 
 import uuid
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Index, String, event, select
+from sqlalchemy import CheckConstraint, Index, String, case, event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.orm.base import NO_VALUE
@@ -184,3 +185,55 @@ async def enqueue_job(
     )
     session.add(job)
     return job
+
+
+#: Jobs overdue by more than this jump the priority queue, bounding how long
+#: a low-priority job can be starved by a stream of higher-priority work.
+STARVATION_THRESHOLD = timedelta(minutes=15)
+
+
+async def claim_next_jobs(
+    session: AsyncSession,
+    *,
+    worker_id: str,
+    limit: int = 1,
+    lock_duration: timedelta = timedelta(minutes=5),
+    job_types: Sequence[str] | None = None,
+    starvation_threshold: timedelta = STARVATION_THRESHOLD,
+    now: datetime | None = None,
+) -> list[Job]:
+    """Claim up to ``limit`` due jobs for ``worker_id`` (JOB-003).
+
+    Uses ``FOR UPDATE SKIP LOCKED`` on PostgreSQL so concurrent workers never
+    select the same row: a job is either locked by this transaction or
+    invisible to it. Claimed jobs move to ``running`` with lock ownership,
+    expiration, heartbeat, and an incremented attempt count — all inside the
+    caller's transaction, so a crash before commit leaves the job pending.
+
+    Ordering: overdue-beyond-threshold jobs first (starvation bound), then
+    priority (lower value first), then run_after (oldest first).
+
+    ``limit`` is the worker's concurrency budget for this poll; callers pass
+    the number of free execution slots.
+    """
+    current = now or utcnow()
+    starved = case((Job.run_after < current - starvation_threshold, 0), else_=1)
+    stmt = (
+        select(Job)
+        .where(Job.status == JobStatus.PENDING, Job.run_after <= current)
+        .order_by(starved, Job.priority, Job.run_after)
+        .limit(limit)
+    )
+    if job_types is not None:
+        stmt = stmt.where(Job.job_type.in_(job_types))
+    if session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    jobs = list((await session.execute(stmt)).scalars().all())
+    for job in jobs:
+        job.status = JobStatus.RUNNING
+        job.lock_owner = worker_id
+        job.lock_expires_at = current + lock_duration
+        job.heartbeat_at = current
+        job.attempts += 1
+    await session.flush()
+    return jobs

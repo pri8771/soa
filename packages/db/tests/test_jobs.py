@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
-from soa_db.jobs import InvalidJobTransition, Job, JobStatus, enqueue_job
+from soa_db.jobs import InvalidJobTransition, Job, JobStatus, claim_next_jobs, enqueue_job
 from soa_db.mixins import UuidPrimaryKeyMixin
 
 
@@ -188,3 +188,79 @@ async def test_scheduled_job_records_future_run_after(sessions: DatabaseSessions
         assert stored.run_after == later
         assert stored.priority == 200
         assert stored.status == JobStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# Claiming (JOB-003). SQLite covers ordering/locking bookkeeping; the
+# SKIP LOCKED concurrency guarantee itself is tested against real
+# PostgreSQL in tests/jobs/test_claim_postgres.py.
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_orders_by_priority_then_age_and_respects_limit(
+    sessions: DatabaseSessions,
+) -> None:
+    base = utcnow() - timedelta(minutes=1)
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="low", payload={}, priority=200, run_after=base)
+        await enqueue_job(
+            session,
+            job_type="high-old",
+            payload={},
+            priority=50,
+            run_after=base - timedelta(seconds=30),
+        )
+        await enqueue_job(session, job_type="high-new", payload={}, priority=50, run_after=base)
+    async with sessions.session_scope() as session:
+        claimed = await claim_next_jobs(session, worker_id="w-1", limit=2)
+        assert [job.job_type for job in claimed] == ["high-old", "high-new"]
+
+
+async def test_claim_marks_lock_ownership_and_attempts(sessions: DatabaseSessions) -> None:
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="work", payload={})
+    moment = utcnow()
+    async with sessions.session_scope() as session:
+        claimed = await claim_next_jobs(
+            session, worker_id="worker-a", lock_duration=timedelta(minutes=10), now=moment
+        )
+        (job,) = claimed
+        assert job.status == JobStatus.RUNNING
+        assert job.lock_owner == "worker-a"
+        assert job.lock_expires_at == moment + timedelta(minutes=10)
+        assert job.heartbeat_at == moment
+        assert job.attempts == 1
+
+
+async def test_claim_skips_running_scheduled_and_foreign_type_jobs(
+    sessions: DatabaseSessions,
+) -> None:
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="due", payload={})
+        await enqueue_job(
+            session, job_type="future", payload={}, run_after=utcnow() + timedelta(hours=1)
+        )
+        await enqueue_job(session, job_type="other", payload={})
+    async with sessions.session_scope() as session:
+        first = await claim_next_jobs(session, worker_id="w-1", limit=10, job_types=["due"])
+        assert [job.job_type for job in first] == ["due"]
+    async with sessions.session_scope() as session:
+        second = await claim_next_jobs(session, worker_id="w-2", limit=10)
+        # The running "due" job and the future job are not claimable.
+        assert [job.job_type for job in second] == ["other"]
+
+
+async def test_starved_low_priority_jobs_jump_the_queue(sessions: DatabaseSessions) -> None:
+    now = utcnow()
+    async with sessions.session_scope() as session:
+        await enqueue_job(
+            session,
+            job_type="starved-low",
+            payload={},
+            priority=900,
+            run_after=now - timedelta(hours=1),
+        )
+        await enqueue_job(session, job_type="fresh-high", payload={}, priority=1, run_after=now)
+    async with sessions.session_scope() as session:
+        claimed = await claim_next_jobs(session, worker_id="w-1", limit=1, now=now)
+        assert [job.job_type for job in claimed] == ["starved-low"]
