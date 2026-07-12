@@ -34,7 +34,10 @@ export default defineConfig({
     toHaveScreenshot: {
       animations: "disabled",
       caret: "hide",
-      maxDiffPixelRatio: 0.001,
+      // Absolute budget, not a ratio: 0.1% of a 1440×900 page is ~1300px,
+      // enough to swallow a whole navigation item (it did — JOB-007).
+      // Rendering is deterministic on the pinned runner, so keep it tight.
+      maxDiffPixels: 64,
     },
   },
   webServer: {
