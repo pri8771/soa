@@ -78,13 +78,33 @@ class Membership(
         allowed = _ALLOWED_TRANSITIONS[MembershipStatus(self.status)]
         if requested not in allowed:
             raise InvalidMembershipTransitionError(current=self.status, requested=requested)
+        if (
+            self.status == MembershipStatus.INVITED
+            and requested == MembershipStatus.ACTIVE
+            and self.user_id is None
+        ):
+            # Activation binds an identity — only accept() may do it. An
+            # admin PATCH must never mint an "active" membership without a
+            # user behind it.
+            raise InvalidMembershipTransitionError(current=self.status, requested=requested)
         self.status = requested
 
     def accept(self, user_id: uuid.UUID) -> None:
         """Invitation acceptance: binds the invited email to a real user."""
-        self.transition_to(MembershipStatus.ACTIVE)
         self.user_id = user_id
+        self.transition_to(MembershipStatus.ACTIVE)
         self.accepted_at = utcnow()
+
+    def reinvite(self) -> None:
+        """A removed member may be invited again: the row returns to the
+        INVITED state with no bound user until they accept anew."""
+        if self.status != MembershipStatus.REMOVED:
+            raise InvalidMembershipTransitionError(
+                current=self.status, requested=MembershipStatus.INVITED
+            )
+        self.status = MembershipStatus.INVITED
+        self.user_id = None
+        self.accepted_at = None
 
 
 class UserRepository:

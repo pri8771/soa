@@ -28,6 +28,10 @@ class Principal:
     issuer: str
     auth_method: AuthMethod
     email: str | None = None
+    # Tri-state: True (IdP verified), False (IdP says unverified), None
+    # (claim absent — adapters that don't surface it). Flows that MATCH on
+    # email (invitation acceptance) must treat False as unusable.
+    email_verified: bool | None = None
     display_name: str | None = None
     # Retained for membership lookup and adapter-specific policy; application
     # code must not read vendor claim names from here directly.
@@ -73,11 +77,16 @@ def principal_from_oidc_claims(
             display_name = value
             break
 
+    email_verified = claims.get("email_verified")
+    if not isinstance(email_verified, bool):
+        email_verified = None
+
     return Principal(
         subject=subject,
         issuer=issuer,
         auth_method=AuthMethod.OIDC,
         email=email,
+        email_verified=email_verified,
         display_name=display_name,
         claims=dict(claims),
     )

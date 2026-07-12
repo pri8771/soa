@@ -107,12 +107,7 @@ export function SlaIndicator({
   const deltaMinutes = (dueAt.getTime() - now.getTime()) / 60_000;
   const tone: StatusTone =
     deltaMinutes < 0 ? "critical" : deltaMinutes <= atRiskMinutes ? "warning" : "neutral";
-  const prefix = deltaMinutes < 0 ? "SLA" : "SLA";
-  return (
-    <Badge tone={tone}>
-      {prefix} {formatSlaRemaining(dueAt, now)}
-    </Badge>
-  );
+  return <Badge tone={tone}>SLA {formatSlaRemaining(dueAt, now)}</Badge>;
 }
 
 // ---------------------------------------------------------------------------

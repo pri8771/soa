@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from soa_api.settings import ApiSettings
@@ -85,12 +86,26 @@ def register_error_handlers(app: FastAPI, settings: ApiSettings) -> None:
             ),
         )
 
+    @app.exception_handler(IntegrityError)
+    async def handle_integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        # Check-then-insert races (duplicate slug, version number, dedupe
+        # key) surface as a client-visible conflict, not a 500.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=error_body(
+                code="conflict",
+                message="The change conflicts with concurrent activity; retry the request.",
+                correlation_id=_correlation_id(request),
+            ),
+        )
+
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        if settings.is_production:
-            message = "An internal error occurred."
-        else:
+        # Staging is production-shaped: internals only leak in dev/test.
+        if settings.is_development_like:
             message = f"{type(exc).__name__}: {exc}"
+        else:
+            message = "An internal error occurred."
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=error_body(

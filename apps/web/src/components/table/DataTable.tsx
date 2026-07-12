@@ -2,7 +2,7 @@
  * Data-table system (DSN-006, UI_UX_BLUEPRINT §6.3).
  *
  * Server-oriented: sorting/pagination state lives with the caller (synced
- * to the URL via useTableUrlState) and every change is a callback — the
+ * to the URL by the owning screen) and every change is a callback — the
  * table never sorts or filters client-side data behind the API's back.
  * Rows virtualize past ``virtualizeAt`` so realistic queue volumes scroll
  * smoothly. Semantics: real <table>, scope=col headers, aria-sort, a
@@ -225,6 +225,12 @@ export function DataTable<T>({
                       type="checkbox"
                       aria-label="Select all rows"
                       checked={allSelected}
+                      ref={(node) => {
+                        if (node) {
+                          node.indeterminate =
+                            !allSelected && allIds.some((id) => selectedIds.has(id));
+                        }
+                      }}
                       onChange={toggleAll}
                     />
                   </th>
@@ -273,7 +279,8 @@ export function DataTable<T>({
                 onKeyDown={
                   onRowActivate
                     ? (event) => {
-                        if (event.key === "Enter") {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
                           onRowActivate(row.original);
                         }
                       }

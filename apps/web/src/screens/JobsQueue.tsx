@@ -16,7 +16,7 @@ import {
   Select,
   TextField,
 } from "@soa/design-system";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
@@ -131,18 +131,29 @@ export function JobsQueue() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { jobStatus?: string };
-  const statusFilter = search.jobStatus ?? "all";
+  // Shared URLs may carry anything; unknown values fall back to "all"
+  // instead of confusing the Select and the API.
+  const statusFilter = STATUS_OPTIONS.some((option) => option.id === search.jobStatus)
+    ? (search.jobStatus as string)
+    : "all";
 
   const stats = useQuery({
     queryKey: ["jobs-stats", slug],
     queryFn: () => fetchJobStats(slug),
     refetchInterval: 30_000,
   });
-  const jobs = useQuery({
+  const jobs = useInfiniteQuery({
     queryKey: ["jobs", slug, statusFilter],
-    queryFn: () => fetchJobs(slug, { status: statusFilter === "all" ? undefined : statusFilter }),
+    queryFn: ({ pageParam }) =>
+      fetchJobs(slug, {
+        status: statusFilter === "all" ? undefined : statusFilter,
+        cursor: pageParam ?? undefined,
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : null),
     refetchInterval: 30_000,
   });
+  const jobItems = jobs.data?.pages.flatMap((page) => page.items) ?? [];
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["jobs", slug] });
@@ -234,19 +245,37 @@ export function JobsQueue() {
           </Banner>
         ) : null}
 
-        <div style={{ display: "flex", gap: "var(--soa-space-4)", flexWrap: "wrap" }}>
-          <StatCard label="Queue depth" value={String(depth)} />
-          <StatCard
-            label="Oldest pending"
-            value={formatAge(stats.data?.oldest_pending_run_after ?? null)}
-          />
-          <StatCard
-            label="Dead letter"
-            value={String(byStatus["dead_letter"] ?? 0)}
+        {stats.status === "error" ? (
+          // Honest failure: never render confident zeros off a failed query.
+          <Banner
             tone="critical"
-          />
-          <StatCard label="Succeeded" value={String(byStatus["succeeded"] ?? 0)} />
-        </div>
+            title="Couldn’t load queue statistics"
+            action={
+              <Button size="sm" onPress={() => void stats.refetch()}>
+                Try again
+              </Button>
+            }
+          >
+            The job list below may still be current.
+          </Banner>
+        ) : (
+          <div style={{ display: "flex", gap: "var(--soa-space-4)", flexWrap: "wrap" }}>
+            <StatCard label="Queue depth" value={stats.data ? String(depth) : "…"} />
+            <StatCard
+              label="Oldest pending"
+              value={stats.data ? formatAge(stats.data.oldest_pending_run_after) : "…"}
+            />
+            <StatCard
+              label="Dead letter"
+              value={stats.data ? String(byStatus["dead_letter"] ?? 0) : "…"}
+              tone="critical"
+            />
+            <StatCard
+              label="Succeeded"
+              value={stats.data ? String(byStatus["succeeded"] ?? 0) : "…"}
+            />
+          </div>
+        )}
 
         <div style={{ maxWidth: "16rem" }}>
           <Select
@@ -268,7 +297,7 @@ export function JobsQueue() {
         <DataTable
           caption="Jobs"
           columns={columns}
-          data={jobs.data?.items ?? []}
+          data={jobItems}
           getRowId={(job) => job.id}
           status={
             jobs.status === "pending" ? "loading" : jobs.status === "error" ? "error" : "ready"
@@ -277,6 +306,8 @@ export function JobsQueue() {
           onRetry={() => void jobs.refetch()}
           emptyTitle="No jobs"
           emptyBody="Jobs appear here as documents are processed."
+          hasMore={jobs.hasNextPage}
+          onLoadMore={() => void jobs.fetchNextPage()}
         />
       </div>
     </AppShell>

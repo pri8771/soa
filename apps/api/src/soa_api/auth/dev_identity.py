@@ -50,6 +50,7 @@ def authenticate_dev_user(header_value: str | None) -> Principal:
         issuer=DEV_ISSUER,
         auth_method=AuthMethod.DEV,
         email=selected["email"],
+        email_verified=True,  # dev identities are trusted by definition
         display_name=selected["alias"],
         claims={"role": selected["role"], "dev_mode": True},
     )

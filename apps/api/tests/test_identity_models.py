@@ -77,7 +77,9 @@ def test_only_active_membership_grants_access(
 @pytest.mark.parametrize(
     ("current", "requested", "allowed"),
     [
-        (MembershipStatus.INVITED, MembershipStatus.ACTIVE, True),
+        # Direct INVITED->ACTIVE without a bound user is forbidden —
+        # activation only happens through accept() (see test below).
+        (MembershipStatus.INVITED, MembershipStatus.ACTIVE, False),
         (MembershipStatus.INVITED, MembershipStatus.REMOVED, True),
         (MembershipStatus.INVITED, MembershipStatus.SUSPENDED, False),
         (MembershipStatus.ACTIVE, MembershipStatus.SUSPENDED, True),
@@ -155,3 +157,25 @@ async def test_duplicate_identity_key_is_rejected(sessions: DatabaseSessions) ->
                 )
             )
     await sessions.dispose()
+
+
+def test_admin_cannot_activate_an_invitation_without_a_user() -> None:
+    """A members.manage PATCH must never mint an active membership with no
+    identity behind it; accept() (which binds user_id first) is the only
+    path from INVITED to ACTIVE."""
+    membership = Membership(invited_email="x@y.example", status=MembershipStatus.INVITED)
+    with pytest.raises(InvalidMembershipTransitionError):
+        membership.transition_to(MembershipStatus.ACTIVE)
+    membership.accept(uuid.uuid4())
+    assert membership.status == MembershipStatus.ACTIVE
+    assert membership.user_id is not None
+
+
+def test_removed_member_can_be_reinvited() -> None:
+    membership = Membership(invited_email="x@y.example", status=MembershipStatus.INVITED)
+    membership.accept(uuid.uuid4())
+    membership.transition_to(MembershipStatus.REMOVED)
+    membership.reinvite()
+    assert membership.status == MembershipStatus.INVITED
+    assert membership.user_id is None
+    assert membership.accepted_at is None

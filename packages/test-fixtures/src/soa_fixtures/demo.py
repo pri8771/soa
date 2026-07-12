@@ -155,16 +155,59 @@ DEMO_TENANT = DemoTenant(
         Fixture(alias="catalog:materials", data={"kind": "materials", "records": _MATERIALS}),
         Fixture(alias="catalog:uoms", data={"kind": "uoms", "records": _UOMS}),
     ),
+    # Shapes match the shipped validators exactly: CFG-003 schemas
+    # (soa_api.domain.schemas.validate_schema) and CFG-004 rule ASTs
+    # (soa_api.domain.rules.validate_rule_set) — enforced by
+    # apps/api/tests/test_fixture_shapes.py.
     schema=Fixture(
         alias="schema:sales-order-v1",
         data={
             "fields": [
-                {"path": "po_number", "type": "string", "required": True, "critical": True},
-                {"path": "customer", "type": "string", "required": True, "critical": True},
-                {"path": "currency", "type": "currency", "required": True, "critical": True},
-                {"path": "lines[].sku", "type": "string", "required": True, "critical": True},
-                {"path": "lines[].quantity", "type": "integer", "required": True, "critical": True},
-                {"path": "lines[].uom", "type": "string", "required": True, "critical": False},
+                {
+                    "key": "po_number",
+                    "label": "PO number",
+                    "type": "text",
+                    "required": True,
+                    "criticality": "critical",
+                },
+                {
+                    "key": "customer",
+                    "label": "Customer",
+                    "type": "text",
+                    "required": True,
+                    "criticality": "critical",
+                },
+                {
+                    "key": "currency",
+                    "label": "Currency",
+                    "type": "enum",
+                    "required": True,
+                    "criticality": "critical",
+                    "enum_values": ["USD", "EUR", "GBP"],
+                },
+                {
+                    "key": "lines",
+                    "label": "Line items",
+                    "type": "table",
+                    "required": True,
+                    "columns": [
+                        {
+                            "key": "sku",
+                            "label": "SKU",
+                            "type": "text",
+                            "required": True,
+                            "criticality": "critical",
+                        },
+                        {
+                            "key": "quantity",
+                            "label": "Quantity",
+                            "type": "number",
+                            "required": True,
+                            "criticality": "critical",
+                        },
+                        {"key": "uom", "label": "Unit of measure", "type": "text"},
+                    ],
+                },
             ]
         },
     ),
@@ -172,15 +215,37 @@ DEMO_TENANT = DemoTenant(
         alias="rules:sales-order-v1",
         data={
             "rules": [
-                {"id": "qty-positive", "when": "lines[].quantity <= 0", "then": "error"},
-                {"id": "known-customer", "when": "customer not in catalog", "then": "review"},
-                {"id": "duplicate-po", "when": "po_number already accepted", "then": "error"},
+                {
+                    "key": "po-number-required",
+                    "severity": "error",
+                    "action": "block",
+                    "condition": {
+                        "op": "not",
+                        "arg": {"op": "is_present", "key": "po_number"},
+                    },
+                    "test_cases": [
+                        {"values": {}, "expect_triggered": True},
+                        {"values": {"po_number": "PO-1"}, "expect_triggered": False},
+                    ],
+                },
+                {
+                    "key": "customer-required",
+                    "severity": "error",
+                    "action": "route_to_review",
+                    "condition": {
+                        "op": "not",
+                        "arg": {"op": "is_present", "key": "customer"},
+                    },
+                },
             ]
         },
     ),
     provider_policy=Fixture(
         alias="policy:mock-extraction",
-        data={"extraction_provider": "mock", "ocr_provider": "none"},
+        data={
+            "provider_name": "mock",
+            "capabilities": ["ocr", "field_extraction"],
+        },
     ),
     documents=_DOCUMENTS,
 )

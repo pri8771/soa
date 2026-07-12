@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -34,15 +35,23 @@ export function useToast(): ToastContextValue {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
+  const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    const pending = timers.current;
+    // Auto-dismiss timers must not fire against an unmounted provider.
+    return () => pending.forEach(clearTimeout);
+  }, []);
 
   const publish = useCallback(
     (title: string, options?: { tone?: StatusTone; durationMs?: number }) => {
       const id = nextId.current++;
       setToasts((current) => [...current, { id, title, tone: options?.tone ?? "neutral" }]);
       const duration = options?.durationMs ?? 5000;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        timers.current.delete(timer);
         setToasts((current) => current.filter((toast) => toast.id !== id));
       }, duration);
+      timers.current.add(timer);
     },
     [],
   );

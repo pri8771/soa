@@ -25,6 +25,7 @@ from soa_api.domain.rbac import (
 )
 from soa_api.domain.tenancy import Organization, OrganizationRepository
 from soa_db.repository import OrganizationContext
+from soa_db.tenant_guard import bind_tenant, bind_user
 
 
 class DenyReason(StrEnum):
@@ -88,6 +89,13 @@ class AuthorizationService:
         if user is None:
             raise AuthorizationDeniedError(DenyReason.NOT_A_MEMBER)
 
+        # RLS ordering matters on real PostgreSQL: memberships/roles carry
+        # FORCED policies, so the membership lookup runs under the caller's
+        # user binding (user_self_access policy), and the tenant binding is
+        # applied only AFTER the active membership is confirmed — before the
+        # role/permission reads that need it.
+        await bind_user(self._session, user.id)
+
         context = OrganizationContext(organization_id=organization.id)
         membership = await MembershipRepository(self._session, context).get_for_user(user.id)
         if membership is None:
@@ -95,6 +103,7 @@ class AuthorizationService:
         if not membership.grants_access:
             raise AuthorizationDeniedError(DenyReason.MEMBERSHIP_INACTIVE)
 
+        await bind_tenant(self._session, organization.id)
         permissions = await permissions_for_membership(self._session, context, membership.id)
         if required_permission not in permissions:
             raise AuthorizationDeniedError(DenyReason.PERMISSION_MISSING)

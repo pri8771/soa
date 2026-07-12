@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Index, String, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -71,7 +71,19 @@ class StreamVersion(
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    __table_args__ = (UniqueConstraint("stream_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("stream_id", "version_number"),
+        # At most ONE published version can exist at a time — the
+        # database backstops the supersede logic against concurrent
+        # first publishes (no prior row for optimistic locking to trip).
+        Index(
+            "uq_stream_versions_single_published",
+            "stream_id",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
 
 
 class StreamRepository(ScopedRepository[Stream]):
@@ -197,6 +209,9 @@ async def publish_stream_draft(
     previous = await StreamVersionRepository(session, context).get_published(stream.id)
     if previous is not None:
         previous.state = VersionState.SUPERSEDED
+        # Flush the supersede before publishing: the single-published
+        # unique index must never see two published rows mid-flush.
+        await session.flush()
     draft.resolved_snapshot = resolve_snapshot(process_version, draft.overrides)
     draft.pinned_process_version_id = process_version.id
     draft.state = VersionState.PUBLISHED
@@ -220,3 +235,39 @@ async def publish_stream_draft(
         },
     )
     return draft
+
+
+async def set_active_stream_version(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    stream: Stream,
+    version: StreamVersion,
+    actor_id: str,
+    reason: str | None = None,
+) -> Stream:
+    """Move the stream's active pointer (rollback/roll-forward), mirroring
+    the process helper: published or superseded targets only, audited."""
+    if version.stream_id != stream.id:
+        raise InvalidVersionStateError("version belongs to a different stream")
+    if version.state == VersionState.DRAFT:
+        raise InvalidVersionStateError("the active pointer can never reference a draft")
+    previous_id = stream.active_version_id
+    stream.active_version_id = version.id
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor_id,
+        action="stream.active_version_changed",
+        target_type="stream",
+        target_id=str(stream.id),
+        organization_id=context.organization_id,
+        summary={
+            "from_version_id": str(previous_id) if previous_id else None,
+            "to_version_id": str(version.id),
+            "to_version_number": version.version_number,
+            "reason": reason,
+        },
+    )
+    return stream

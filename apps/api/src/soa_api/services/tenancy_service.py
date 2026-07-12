@@ -122,7 +122,22 @@ async def invite_member(
     repo = MembershipRepository(session, context)
     existing = await repo.get_by_invited_email(email)
     if existing is not None:
-        return existing, False
+        if existing.status != MembershipStatus.REMOVED:
+            return existing, False
+        # Removal is terminal for that tenure, not for the person: a fresh
+        # invitation reopens the same row awaiting a new acceptance.
+        existing.reinvite()
+        await record_audit_event(
+            session,
+            actor_type=ActorType.USER,
+            actor_id=actor_id,
+            action="member.reinvited",
+            target_type="membership",
+            target_id=str(existing.id),
+            organization_id=context.organization_id,
+            summary={"email": email},
+        )
+        return existing, True
     membership = repo.add(Membership(invited_email=email))
     await session.flush()
     await record_audit_event(
@@ -146,6 +161,11 @@ async def accept_invitation(
 ) -> Membership:
     organization = await OrganizationRepository(session).get_by_slug(organization_slug)
     if organization is None:
+        raise NoInvitationError(organization_slug)
+    # Invitation matching trusts the email claim, so the claim must be
+    # verified by the IdP — otherwise anyone who can type the invitee's
+    # address into a lax IdP could take over the invitation.
+    if principal.email is None or principal.email_verified is False:
         raise NoInvitationError(organization_slug)
     user = await ensure_user(session, principal)
     # The invited membership row has no user_id yet, so tenant binding (not

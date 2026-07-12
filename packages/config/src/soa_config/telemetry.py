@@ -163,9 +163,31 @@ def configure_telemetry(
         tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = tracer_provider.get_tracer(service_name)
 
+    # Metrics must flow in real profiles too, not only when tests inject a
+    # reader — otherwise every queue metric silently no-ops in deployments.
+    reader: MetricReader | None = metric_reader
+    if reader is None:
+        if profile == "console":
+            from opentelemetry.sdk.metrics.export import (
+                ConsoleMetricExporter,
+                PeriodicExportingMetricReader,
+            )
+
+            reader = PeriodicExportingMetricReader(ConsoleMetricExporter())
+        elif profile == "otlp":
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+                OTLPMetricExporter,
+            )
+            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+            assert otlp_endpoint is not None  # validated above for traces
+            reader = PeriodicExportingMetricReader(
+                OTLPMetricExporter(endpoint=f"{otlp_endpoint.rstrip('/')}/v1/metrics")
+            )
+
     meter: otel_metrics.Meter | None = None
-    if metric_reader is not None:
-        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    if reader is not None:
+        meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
         meter = meter_provider.get_meter(service_name)
 
     return Telemetry(tracer=tracer, meter=meter)

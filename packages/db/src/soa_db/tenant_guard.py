@@ -19,9 +19,15 @@ TENANT_GUC = "soa.organization_id"
 USER_GUC = "soa.user_id"
 
 # Tables protected by RLS policies (kept in sync with migration 0008 and
-# extended by later migrations; service_credentials is deliberately excluded
-# because API-key authentication must look up credentials before any tenant
-# context exists — it is protected by random prefixes and one-way hashes).
+# extended by later migrations). Deliberate exclusions:
+# - service_credentials: API-key authentication must look up credentials
+#   before any tenant context exists (random prefixes + one-way hashes).
+# - users/organizations: identity/tenant ROOTS resolved at the auth boundary.
+# - outbox_events, jobs: drained by the cross-tenant worker, which binds no
+#   tenant GUC; organization_id there is payload, enforced at enqueue time.
+# - audit_events: written from both tenant and system contexts (including
+#   before a tenant is bound, e.g. org creation); tenant-facing audit reads
+#   (future audit.read API) must scope through ScopedRepository queries.
 RLS_PROTECTED_TABLES = (
     "workspaces",
     "memberships",

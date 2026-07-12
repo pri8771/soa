@@ -20,7 +20,7 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Index, String, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -194,7 +194,19 @@ class SchemaVersion(
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    __table_args__ = (UniqueConstraint("process_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("process_id", "version_number"),
+        # At most ONE published version can exist at a time — the
+        # database backstops the supersede logic against concurrent
+        # first publishes (no prior row for optimistic locking to trip).
+        Index(
+            "uq_schema_versions_single_published",
+            "process_id",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
 
 
 class SchemaVersionRepository(ScopedRepository[SchemaVersion]):
@@ -233,7 +245,7 @@ async def create_schema_draft(
         SchemaVersion(
             process_id=process_id,
             version_number=next_number,
-            definition=definition,
+            definition=dict(definition),
             change_summary=change_summary,
         )
     )
@@ -269,6 +281,9 @@ async def publish_schema_draft(
     if previous is not None:
         validate_schema_evolution(validate_schema(previous.definition), new_schema)
         previous.state = VersionState.SUPERSEDED
+        # Flush the supersede before publishing: the single-published
+        # unique index must never see two published rows mid-flush.
+        await session.flush()
     draft.state = VersionState.PUBLISHED
     draft.published_at = now or utcnow()
     draft.published_by = actor_id

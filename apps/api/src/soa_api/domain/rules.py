@@ -24,7 +24,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Index, String, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -88,18 +88,17 @@ def _type_of(node: Any, field_types: dict[str, str], path: str) -> str:
     if op in COMPARISONS:
         left = _type_of(node.get("left"), field_types, f"{path}.left")
         right = _type_of(node.get("right"), field_types, f"{path}.right")
+        # Same type always compares; number/money interoperate; enum values
+        # compare with text ONLY for equality — never ordering, never with
+        # numbers.
         comparable = (
             left == right
             or {left, right} <= {"number", "money"}
-            or "enum"
-            in (
-                left,
-                right,
-            )
+            or (op in ("eq", "ne") and {left, right} <= {"enum", "text"})
         )
         if not comparable:
             raise RuleExpressionError(f"{path}: cannot compare {left} with {right}")
-        if op not in ("eq", "ne") and left not in ORDERED_TYPES and left != "enum":
+        if op not in ("eq", "ne") and left not in ORDERED_TYPES:
             raise RuleExpressionError(f"{path}: {op} requires an ordered type, got {left}")
         return "boolean"
     if op in ("and", "or"):
@@ -142,17 +141,22 @@ def _eval(node: dict[str, Any], values: dict[str, Any]) -> Any:
         right = _eval(node["right"], values)
         if left is None or right is None:
             return op == "ne" and (left is None) != (right is None)
-        if op == "eq":
-            return left == right
-        if op == "ne":
-            return left != right
-        if op == "gt":
-            return left > right
-        if op == "gte":
-            return left >= right
-        if op == "lt":
-            return left < right
-        return left <= right
+        try:
+            if op == "eq":
+                return left == right
+            if op == "ne":
+                return left != right
+            if op == "gt":
+                return left > right
+            if op == "gte":
+                return left >= right
+            if op == "lt":
+                return left < right
+            return left <= right
+        except TypeError:
+            # Runtime values can disagree with declared field types (bad
+            # extraction, malformed test case). Fail safe, never crash.
+            return False
     if op == "and":
         return all(_eval(arg, values) for arg in node["args"])
     if op == "or":
@@ -171,6 +175,8 @@ def validate_rule_set(
     seen_keys: set[str] = set()
     for index, rule in enumerate(rules):
         path = f"rules[{index}]"
+        if not isinstance(rule, dict):
+            raise RuleExpressionError(f"{path}: each rule must be an object")
         key = rule.get("key")
         if not isinstance(key, str) or not key:
             raise RuleExpressionError(f"{path}: rule needs a non-empty 'key'")
@@ -185,7 +191,14 @@ def validate_rule_set(
         if not isinstance(condition, dict):
             raise RuleExpressionError(f"{path}: missing condition expression")
         type_check(condition, field_types)
-        for case_index, case in enumerate(rule.get("test_cases", [])):
+        test_cases = rule.get("test_cases", [])
+        if not isinstance(test_cases, list):
+            raise RuleExpressionError(f"{path}: test_cases must be a list")
+        for case_index, case in enumerate(test_cases):
+            if not isinstance(case, dict):
+                raise RuleExpressionError(
+                    f"{path}.test_cases[{case_index}]: each test case must be an object"
+                )
             values = case.get("values", {})
             expected = case.get("expect_triggered")
             if not isinstance(expected, bool):
@@ -218,7 +231,19 @@ class RuleSetVersion(
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    __table_args__ = (UniqueConstraint("process_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("process_id", "version_number"),
+        # At most ONE published version can exist at a time — the
+        # database backstops the supersede logic against concurrent
+        # first publishes (no prior row for optimistic locking to trip).
+        Index(
+            "uq_rule_set_versions_single_published",
+            "process_id",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
 
 
 class RuleSetVersionRepository(ScopedRepository[RuleSetVersion]):
@@ -258,7 +283,7 @@ async def create_rule_set_draft(
         RuleSetVersion(
             process_id=process_id,
             version_number=next_number,
-            definition=definition,
+            definition=dict(definition),
             change_summary=change_summary,
         )
     )
@@ -292,6 +317,9 @@ async def publish_rule_set_draft(
     previous = await repo.get_published(draft.process_id)
     if previous is not None:
         previous.state = VersionState.SUPERSEDED
+        # Flush the supersede before publishing: the single-published
+        # unique index must never see two published rows mid-flush.
+        await session.flush()
     draft.state = VersionState.PUBLISHED
     draft.published_at = now or utcnow()
     draft.published_by = actor_id

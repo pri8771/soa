@@ -133,12 +133,7 @@ export function AppShell({
           </Link>
         ))}
         <div className="soa-shell-nav-footer">
-          <Button
-            variant="subtle"
-            size="sm"
-            aria-pressed={collapsed}
-            onPress={() => setCollapsed((value) => !value)}
-          >
+          <Button variant="subtle" size="sm" onPress={() => setCollapsed((value) => !value)}>
             <span aria-hidden="true">{collapsed ? "»" : "«"}</span>
             <span className="soa-shell-nav-label">
               {collapsed ? "Expand navigation" : "Collapse navigation"}

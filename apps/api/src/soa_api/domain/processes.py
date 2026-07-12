@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Index, String, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,7 +83,19 @@ class ProcessVersion(
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    __table_args__ = (UniqueConstraint("process_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("process_id", "version_number"),
+        # At most ONE published version can exist at a time — the
+        # database backstops the supersede logic against concurrent
+        # first publishes (no prior row for optimistic locking to trip).
+        Index(
+            "uq_process_versions_single_published",
+            "process_id",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
 
 
 class ProcessRepository(ScopedRepository[Process]):
@@ -199,6 +211,9 @@ async def publish_draft(
     previous = await repo.get_published(process.id)
     if previous is not None:
         previous.state = VersionState.SUPERSEDED
+        # Flush the supersede before publishing: the single-published
+        # unique index must never see two published rows mid-flush.
+        await session.flush()
     draft.state = VersionState.PUBLISHED
     draft.published_at = current
     draft.published_by = actor_id

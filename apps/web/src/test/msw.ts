@@ -59,6 +59,23 @@ export const handlers = [
       items: DEFAULT_JOBS.items.filter((job) => job.status === status),
     });
   }),
+  // Mutations return a valid JobSummary shape so tests exercising the
+  // happy path without overriding these stay pinned to the real contract.
+  http.post("/api/orgs/:slug/jobs/:jobId/replay", ({ params }) =>
+    HttpResponse.json({
+      ...DEFAULT_JOBS.items[1],
+      id: String(params["jobId"]),
+      status: "pending",
+      attempts: 0,
+    }),
+  ),
+  http.post("/api/orgs/:slug/jobs/:jobId/cancel", ({ params }) =>
+    HttpResponse.json({
+      ...DEFAULT_JOBS.items[0],
+      id: String(params["jobId"]),
+      status: "cancelled",
+    }),
+  ),
 ];
 
 export const server = setupServer(...handlers);

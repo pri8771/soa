@@ -48,8 +48,14 @@ export function CommandPalette({ extraCommands = [] }: { extraCommands?: Command
   }, []);
 
   const openPalette = useCallback(() => {
-    previousFocus.current = document.activeElement as HTMLElement | null;
-    setOpen(true);
+    // Re-triggering while open must not overwrite the focus-restore target
+    // with the palette's own soon-unmounted input.
+    setOpen((already) => {
+      if (!already) {
+        previousFocus.current = document.activeElement as HTMLElement | null;
+      }
+      return true;
+    });
   }, []);
 
   useEffect(() => {
@@ -87,7 +93,24 @@ export function CommandPalette({ extraCommands = [] }: { extraCommands?: Command
           }
         }}
       >
-        <div className="soa-palette" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div
+          className="soa-palette"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Command palette"
+          onKeyDown={(event) => {
+            // Dialog-level guards: Escape closes from anywhere inside, and
+            // Tab is trapped on the input — the palette is a single-field
+            // modal, so focus never escapes behind the overlay.
+            if (event.key === "Escape") {
+              event.preventDefault();
+              close();
+            } else if (event.key === "Tab") {
+              event.preventDefault();
+              inputRef.current?.focus();
+            }
+          }}
+        >
           <input
             ref={inputRef}
             className="soa-palette-input"

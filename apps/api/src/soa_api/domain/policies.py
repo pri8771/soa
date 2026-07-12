@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Index, String, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -112,7 +112,19 @@ class PolicyVersion(
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    __table_args__ = (UniqueConstraint("organization_id", "policy_type", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "policy_type", "version_number"),
+        # One published policy per (org, type): backstops concurrent
+        # first publishes at the database.
+        Index(
+            "uq_policy_versions_single_published",
+            "organization_id",
+            "policy_type",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
 
 
 class PolicyVersionRepository(ScopedRepository[PolicyVersion]):
@@ -151,7 +163,7 @@ async def create_policy_draft(
         PolicyVersion(
             policy_type=policy_type,
             version_number=next_number,
-            definition=definition,
+            definition=dict(definition),
             change_summary=change_summary,
         )
     )
@@ -187,6 +199,9 @@ async def publish_policy_draft(
     previous = await repo.get_published(policy_type)
     if previous is not None:
         previous.state = VersionState.SUPERSEDED
+        # Flush the supersede before publishing: the single-published
+        # unique index must never see two published rows mid-flush.
+        await session.flush()
     draft.state = VersionState.PUBLISHED
     draft.published_at = now or utcnow()
     draft.published_by = actor_id

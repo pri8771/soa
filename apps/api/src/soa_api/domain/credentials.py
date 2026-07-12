@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from sqlalchemy import String, select
+from sqlalchemy import String, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -179,7 +179,13 @@ async def authenticate_api_key(session: AsyncSession, raw_key: str) -> Principal
     if credential.expires_at is not None and credential.expires_at <= utcnow():
         raise AuthenticationError(_SAFE_FAILURE)
 
-    credential.last_used_at = utcnow()
+    # Targeted UPDATE: touching the ORM attribute would bump the optimistic
+    # version and make concurrent requests with the same key race to a 500.
+    await session.execute(
+        update(ServiceCredential)
+        .where(ServiceCredential.id == credential.id)
+        .values(last_used_at=utcnow())
+    )
     return Principal(
         subject=str(credential.id),
         issuer=API_KEY_ISSUER,

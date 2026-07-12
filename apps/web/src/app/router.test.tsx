@@ -11,7 +11,7 @@ describe("router", () => {
   it("renders a designed not-found state for unknown routes", async () => {
     await renderAt("/does-not-exist");
     expect(await screen.findByRole("heading", { name: "Page not found" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Go to overview" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to home" })).toBeInTheDocument();
   });
 });
 
