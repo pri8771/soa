@@ -31,6 +31,7 @@ RLS_PROTECTED_TABLES = (
     "process_versions",  # 0011
     "streams",  # 0012
     "stream_versions",  # 0012
+    "schema_versions",  # 0013
 )
 
 
