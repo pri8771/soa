@@ -5,6 +5,7 @@ description = "SOA asynchronous document-processing worker"
 requires-python = ">=3.11"
 dependencies = [
     "soa-config",
+    "soa-db",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
 ]
@@ -14,6 +15,7 @@ soa-worker = "soa_worker.main:main"
 
 [tool.uv.sources]
 soa-config = { workspace = true }
+soa-db = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

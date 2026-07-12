@@ -46,6 +46,7 @@ class Telemetry:
         self._tracer = tracer
         self._meter = meter
         self._counters: dict[str, otel_metrics.Counter] = {}
+        self._gauges: dict[str, otel_metrics._Gauge] = {}
 
     @classmethod
     def noop(cls) -> "Telemetry":
@@ -105,6 +106,19 @@ class Telemetry:
             counter.add(amount, dict(attributes or {}))
         except Exception:
             logger.warning("telemetry counter update failed", exc_info=True)
+
+    def set_gauge(self, name: str, value: float, attributes: Attributes | None = None) -> None:
+        """Record a point-in-time measurement (queue depth, oldest age)."""
+        if self._meter is None:
+            return
+        try:
+            gauge = self._gauges.get(name)
+            if gauge is None:
+                gauge = self._meter.create_gauge(name)
+                self._gauges[name] = gauge
+            gauge.set(value, dict(attributes or {}))
+        except Exception:
+            logger.warning("telemetry gauge update failed", exc_info=True)
 
 
 def configure_telemetry(

@@ -1434,6 +1434,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "soa-config" },
+    { name = "soa-db" },
 ]
 
 [package.metadata]
@@ -1441,6 +1442,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "soa-config", editable = "packages/config" },
+    { name = "soa-db", editable = "packages/db" },
 ]
 
 [[package]]
