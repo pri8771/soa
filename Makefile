@@ -30,7 +30,7 @@ local-down: ## Stop local services (data volumes are preserved)
 
 .PHONY: migrate
 migrate: ## Apply database migrations
-	@echo "ERROR: migrations not implemented yet (DB-001)." && exit 1
+	uv run alembic upgrade head
 
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data

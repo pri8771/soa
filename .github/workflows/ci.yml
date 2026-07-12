@@ -76,6 +76,39 @@ jobs:
         if: always()
         run: docker compose -f infrastructure/local/docker-compose.yml down
 
+  migrations:
+    name: Migration upgrade/downgrade check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: soa_dev
+          POSTGRES_PASSWORD: soa_dev_password
+          POSTGRES_DB: soa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U soa_dev -d soa"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      SOA_DATABASE_URL: postgresql+psycopg://soa_dev:soa_dev_password@localhost:5432/soa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Upgrade to head
+        run: uv run alembic upgrade head
+      - name: Downgrade to base
+        run: uv run alembic downgrade base
+      - name: Re-upgrade to head
+        run: uv run alembic upgrade head
+
   docs:
     name: Documentation links and commands
     runs-on: ubuntu-latest
