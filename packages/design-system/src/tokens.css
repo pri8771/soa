@@ -1,0 +1,143 @@
+/**
+ * SOA design tokens as CSS custom properties (docs/UI_UX_BLUEPRINT.md §4).
+ * Values mirror src/tokens.ts — the test suite enforces parity.
+ *
+ * Theme resolution: OS preference via prefers-color-scheme, overridden in
+ * both directions by an explicit data-theme attribute on :root.
+ */
+
+:root {
+  /* Color — light theme */
+  --soa-canvas: #f6f7f9;
+  --soa-surface: #ffffff;
+  --soa-surface-subtle: #f0f2f5;
+  --soa-surface-raised: #ffffff;
+  --soa-border: #d8dde5;
+  --soa-border-strong: #848fa1;
+  --soa-text-primary: #172033;
+  --soa-text-secondary: #556176;
+  --soa-text-muted: #5b6880;
+  --soa-accent: #3157d5;
+  --soa-accent-hover: #2849b8;
+  --soa-accent-soft: #e9eeff;
+  --soa-focus: #4c74ff;
+  --soa-success: #147a55;
+  --soa-success-soft: #e6f6ef;
+  --soa-warning: #9a6200;
+  --soa-warning-soft: #fff3d5;
+  --soa-critical: #b4233a;
+  --soa-critical-soft: #fde9ed;
+  --soa-info: #166aa3;
+  --soa-info-soft: #e6f3fc;
+
+  /* Typography */
+  --soa-font-family:
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --soa-font-display-sm: 650 30px/38px var(--soa-font-family);
+  --soa-font-heading-xl: 650 24px/32px var(--soa-font-family);
+  --soa-font-heading-lg: 650 20px/28px var(--soa-font-family);
+  --soa-font-heading-md: 650 16px/24px var(--soa-font-family);
+  --soa-font-body-lg: 450 15px/24px var(--soa-font-family);
+  --soa-font-body-md: 450 14px/20px var(--soa-font-family);
+  --soa-font-body-sm: 450 13px/18px var(--soa-font-family);
+  --soa-font-label: 600 12px/16px var(--soa-font-family);
+  --soa-font-caption: 500 11px/16px var(--soa-font-family);
+
+  /* Spacing (base unit 4px) */
+  --soa-space-1: 4px;
+  --soa-space-2: 8px;
+  --soa-space-3: 12px;
+  --soa-space-4: 16px;
+  --soa-space-5: 20px;
+  --soa-space-6: 24px;
+  --soa-space-8: 32px;
+  --soa-space-10: 40px;
+  --soa-space-12: 48px;
+  --soa-space-16: 64px;
+
+  /* Shape */
+  --soa-radius-control: 6px;
+  --soa-radius-panel: 8px;
+  --soa-radius-dialog: 12px;
+
+  /* Elevation (overlays only; prefer borders/tonal separation) */
+  --soa-elevation-raised: 0 1px 2px rgba(23, 32, 51, 0.06), 0 1px 1px rgba(23, 32, 51, 0.04);
+  --soa-elevation-overlay: 0 4px 16px rgba(23, 32, 51, 0.1), 0 2px 6px rgba(23, 32, 51, 0.06);
+  --soa-elevation-modal: 0 12px 32px rgba(23, 32, 51, 0.16), 0 4px 12px rgba(23, 32, 51, 0.08);
+
+  /* Motion */
+  --soa-motion-fast: 120ms;
+  --soa-motion-base: 160ms;
+  --soa-motion-panel: 220ms;
+
+  /* Focus */
+  --soa-focus-ring: 0 0 0 2px var(--soa-surface), 0 0 0 4px var(--soa-focus);
+
+  /* Density */
+  --soa-row-dense: 38px;
+  --soa-row-comfortable: 46px;
+  --soa-input-compact: 36px;
+  --soa-input-default: 40px;
+  --soa-input-touch: 44px;
+
+  color-scheme: light;
+}
+
+/* Dark theme values (shared by media query and explicit attribute). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --soa-canvas: #0f1420;
+    --soa-surface: #161c2c;
+    --soa-surface-subtle: #1d2436;
+    --soa-surface-raised: #1b2233;
+    --soa-border: #2a3349;
+    --soa-border-strong: #616d86;
+    --soa-text-primary: #e7eaf1;
+    --soa-text-secondary: #aeb7c9;
+    --soa-text-muted: #96a1b5;
+    --soa-accent: #7c95ff;
+    --soa-accent-hover: #93a9ff;
+    --soa-accent-soft: #202b4d;
+    --soa-focus: #7c95ff;
+    --soa-success: #45cb93;
+    --soa-success-soft: #12291f;
+    --soa-warning: #e8b84b;
+    --soa-warning-soft: #2e2410;
+    --soa-critical: #f0637a;
+    --soa-critical-soft: #341620;
+    --soa-info: #5ec2f0;
+    --soa-info-soft: #142633;
+    --soa-elevation-raised: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --soa-elevation-overlay: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --soa-elevation-modal: 0 12px 36px rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --soa-canvas: #0f1420;
+  --soa-surface: #161c2c;
+  --soa-surface-subtle: #1d2436;
+  --soa-surface-raised: #1b2233;
+  --soa-border: #2a3349;
+  --soa-border-strong: #616d86;
+  --soa-text-primary: #e7eaf1;
+  --soa-text-secondary: #aeb7c9;
+  --soa-text-muted: #96a1b5;
+  --soa-accent: #7c95ff;
+  --soa-accent-hover: #93a9ff;
+  --soa-accent-soft: #202b4d;
+  --soa-focus: #7c95ff;
+  --soa-success: #45cb93;
+  --soa-success-soft: #12291f;
+  --soa-warning: #e8b84b;
+  --soa-warning-soft: #2e2410;
+  --soa-critical: #f0637a;
+  --soa-critical-soft: #341620;
+  --soa-info: #5ec2f0;
+  --soa-info-soft: #142633;
+  --soa-elevation-raised: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --soa-elevation-overlay: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --soa-elevation-modal: 0 12px 36px rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}

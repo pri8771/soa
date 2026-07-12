@@ -3,6 +3,8 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+import "@soa/design-system/tokens.css";
+
 import { ErrorBoundary } from "./app/ErrorBoundary";
 import { createQueryClient } from "./app/queryClient";
 import { createAppRouter } from "./app/router";
