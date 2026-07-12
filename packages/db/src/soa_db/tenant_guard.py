@@ -29,6 +29,8 @@ RLS_PROTECTED_TABLES = (
     "role_assignments",
     "processes",  # 0011
     "process_versions",  # 0011
+    "streams",  # 0012
+    "stream_versions",  # 0012
 )
 
 

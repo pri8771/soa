@@ -14,10 +14,16 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String, UniqueConstraint, event, inspect
+from sqlalchemy import String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
+from soa_api.domain.versioning import (
+    ImmutablePublishedVersionMixin,
+    ImmutableVersionError,
+    InvalidVersionStateError,
+    VersionState,
+)
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.outbox import PORTABLE_JSON
@@ -30,22 +36,20 @@ class ProcessStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-class VersionState(StrEnum):
-    DRAFT = "draft"
-    PUBLISHED = "published"
-    SUPERSEDED = "superseded"
-
-
-class ImmutableVersionError(Exception):
-    def __init__(self, version_id: uuid.UUID, state: str) -> None:
-        super().__init__(
-            f"process version {version_id} is {state} and immutable — "
-            "create a new draft instead of editing history"
-        )
-
-
-class InvalidVersionStateError(Exception):
-    pass
+__all__ = [
+    "ImmutableVersionError",
+    "InvalidVersionStateError",
+    "Process",
+    "ProcessRepository",
+    "ProcessStatus",
+    "ProcessVersion",
+    "ProcessVersionRepository",
+    "VersionState",
+    "create_draft",
+    "create_process",
+    "publish_draft",
+    "set_active_version",
+]
 
 
 class Process(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base):
@@ -61,13 +65,17 @@ class Process(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, Vers
 
 
 class ProcessVersion(
-    UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base
+    UuidPrimaryKeyMixin,
+    OrganizationScopedMixin,
+    ImmutablePublishedVersionMixin,
+    TimestampMixin,
+    VersionedMixin,
+    Base,
 ):
     __tablename__ = "process_versions"
 
     process_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(nullable=False)
-    state: Mapped[str] = mapped_column(String(20), nullable=False, default=VersionState.DRAFT)
     # Draft configuration content; richer typed artifacts (schema, rules,
     # policies) hang off this via CFG-003..005.
     definition: Mapped[dict[str, Any]] = mapped_column(PORTABLE_JSON, nullable=False, default=dict)
@@ -76,35 +84,6 @@ class ProcessVersion(
     published_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     __table_args__ = (UniqueConstraint("process_id", "version_number"),)
-
-
-@event.listens_for(Session, "before_flush")
-def _reject_published_mutations(session: Session, flush_context: object, instances: object) -> None:
-    for entity in session.dirty:
-        if not isinstance(entity, ProcessVersion):
-            continue
-        if not session.is_modified(entity, include_collections=False):
-            continue
-        insp = inspect(entity)
-        state_hist = insp.attrs.state.history
-        previous_state = state_hist.deleted[0] if state_hist.deleted else entity.state
-        if previous_state in (VersionState.PUBLISHED, VersionState.SUPERSEDED):
-            # The only legal touch of a published version is superseding it.
-            only_state_changed = all(
-                attr.key == "state" or not attr.history.has_changes()
-                for attr in insp.attrs
-                if attr.key not in ("updated_at", "version")
-            )
-            is_supersede = (
-                previous_state == VersionState.PUBLISHED
-                and entity.state == VersionState.SUPERSEDED
-                and only_state_changed
-            )
-            if not is_supersede:
-                raise ImmutableVersionError(entity.id, str(previous_state))
-    for entity in session.deleted:
-        if isinstance(entity, ProcessVersion) and entity.state != VersionState.DRAFT:
-            raise ImmutableVersionError(entity.id, str(entity.state))
 
 
 class ProcessRepository(ScopedRepository[Process]):
