@@ -8,6 +8,7 @@ import {
 
 import { Home } from "../screens/Home";
 import { NotFound } from "../screens/NotFound";
+import { Workbench } from "../screens/Workbench";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -20,7 +21,13 @@ const indexRoute = createRoute({
   component: Home,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute]);
+const workbenchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workbench",
+  component: Workbench,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, workbenchRoute]);
 
 export function createAppRouter(history?: RouterHistory) {
   return createRouter({ routeTree, history });

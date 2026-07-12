@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "@soa/design-system/tokens.css";
+import "@soa/design-system/primitives.css";
 
 import { ErrorBoundary } from "./app/ErrorBoundary";
 import { createQueryClient } from "./app/queryClient";
