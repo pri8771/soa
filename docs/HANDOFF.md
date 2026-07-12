@@ -4,7 +4,12 @@
 
 ## 1. Current state
 
-- **Repository content:** documentation only, plus `prototype/`. No application code exists yet. Implementation has NOT started; the next action is `FND-001` in `docs/BUILD_BACKLOG.md`.
+- **Progress (updated as epics complete):** FND (12), DB (5), TEN (12), DSN (9), JOB (8), and CFG-001/002 are DONE — implemented, tested, committed to `dev`, CI green. Next action: `CFG-003` in `docs/BUILD_BACKLOG.md`, then the rest of CFG in order.
+- **CI conventions learned the hard way:**
+  - The migrations job runs all `-m postgres` tests as the non-superuser `soa_app` role (superusers bypass RLS; the bootstrap image user is a superuser).
+  - RLS policies must use `NULLIF(current_setting(...), '')::uuid` — a reverted `SET LOCAL` GUC reads as `''` on pooled connections.
+  - Playwright baselines are CI-rendered and canonical. To regenerate: push a commit whose message contains `[update-baselines]`; a ci.yml job rewrites `apps/web/e2e/__screenshots__/**` on the runner and pushes a bot commit (pull/rebase afterwards). Local runs of the app-shell shot differ by ~293px (unicode nav-icon font fallback) — expected. Comparison budget is a strict `maxDiffPixels: 64`.
+  - Each new migration must bump the head assertion in `packages/db/tests/test_migrations.py`; new tenant tables get FORCED RLS policies in their migration and an entry in `soa_db.tenant_guard.RLS_PROTECTED_TABLES`.
 - **Branch model (owner decision):** `main` (stable) / `qa` (staging) / `dev` (active development). All three exist on origin. **All implementation work happens on `dev`.** Do not create per-session throwaway branches; if the platform auto-creates one, merge to `dev` and continue there. Stray legacy branches (`agent/*`, `marketing-ops-foundation`, `phase-0-foundation`, `claude/app-setup-run-29yqln`) are historical and unused.
 - **Prototype:** `prototype/soa-prototype.html` is a fully self-contained clickable UI prototype (no backend, mock data). Open directly in a browser. `prototype/claude-design-prompt.md` is the design prompt used to specify it. These are design references, not production code.
 
