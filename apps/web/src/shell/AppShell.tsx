@@ -11,6 +11,7 @@ import { Badge, Button } from "@soa/design-system";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { CommandPalette } from "./CommandPalette";
 import { useShellSession } from "./ShellContext";
 import "./shell.css";
 
@@ -149,6 +150,7 @@ export function AppShell({
           </Badge>
         ) : null}
         <div className="soa-shell-topbar-spacer" />
+        <CommandPalette />
         <span style={{ font: "var(--soa-font-body-sm)", color: "var(--soa-text-secondary)" }}>
           {session.userLabel}
         </span>
