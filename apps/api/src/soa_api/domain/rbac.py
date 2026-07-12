@@ -43,8 +43,11 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "integrations.read",
         "integrations.manage",
         "integrations.replay",
+        "organization.read",
         "organization.manage",
+        "members.read",
         "members.manage",
+        "roles.read",
         "roles.manage",
         "credentials.manage",
         "audit.read",
@@ -73,6 +76,8 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
     "org-admin": PERMISSION_REGISTRY,  # full access template
     "supervisor": frozenset(
         {
+            "organization.read",
+            "members.read",
             "documents.read",
             "documents.review",
             "documents.approve",
@@ -87,6 +92,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
     ),
     "reviewer": frozenset(
         {
+            "organization.read",
             "documents.read",
             "documents.review",
             "documents.approve",
@@ -98,6 +104,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
     ),
     "integration-admin": frozenset(
         {
+            "organization.read",
             "integrations.read",
             "integrations.manage",
             "integrations.replay",
@@ -108,6 +115,9 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
     ),
     "auditor": frozenset(
         {
+            "organization.read",
+            "members.read",
+            "roles.read",
             "audit.read",
             "documents.read",
             "processes.read",

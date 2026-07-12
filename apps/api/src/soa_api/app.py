@@ -10,7 +10,7 @@ import soa_api
 from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
-from soa_api.routers import health
+from soa_api.routers import health, me, organizations
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
@@ -100,4 +100,6 @@ def create_app(
 
     register_error_handlers(app, resolved)
     app.include_router(health.router)
+    app.include_router(me.router)
+    app.include_router(organizations.router)
     return app

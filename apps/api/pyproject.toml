@@ -12,6 +12,7 @@ dependencies = [
     "pyjwt[crypto]>=2.10",
     "soa-fixtures",
     "soa-db",
+    "email-validator>=2.2",
 ]
 
 [tool.uv.sources]
