@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from fastapi import Request
 
 from soa_api.settings import ApiSettings
+from soa_config.telemetry import Telemetry
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
 
@@ -25,6 +26,7 @@ class ReadinessResult:
 @dataclass
 class Dependencies:
     settings: ApiSettings
+    telemetry: Telemetry = field(default_factory=Telemetry.noop)
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:

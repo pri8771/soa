@@ -15,6 +15,7 @@ from typing import Any
 
 import soa_worker
 from soa_config.logging import correlation_context
+from soa_config.telemetry import Telemetry
 from soa_worker.registry import HandlerRegistry, JobEnvelope
 from soa_worker.settings import WorkerSettings
 
@@ -37,10 +38,12 @@ class Worker:
         settings: WorkerSettings,
         registry: HandlerRegistry,
         fetch_job: FetchJob | None = None,
+        telemetry: Telemetry | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
         self._fetch_job = fetch_job
+        self._telemetry = telemetry if telemetry is not None else Telemetry.noop()
         self._stop_event = asyncio.Event()
         self.state = WorkerState.CREATED
         self.jobs_completed = 0
@@ -86,7 +89,11 @@ class Worker:
         with correlation_context(job.correlation_id):
             try:
                 handler = self._registry.resolve(job.job_type)
-                await handler(job)
+                with self._telemetry.span(
+                    f"job {job.job_type}",
+                    attributes={"soa.job_type": job.job_type},
+                ):
+                    await handler(job)
             except Exception:
                 self.jobs_failed += 1
                 logger.exception("job handler failed", extra={"job_type": job.job_type})

@@ -12,7 +12,7 @@ Rules enforced here (per docs/SECURITY_OPERATIONS.md and FND-007):
 """
 
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +39,8 @@ class BaseServiceSettings(BaseSettings):
     database_url: SecretStr = SecretStr(
         "postgresql+asyncpg://soa_dev:soa_dev_password@localhost:5432/soa"
     )
+    telemetry_profile: Literal["none", "console", "otlp"] = "none"
+    otlp_endpoint: str | None = None
 
     @property
     def is_production(self) -> bool:
@@ -64,6 +66,12 @@ class BaseServiceSettings(BaseSettings):
             problems.append("database_url must not use development credentials in production")
         if problems:
             raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
+    def _validate_telemetry(self) -> Self:
+        if self.telemetry_profile == "otlp" and not self.otlp_endpoint:
+            raise ValueError("telemetry_profile 'otlp' requires otlp_endpoint")
         return self
 
     def safe_dump(self) -> dict[str, Any]:

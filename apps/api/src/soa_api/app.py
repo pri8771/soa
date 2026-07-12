@@ -12,17 +12,31 @@ from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import health
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
+from soa_config.telemetry import Telemetry, configure_telemetry
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: ApiSettings | None = None) -> FastAPI:
+def create_app(
+    settings: ApiSettings | None = None,
+    telemetry: Telemetry | None = None,
+) -> FastAPI:
     """Create the API application.
 
     Settings validate on load, so a misconfigured process fails at startup
     instead of serving with unsafe defaults.
     """
     resolved = settings if settings is not None else load_settings()
+    resolved_telemetry = (
+        telemetry
+        if telemetry is not None
+        else configure_telemetry(
+            service_name=resolved.service_name,
+            environment=resolved.environment.value,
+            profile=resolved.telemetry_profile,
+            otlp_endpoint=resolved.otlp_endpoint,
+        )
+    )
 
     app = FastAPI(
         title="SOA API",
@@ -31,7 +45,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if not resolved.is_production else None,
     )
-    app.state.dependencies = Dependencies(settings=resolved)
+    app.state.dependencies = Dependencies(settings=resolved, telemetry=resolved_telemetry)
 
     @app.middleware("http")
     async def correlation_middleware(
@@ -42,7 +56,14 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         with correlation_context(incoming) as correlation_id:
             request.state.correlation_id = correlation_id
             started = time.perf_counter()
-            response = await call_next(request)
+            with resolved_telemetry.span(
+                f"HTTP {request.method} {request.url.path}",
+                attributes={
+                    "http.request.method": request.method,
+                    "url.path": request.url.path,
+                },
+            ):
+                response = await call_next(request)
             response.headers[CORRELATION_HEADER] = correlation_id
             logger.info(
                 "request completed",
