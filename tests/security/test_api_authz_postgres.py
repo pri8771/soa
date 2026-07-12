@@ -53,15 +53,16 @@ def test_full_tenant_flow_under_rls(client: TestClient) -> None:
     # The creator must be able to authorize into the org: this exercises
     # bind_user before the membership lookup and bind_tenant before the
     # role/permission reads.
-    assert client.get(f"/orgs/{slug}", headers=ADMIN).status_code == 200
+    org = client.get(f"/orgs/{slug}", headers=ADMIN)
+    assert org.status_code == 200, org.text
 
     members = client.get(f"/orgs/{slug}/members", headers=ADMIN)
-    assert members.status_code == 200
+    assert members.status_code == 200, members.text
     assert len(members.json()["items"]) == 1
 
     # Permission-guarded feature surface works under RLS too.
     stats = client.get(f"/orgs/{slug}/jobs/stats", headers=ADMIN)
-    assert stats.status_code == 200
+    assert stats.status_code == 200, stats.text
 
     # A different principal with no membership stays locked out (404 so
     # organization existence does not leak).
@@ -69,6 +70,6 @@ def test_full_tenant_flow_under_rls(client: TestClient) -> None:
 
     # /me resolves memberships and permissions under user binding.
     me = client.get("/me", headers=ADMIN)
-    assert me.status_code == 200
+    assert me.status_code == 200, me.text
     membership = next(m for m in me.json()["memberships"] if m["organization_slug"] == slug)
     assert "organization.read" in membership["permissions"]
