@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Any
 
 import soa_worker
+from soa_config.logging import correlation_context
 from soa_worker.registry import HandlerRegistry, JobEnvelope
 from soa_worker.settings import WorkerSettings
 
@@ -82,16 +83,18 @@ class Worker:
 
     async def _run_job(self, job: JobEnvelope) -> None:
         self.active_job = job
-        try:
-            handler = self._registry.resolve(job.job_type)
-            await handler(job)
-        except Exception:
-            self.jobs_failed += 1
-            logger.exception("job handler failed", extra={"job_type": job.job_type})
-        else:
-            self.jobs_completed += 1
-        finally:
-            self.active_job = None
+        with correlation_context(job.correlation_id):
+            try:
+                handler = self._registry.resolve(job.job_type)
+                await handler(job)
+            except Exception:
+                self.jobs_failed += 1
+                logger.exception("job handler failed", extra={"job_type": job.job_type})
+            else:
+                self.jobs_completed += 1
+                logger.info("job completed", extra={"job_type": job.job_type})
+            finally:
+                self.active_job = None
 
     async def run(self) -> None:
         """Run until stop is requested; safe to await from an entry point."""

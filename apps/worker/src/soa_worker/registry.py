@@ -16,6 +16,7 @@ class JobEnvelope:
 
     job_type: str
     payload: dict[str, Any] = field(default_factory=dict)
+    correlation_id: str | None = None
 
 
 JobHandler = Callable[[JobEnvelope], Awaitable[None]]

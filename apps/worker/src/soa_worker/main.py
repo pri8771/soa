@@ -1,8 +1,8 @@
 """Worker entry point: ``python -m soa_worker.main`` or ``soa-worker``."""
 
 import asyncio
-import logging
 
+from soa_config.logging import configure_logging
 from soa_worker.registry import HandlerRegistry
 from soa_worker.settings import load_settings
 from soa_worker.worker import Worker
@@ -10,6 +10,11 @@ from soa_worker.worker import Worker
 
 async def _run() -> None:
     settings = load_settings()
+    configure_logging(
+        service_name=settings.service_name,
+        environment=settings.environment.value,
+        level="DEBUG" if settings.debug else "INFO",
+    )
     registry = HandlerRegistry()
     worker = Worker(settings, registry)
     worker.install_signal_handlers(asyncio.get_running_loop())
@@ -17,7 +22,6 @@ async def _run() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(_run())
 
 

@@ -1,6 +1,7 @@
 """Application factory."""
 
-import uuid
+import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
@@ -10,6 +11,9 @@ from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import health
 from soa_api.settings import ApiSettings, load_settings
+from soa_config.logging import correlation_context
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
@@ -34,11 +38,22 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        correlation_id = request.headers.get(CORRELATION_HEADER) or uuid.uuid4().hex
-        request.state.correlation_id = correlation_id
-        response = await call_next(request)
-        response.headers[CORRELATION_HEADER] = correlation_id
-        return response
+        incoming = request.headers.get(CORRELATION_HEADER)
+        with correlation_context(incoming) as correlation_id:
+            request.state.correlation_id = correlation_id
+            started = time.perf_counter()
+            response = await call_next(request)
+            response.headers[CORRELATION_HEADER] = correlation_id
+            logger.info(
+                "request completed",
+                extra={
+                    "http_method": request.method,
+                    "http_path": request.url.path,
+                    "http_status": response.status_code,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+            return response
 
     register_error_handlers(app, resolved)
     app.include_router(health.router)
