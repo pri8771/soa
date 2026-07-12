@@ -1,0 +1,1651 @@
+<title>SOA — Document Operations Prototype</title>
+<style>
+  :root {
+    --canvas: #F6F7F9;
+    --surface: #FFFFFF;
+    --surface-subtle: #F0F2F5;
+    --surface-raised: #FFFFFF;
+    --border: #D8DDE5;
+    --border-strong: #B8C0CC;
+    --text-primary: #172033;
+    --text-secondary: #556176;
+    --text-muted: #7B8799;
+    --accent: #3157D5;
+    --accent-hover: #2849B8;
+    --accent-soft: #E9EEFF;
+    --focus: #4C74FF;
+    --success: #147A55;
+    --success-soft: #E6F6EF;
+    --warning: #9A6200;
+    --warning-soft: #FFF3D5;
+    --critical: #B4233A;
+    --critical-soft: #FDE9ED;
+    --info: #166AA3;
+    --info-soft: #E6F3FC;
+    --shadow-sm: 0 1px 2px rgba(23,32,51,0.06), 0 1px 1px rgba(23,32,51,0.04);
+    --shadow-md: 0 4px 16px rgba(23,32,51,0.10), 0 2px 6px rgba(23,32,51,0.06);
+    --shadow-lg: 0 12px 32px rgba(23,32,51,0.16), 0 4px 12px rgba(23,32,51,0.08);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #0F1420;
+      --surface: #161C2C;
+      --surface-subtle: #1D2436;
+      --surface-raised: #1B2233;
+      --border: #2A3349;
+      --border-strong: #3B4664;
+      --text-primary: #E7EAF1;
+      --text-secondary: #AEB7C9;
+      --text-muted: #7E8AA1;
+      --accent: #7C95FF;
+      --accent-hover: #93A9FF;
+      --accent-soft: #202B4D;
+      --focus: #7C95FF;
+      --success: #45CB93;
+      --success-soft: #12291F;
+      --warning: #E8B84B;
+      --warning-soft: #2E2410;
+      --critical: #F0637A;
+      --critical-soft: #341620;
+      --info: #5EC2F0;
+      --info-soft: #142633;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.35);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.45);
+      --shadow-lg: 0 12px 36px rgba(0,0,0,0.55);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --canvas: #0F1420;
+    --surface: #161C2C;
+    --surface-subtle: #1D2436;
+    --surface-raised: #1B2233;
+    --border: #2A3349;
+    --border-strong: #3B4664;
+    --text-primary: #E7EAF1;
+    --text-secondary: #AEB7C9;
+    --text-muted: #7E8AA1;
+    --accent: #7C95FF;
+    --accent-hover: #93A9FF;
+    --accent-soft: #202B4D;
+    --focus: #7C95FF;
+    --success: #45CB93;
+    --success-soft: #12291F;
+    --warning: #E8B84B;
+    --warning-soft: #2E2410;
+    --critical: #F0637A;
+    --critical-soft: #341620;
+    --info: #5EC2F0;
+    --info-soft: #142633;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.35);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.45);
+    --shadow-lg: 0 12px 36px rgba(0,0,0,0.55);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --canvas: #F6F7F9;
+    --surface: #FFFFFF;
+    --surface-subtle: #F0F2F5;
+    --surface-raised: #FFFFFF;
+    --border: #D8DDE5;
+    --border-strong: #B8C0CC;
+    --text-primary: #172033;
+    --text-secondary: #556176;
+    --text-muted: #7B8799;
+    --accent: #3157D5;
+    --accent-hover: #2849B8;
+    --accent-soft: #E9EEFF;
+    --focus: #4C74FF;
+    --success: #147A55;
+    --success-soft: #E6F6EF;
+    --warning: #9A6200;
+    --warning-soft: #FFF3D5;
+    --critical: #B4233A;
+    --critical-soft: #FDE9ED;
+    --info: #166AA3;
+    --info-soft: #E6F3FC;
+    --shadow-sm: 0 1px 2px rgba(23,32,51,0.06), 0 1px 1px rgba(23,32,51,0.04);
+    --shadow-md: 0 4px 16px rgba(23,32,51,0.10), 0 2px 6px rgba(23,32,51,0.06);
+    --shadow-lg: 0 12px 32px rgba(23,32,51,0.16), 0 4px 12px rgba(23,32,51,0.08);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; }
+  button { font: inherit; color: inherit; }
+  input, select, textarea { font: inherit; color: inherit; }
+  a { color: inherit; }
+  ::selection { background: var(--accent-soft); }
+
+  button, [role="button"], .clickable { cursor: pointer; }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  .display-sm { font-size: 30px; line-height: 38px; font-weight: 650; }
+  .heading-xl { font-size: 24px; line-height: 32px; font-weight: 650; }
+  .heading-lg { font-size: 20px; line-height: 28px; font-weight: 650; }
+  .heading-md { font-size: 16px; line-height: 24px; font-weight: 650; }
+  .body-lg { font-size: 15px; line-height: 24px; font-weight: 450; }
+  .body-md { font-size: 14px; line-height: 20px; font-weight: 450; }
+  .body-sm { font-size: 13px; line-height: 18px; font-weight: 450; }
+  .label { font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.01em; }
+  .caption { font-size: 11px; line-height: 16px; font-weight: 500; color: var(--text-muted); }
+  .muted { color: var(--text-secondary); }
+  .faint { color: var(--text-muted); }
+
+  #root { min-height: 100%; display: flex; flex-direction: column; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 36px; padding: 0 14px; border-radius: 6px; border: 1px solid transparent;
+    font-size: 13px; font-weight: 600; white-space: nowrap;
+    background: none; transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .btn svg { width: 15px; height: 15px; flex: none; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { background: var(--border-strong); color: var(--surface); cursor: not-allowed; }
+  .btn-secondary { background: var(--surface); border-color: var(--border-strong); color: var(--text-primary); }
+  .btn-secondary:hover { background: var(--surface-subtle); }
+  .btn-subtle { background: transparent; color: var(--text-secondary); }
+  .btn-subtle:hover { background: var(--surface-subtle); color: var(--text-primary); }
+  .btn-destructive { background: transparent; border-color: var(--border-strong); color: var(--critical); }
+  .btn-destructive:hover { background: var(--critical-soft); border-color: var(--critical); }
+  .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
+  .btn-icon { width: 32px; height: 32px; padding: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); }
+  .btn-icon:hover { background: var(--surface-subtle); color: var(--text-primary); }
+
+  /* ---------- pills / badges ---------- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap;
+  }
+  .pill svg { width: 11px; height: 11px; }
+  .pill-success { background: var(--success-soft); color: var(--success); }
+  .pill-warning { background: var(--warning-soft); color: var(--warning); }
+  .pill-critical { background: var(--critical-soft); color: var(--critical); }
+  .pill-info { background: var(--info-soft); color: var(--info); }
+  .pill-neutral { background: var(--surface-subtle); color: var(--text-secondary); border: 1px solid var(--border); }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---------- topbar ---------- */
+  .topbar {
+    height: 56px; flex: none; display: flex; align-items: center; gap: 16px;
+    padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 40;
+  }
+  .wordmark { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+  .wordmark .mark { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
+  .org-switch {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 4px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface-subtle); font-size: 13px; font-weight: 600;
+  }
+  .org-avatar { width: 22px; height: 22px; border-radius: 5px; background: var(--info-soft); color: var(--info); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; }
+  .topbar-spacer { flex: 1; }
+  .search-trigger {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; width: 240px;
+    border-radius: 7px; border: 1px solid var(--border); background: var(--surface-subtle); color: var(--text-muted); font-size: 13px;
+  }
+  .kbd { border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 5px; font-size: 10px; font-weight: 700; color: var(--text-muted); background: var(--surface); }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+
+  .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .page { max-width: 1240px; width: 100%; margin: 0 auto; padding: 28px 24px 64px; }
+  .page-wide { max-width: none; padding: 0; }
+
+  /* ---------- skills screen ---------- */
+  .skills-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+  .skills-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 1080px) { .skills-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 720px) { .skills-grid { grid-template-columns: 1fr; } }
+
+  .skill-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px;
+    display: flex; flex-direction: column; gap: 14px; transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  }
+  .skill-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+  .skill-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .skill-icon { width: 36px; height: 36px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; flex: none; }
+  .skill-icon svg { width: 18px; height: 18px; }
+  .skill-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .skill-stat-label { font-size: 11px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.01em; margin-bottom: 2px; }
+  .skill-stat-value { font-size: 17px; font-weight: 650; }
+  .trend-up { color: var(--success); }
+  .trend-down { color: var(--critical); }
+  .skill-card-foot { display: flex; align-items: center; justify-content: space-between; }
+  .create-skill-card {
+    border: 1.5px dashed var(--border-strong); border-radius: 10px; padding: 18px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; color: var(--text-secondary); min-height: 176px; text-align: center;
+    background: transparent; transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  }
+  .create-skill-card:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  /* ---------- skill workspace ---------- */
+  .workspace-head { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 14px 24px 0; }
+  .breadcrumb a { color: var(--text-muted); text-decoration: none; }
+  .breadcrumb a:hover { color: var(--accent); }
+  .workspace-title-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 24px 14px; flex-wrap: wrap; }
+  .workspace-title { display: flex; align-items: center; gap: 10px; }
+  .tabs { display: flex; gap: 4px; padding: 0 24px; }
+  .tab-btn {
+    position: relative; padding: 10px 4px; margin-right: 20px; background: none; border: none; font-size: 13px; font-weight: 600;
+    color: var(--text-secondary); border-bottom: 2px solid transparent;
+  }
+  .tab-btn:hover { color: var(--text-primary); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-count { color: var(--text-muted); font-weight: 600; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 16px 24px 0; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  }
+  .chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .chip:hover { border-color: var(--border-strong); }
+  .search-box { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); min-width: 220px; }
+  .search-box input { border: none; outline: none; background: none; width: 100%; font-size: 13px; }
+  .search-box svg { width: 14px; height: 14px; color: var(--text-muted); flex: none; }
+
+  .table-wrap { overflow-x: auto; padding: 16px 24px 24px; }
+  table { border-collapse: collapse; width: 100%; min-width: 980px; }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--text-muted);
+    text-transform: uppercase; padding: 0 12px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  tbody td { padding: 11px 12px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; white-space: nowrap; }
+  tbody tr { transition: background 100ms ease; }
+  tbody tr.row-clickable:hover { background: var(--surface-subtle); cursor: pointer; }
+  .doc-ref { font-weight: 650; color: var(--text-primary); }
+  .doc-sub { color: var(--text-muted); font-size: 12px; }
+
+  .empty-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 64px 24px; color: var(--text-secondary); }
+  .empty-state .icon-wrap { width: 44px; height: 44px; border-radius: 10px; background: var(--surface-subtle); display: flex; align-items: center; justify-content: center; color: var(--text-muted); margin-bottom: 6px; }
+
+  /* ---------- metric tiles ---------- */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 20px 24px 4px; }
+  @media (max-width: 1000px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; cursor: pointer; transition: border-color 120ms ease; }
+  .tile:hover { border-color: var(--border-strong); }
+  .tile-value { font-size: 22px; font-weight: 650; margin: 4px 0 2px; }
+  .tile-trend { display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin: 16px 24px; overflow: hidden; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .panel-body { padding: 18px; }
+
+  .bars { display: flex; align-items: flex-end; gap: 8px; height: 140px; padding-top: 8px; }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .bar { width: 100%; max-width: 34px; border-radius: 4px 4px 0 0; background: var(--accent-soft); position: relative; }
+  .bar.emph { background: var(--accent); }
+
+  .sender-perf-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .sender-perf-row:last-child { border-bottom: none; }
+  .meter { height: 6px; border-radius: 999px; background: var(--surface-subtle); overflow: hidden; }
+  .meter-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+
+  /* ---------- senders tab ---------- */
+  .sender-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin: 0 24px 14px; overflow: hidden; }
+  .sender-card:first-child { margin-top: 18px; }
+  .sender-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; cursor: pointer; }
+  .sender-head:hover { background: var(--surface-subtle); }
+  .sender-id { display: flex; align-items: center; gap: 10px; }
+  .sender-avatar { width: 34px; height: 34px; border-radius: 8px; background: var(--surface-subtle); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: var(--text-secondary); }
+  .sender-anchors { border-top: 1px solid var(--border); }
+  .anchor-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px dashed var(--border); }
+  .anchor-row:last-child { border-bottom: none; }
+  .anchor-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .compare-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface-subtle); }
+  .compare-box.after { background: var(--success-soft); border-color: var(--success); }
+  .compare-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); margin-bottom: 4px; }
+
+  /* ---------- upload modal ---------- */
+  .overlay { position: fixed; inset: 0; background: rgba(15,20,32,0.44); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
+  .modal { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow-lg); width: 100%; max-width: 560px; max-height: 88vh; overflow: auto; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .modal-body { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); }
+  .field-row label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+  .field-row input[type="text"], .field-row select {
+    width: 100%; height: 38px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface);
+    padding: 0 10px; font-size: 13px; color: var(--text-primary);
+  }
+  .field-row input:focus, .field-row select:focus { border-color: var(--accent); }
+  .dropzone {
+    border: 1.5px dashed var(--border-strong); border-radius: 10px; padding: 28px; text-align: center; color: var(--text-secondary);
+  }
+  .step-dots { display: flex; gap: 6px; }
+  .step-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); }
+  .step-dot.active { background: var(--accent); width: 16px; border-radius: 4px; }
+
+  /* ---------- review studio ---------- */
+  .studio { display: flex; flex-direction: column; height: calc(100vh - 56px); }
+  .studio-head { flex: none; display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 56px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .studio-head-meta { display: flex; flex-direction: column; gap: 1px; }
+  .studio-body { flex: 1; display: grid; grid-template-columns: 84px 1fr 440px; min-height: 0; }
+  @media (max-width: 1280px) { .studio-body { grid-template-columns: 72px 1fr 400px; } }
+
+  .thumb-rail { background: var(--surface-subtle); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px 8px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  .thumb { width: 56px; height: 72px; background: var(--surface); border: 2px solid var(--border); border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--text-muted); font-weight: 700; }
+  .thumb.active { border-color: var(--accent); color: var(--accent); }
+
+  .doc-viewer { position: relative; overflow: auto; background: var(--surface-subtle); padding: 24px; display: flex; justify-content: center; }
+  .doc-toolbar { position: sticky; top: 0; z-index: 5; display: flex; justify-content: center; margin-bottom: 12px; }
+  .doc-toolbar-inner { display: flex; align-items: center; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: var(--shadow-sm); }
+
+  .paper {
+    position: relative; width: 680px; min-height: 880px; background: #FDFDFC; color: #1a1a1a; border-radius: 3px;
+    box-shadow: var(--shadow-md); flex: none; font-family: Georgia, "Times New Roman", serif;
+  }
+  .paper * { box-sizing: border-box; }
+  .paper-region {
+    position: absolute; border-radius: 3px; border: 1.5px solid transparent; cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .paper-region:hover { background: rgba(76,116,255,0.08); }
+  .paper-region.hl { border-color: var(--focus); background: rgba(76,116,255,0.12); box-shadow: 0 0 0 3px rgba(76,116,255,0.14); }
+  .paper-region.issue-critical.hl { border-color: var(--critical); background: rgba(180,35,58,0.10); box-shadow: 0 0 0 3px rgba(180,35,58,0.12); }
+  .paper-region.issue-warning.hl { border-color: var(--warning); background: rgba(154,98,0,0.10); box-shadow: 0 0 0 3px rgba(154,98,0,0.12); }
+  .stamp {
+    position: absolute; border: 3px solid rgba(180,35,58,0.55); color: rgba(180,35,58,0.55); border-radius: 6px;
+    padding: 4px 10px; font-weight: 800; font-size: 13px; letter-spacing: 0.06em; transform: rotate(-9deg);
+    font-family: Arial, sans-serif; pointer-events: none;
+  }
+
+  .reason-nav { padding: 14px 16px 8px; border-bottom: 1px solid var(--border); }
+  .reason-item {
+    display: flex; align-items: flex-start; gap: 10px; padding: 9px 8px; border-radius: 7px; margin-bottom: 3px; border: 1px solid transparent;
+  }
+  .reason-item:hover { background: var(--surface-subtle); }
+  .reason-item.active { background: var(--accent-soft); border-color: var(--accent); }
+  .reason-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
+  .reason-dot.critical { background: var(--critical); }
+  .reason-dot.warning { background: var(--warning); }
+  .reason-dot.resolved { background: var(--success); }
+
+  .field-panel-scroll { flex: 1; overflow-y: auto; padding: 12px 16px 16px; }
+  .field-card { border: 1px solid var(--border); border-radius: 9px; padding: 12px 13px; margin-bottom: 10px; background: var(--surface); }
+  .field-card.flagged.critical { border-color: var(--critical); background: var(--critical-soft); }
+  .field-card.flagged.warning { border-color: var(--warning); background: var(--warning-soft); }
+  .field-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .field-label-row { display: flex; align-items: center; gap: 6px; }
+  .field-input {
+    width: 100%; height: 34px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface);
+    padding: 0 9px; font-size: 13px; margin-top: 2px;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-meta-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; font-size: 11px; }
+  .evidence-link { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; background: none; border: none; padding: 0; font-size: 11px; }
+  .evidence-link:hover { text-decoration: underline; }
+
+  .teach-banner {
+    margin-top: 10px; padding: 9px 10px; border-radius: 7px; background: var(--accent-soft); border: 1px solid var(--accent);
+    display: flex; flex-direction: column; gap: 8px; font-size: 12px;
+  }
+  .candidate-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .candidate-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; }
+  .candidate-item:hover { border-color: var(--accent); background: var(--accent-soft); cursor: pointer; }
+  .candidate-item.selected { border-color: var(--success); background: var(--success-soft); }
+
+  .popover {
+    position: absolute; z-index: 60; width: 320px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: var(--shadow-lg); padding: 14px; font-size: 12px;
+  }
+  .popover-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .popover-row:last-child { border-bottom: none; }
+  .score-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; }
+  .score-bar-row .meter { flex: 1; }
+
+  .grid-panel { border-top: 1px solid var(--border); }
+  .grid-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; cursor: pointer; }
+  .li-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .li-table th { text-align: left; padding: 6px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+  .li-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  .li-table tr.flag td { background: var(--warning-soft); }
+  .li-table select { border: 1px solid var(--border-strong); border-radius: 5px; height: 26px; font-size: 12px; }
+
+  .approval-bar { flex: none; border-top: 1px solid var(--border); padding: 12px 16px; background: var(--surface-raised); }
+  .approval-summary-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; font-size: 12px; }
+  .approval-summary-list li { display: flex; align-items: center; gap: 6px; list-style: none; }
+
+  .toast-stack { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+  .toast {
+    display: flex; align-items: center; gap: 10px; background: var(--text-primary); color: var(--canvas);
+    padding: 11px 14px; border-radius: 8px; box-shadow: var(--shadow-lg); font-size: 13px; max-width: 360px;
+  }
+  :root[data-theme="dark"] .toast { background: var(--surface-raised); color: var(--text-primary); border: 1px solid var(--border); }
+
+  .kbd-legend { position: absolute; bottom: 56px; right: 16px; z-index: 60; }
+  .kbd-legend-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin-top: 8px; }
+
+  .manage-nav { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--surface); }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  .divider-v { width: 1px; align-self: stretch; background: var(--border); }
+  .scroll-x { overflow-x: auto; }
+
+  .link-btn { background: none; border: none; padding: 0; color: var(--accent); font-weight: 600; font-size: inherit; }
+  .link-btn:hover { text-decoration: underline; }
+</style>
+
+<div id="root"></div>
+<div id="toast-root" class="toast-stack"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============================= ICONS ============================= */
+  var ICONS = {
+    logo: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 4h11l5 5v11H4V4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 4v5h5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-4.3-4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    bell: '<svg viewBox="0 0 24 24" fill="none"><path d="M6 10a6 6 0 1112 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.5 19a2.5 2.5 0 005 0" stroke="currentColor" stroke-width="1.6"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v2.4M12 19v2.4M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M2.5 12h2.4M19 12h2.4M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 1110.2 4a7 7 0 009.8 10.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    chevronRight: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    chevronDown: '<svg viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    arrowLeft: '<svg viewBox="0 0 24 24" fill="none"><path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4.5 4.5L19 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    checkCircle: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M8 12.3l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    alertTriangle: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4.5L21 19H3L12 4.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 10v4.2M12 17.1v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    x: '<svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    upload: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 15V5M8 9l4-4 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    filter: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16M7.5 12h9M11 18h2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none"><path d="M6 3h8l5 5v13H6V3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 3v5h5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    grid: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/></svg>',
+    users: '<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M16 8.5a3 3 0 110 6M18 20c0-2.5-1.6-4.6-3.8-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    link: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 15l6-6M10 6.5l1.2-1.2a4 4 0 015.6 5.6L15.6 12M14 17.5l-1.2 1.2a4 4 0 01-5.6-5.6L8.4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2L5.6 5.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    barChart: '<svg viewBox="0 0 24 24" fill="none"><path d="M5 20V10M12 20V4M19 20v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    evidence: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 8-8 9-4.6-1-8-4-8-9V7l8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    sparkle: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+    reopen: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 3 6.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 16v-4h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    key: '<svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="15" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M11 12l9-9M17 6l2 2M14 9l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    dot3: '<svg viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg>',
+    zoomIn: '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="M20 20l-4.3-4.3M11 8.5v5M8.5 11h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    zoomOut: '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="M20 20l-4.3-4.3M8.5 11h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    question: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M9.6 9.3a2.4 2.4 0 114 1.9c-.7.6-1.6 1-1.6 2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="12" cy="17" r="0.9" fill="currentColor"/></svg>'
+  };
+  function icon(name, cls) { return '<span class="' + (cls || '') + '" style="display:inline-flex">' + (ICONS[name] || '') + '</span>'; }
+
+  /* ============================= MOCK DATA ============================= */
+  var DATA = {
+    org: { name: "Meridian Foods Group", plan: "Pilot", env: "Production" },
+    user: { name: "Priyansh Chordia", initials: "PC", role: "Reviewer" },
+    skills: [
+      {
+        id: "sk_uk", name: "PO Extraction — UK Sales Orders", docType: "Purchase order", status: "active",
+        docs30d: 428, backlog: 6, strRate: 87, strTrend: 2.4, lastActivity: "12 minutes ago", hasTraining: true
+      },
+      {
+        id: "sk_dach", name: "PO Extraction — DACH", docType: "Purchase order", status: "needs-attention",
+        docs30d: 261, backlog: 14, strRate: 74, strTrend: -3.1, lastActivity: "2 hours ago", hasTraining: true
+      },
+      {
+        id: "sk_iberia", name: "PO Extraction — Iberia", docType: "Purchase order", status: "draft",
+        docs30d: 0, backlog: 0, strRate: null, strTrend: 0, lastActivity: "Never run", hasTraining: false
+      }
+    ],
+    documents: {
+      sk_uk: [
+        { id: "d1", ref: "PO-4471209", sender: "Acme Industrial Supply Ltd", po: "4471209", received: "Today, 09:14", state: "needs_review", risk: "high", issues: 4, reviewer: "Unassigned", sla: "3h left", exportState: "pending" },
+        { id: "d2", ref: "PO-4471188", sender: "Northfield Retail Group", po: "4471188", received: "Today, 08:02", state: "approved", risk: "low", issues: 0, reviewer: "P. Chordia", sla: "—", exportState: "delivered" },
+        { id: "d3", ref: "PO-4471150", sender: "Acme Industrial Supply Ltd", po: "4471150", received: "Yesterday, 17:40", state: "approved", risk: "low", issues: 0, reviewer: "P. Chordia", sla: "—", exportState: "delivered" },
+        { id: "d4", ref: "PO-4471140", sender: "Bramwell & Co", po: "4471140", received: "Yesterday, 15:12", state: "failed_export", risk: "low", issues: 0, reviewer: "S. Okafor", sla: "—", exportState: "failed" },
+        { id: "d5", ref: "PO-4471102", sender: "Northfield Retail Group", po: "4471102", received: "Yesterday, 11:30", state: "needs_review", risk: "medium", issues: 1, reviewer: "Unassigned", sla: "1h left", exportState: "pending" },
+        { id: "d6", ref: "PO-4471087", sender: "Denholm Distribution", po: "4471087", received: "Yesterday, 09:05", state: "quarantined", risk: "—", issues: 0, reviewer: "—", sla: "—", exportState: "—" },
+        { id: "d7", ref: "PO-4471055", sender: "Acme Industrial Supply Ltd", po: "4471055", received: "2 days ago", state: "approved", risk: "low", issues: 0, reviewer: "P. Chordia", sla: "—", exportState: "delivered" },
+        { id: "d8", ref: "PO-4471040", sender: "Waverton Foods", po: "4471040", received: "2 days ago", state: "processing", risk: "—", issues: 0, reviewer: "—", sla: "—", exportState: "—" }
+      ],
+      sk_dach: [
+        { id: "d9", ref: "PO-DE-88213", sender: "Rheinmetall Handels GmbH", po: "88213", received: "Today, 07:55", state: "needs_review", risk: "high", issues: 3, reviewer: "Unassigned", sla: "40m left", exportState: "pending" },
+        { id: "d10", ref: "PO-DE-88190", sender: "Alpen Vertrieb AG", po: "88190", received: "Yesterday, 14:20", state: "approved", risk: "low", issues: 0, reviewer: "M. Bauer", sla: "—", exportState: "delivered" },
+        { id: "d11", ref: "PO-DE-88177", sender: "Rheinmetall Handels GmbH", po: "88177", received: "Yesterday, 10:11", state: "needs_review", risk: "medium", issues: 2, reviewer: "Unassigned", sla: "SLA breached", exportState: "pending" }
+      ],
+      sk_iberia: []
+    },
+    senders: {
+      sk_uk: [
+        {
+          id: "s1", name: "Acme Industrial Supply Ltd", domain: "acmeindustrial.co.uk", docs: 34,
+          templates: [
+            { field: "PO date", anchor: "Top-right of header block, small font, near label “Order Date:”", status: "published", publishedAt: "3 weeks ago", matchRate: 96, sourceDoc: "PO-4470610" },
+            { field: "Ship-to", anchor: "Second address block, left column, below “Deliver To:”", status: "published", publishedAt: "3 weeks ago", matchRate: 99, sourceDoc: "PO-4470610" }
+          ]
+        },
+        {
+          id: "s2", name: "Northfield Retail Group", domain: "northfieldretail.com", docs: 21,
+          templates: [
+            { field: "Payment terms", anchor: "Bottom-left of header, printed as “Terms:” followed by code (e.g. N30)", status: "proposed", proposedAt: "2 hours ago", sourceDoc: "PO-4471102", proposedBy: "P. Chordia" }
+          ]
+        },
+        { id: "s3", name: "Bramwell & Co", domain: "bramwellco.uk", docs: 9, templates: [] },
+        { id: "s4", name: "Denholm Distribution", domain: "denholmdist.co.uk", docs: 6, templates: [] }
+      ],
+      sk_dach: [
+        {
+          id: "s5", name: "Rheinmetall Handels GmbH", domain: "rheinmetall-handel.de", docs: 17,
+          templates: [
+            { field: "Ship-to", anchor: "Right column, under stamped logo, two-line address without postal prefix", status: "proposed", proposedAt: "1 day ago", sourceDoc: "PO-DE-88177", proposedBy: "M. Bauer" }
+          ]
+        },
+        { id: "s6", name: "Alpen Vertrieb AG", domain: "alpenvertrieb.at", docs: 11, templates: [] }
+      ],
+      sk_iberia: []
+    },
+    training: {
+      sk_uk: { total: 40, passing: 37, lastRun: "4 days ago" },
+      sk_dach: { total: 22, passing: 18, lastRun: "6 days ago" }
+    }
+  };
+
+  var REVIEW_DOC = {
+    id: "d1", ref: "PO-4471209", sender: "Acme Industrial Supply Ltd", skillName: "PO Extraction — UK Sales Orders",
+    sla: "3h left", position: "3 of 6",
+    regions: {
+      poNumber:  { top: 66,  left: 404, width: 250, height: 20 },
+      poDate:    { top: 90,  left: 404, width: 250, height: 20 },
+      delivery:  { top: 114, left: 404, width: 250, height: 20 },
+      billTo:    { top: 92,  left: 22,  width: 260, height: 78 },
+      shipTo:    { top: 178, left: 22,  width: 260, height: 88 },
+      terms:     { top: 284, left: 22,  width: 200, height: 20 },
+      currency:  { top: 284, left: 240, width: 90,  height: 20 },
+      incoterms: { top: 284, left: 350, width: 120, height: 20 },
+      lineItems: { top: 322, left: 22,  width: 636, height: 250 },
+      totals:    { top: 616, left: 424, width: 234, height: 96 }
+    }
+  };
+
+  var REASONS = [
+    { id: "poDate", level: "critical", title: "Critical low confidence", desc: "PO date — 41% confidence, partially obscured by a received stamp" },
+    { id: "shipTo", level: "warning", title: "Ambiguous catalog match", desc: "Ship-to — two candidate addresses scored within 6 points of each other" },
+    { id: "terms", level: "warning", title: "Missing required field", desc: "Payment terms — not detected anywhere on the document" },
+    { id: "lineItems", level: "warning", title: "Model disagreement", desc: "Line 3 unit price — extraction candidates differ by £0.60" }
+  ];
+
+  var FIELDS = [
+    { id: "poNumber", label: "PO number", critical: true, value: "4471209", raw: "4471209", confidence: 99, status: "ok" },
+    { id: "poDate", label: "PO date", critical: true, value: "", raw: "11 Jul 2026 (uncertain)", confidence: 41, status: "critical" },
+    { id: "delivery", label: "Requested delivery date", critical: false, value: "22 Jul 2026", raw: "22 Jul 2026", confidence: 92, status: "ok" },
+    { id: "billTo", label: "Bill-to", critical: false, value: "Acme Industrial Supply Ltd, 14 Foundry Road, Leeds LS9 8AH", raw: "same", confidence: 97, status: "ok" },
+    { id: "shipTo", label: "Ship-to", critical: true, value: "", raw: "Acme Industrial — Warehouse 3, Trafford Park, Manchester M17 1EH", confidence: 68, status: "warning" },
+    { id: "terms", label: "Payment terms", critical: false, value: "", raw: "not found", confidence: 0, status: "warning" },
+    { id: "currency", label: "Currency", critical: true, value: "GBP", raw: "GBP", confidence: 99, status: "ok" },
+    { id: "incoterms", label: "Incoterms", critical: false, value: "DAP", raw: "DAP", confidence: 94, status: "ok" }
+  ];
+
+  var LINE_ITEMS = [
+    { line: 1, item: "FX-1082", desc: "Galvanised steel bracket, 40mm", qty: 240, uom: "EA", price: 1.85, total: 444.00, flag: false },
+    { line: 2, item: "FX-1090", desc: "M8 hex bolt, zinc-plated (box of 100)", qty: 18, uom: "BOX", price: 6.20, total: 111.60, flag: false },
+    { line: 3, item: "FX-2210", desc: "Anti-vibration rubber mount, 60mm", qty: 96, uom: "EA", price: null, total: null, flag: true, candidates: [18.40, 19.00] },
+    { line: 4, item: "FX-2244", desc: "Continuation: mount, extended thread variant", qty: 24, uom: "EA", price: 21.50, total: 516.00, flag: false }
+  ];
+
+  var SHIP_TO_CANDIDATES = [
+    { name: "Acme Industrial — Warehouse 3, Trafford Park, Manchester M17 1EH", score: 84, breakdown: [["Company name", 20, 18], ["Address line", 25, 20], ["City", 15, 15], ["Postal code", 30, 21], ["Country", 10, 10]] },
+    { name: "Acme Industrial — Distribution Hub, Salford M5 3LN", score: 78, breakdown: [["Company name", 20, 18], ["Address line", 25, 14], ["City", 15, 12], ["Postal code", 30, 24], ["Country", 10, 10]] }
+  ];
+
+  /* ============================= STATE ============================= */
+  var S = {
+    theme: null,
+    screen: "signin",
+    signinError: null,
+    currentSkillId: null,
+    tab: "documents",
+    manageTab: "catalogs",
+    docFilter: "all",
+    docSearch: "",
+    uploadOpen: false,
+    uploadStep: 1,
+    createSkillOpen: false,
+    createStep: 1,
+    openSenders: {},
+    activeReason: "poDate",
+    showAllFields: false,
+    fieldValues: {},
+    resolved: {},
+    teachPromptFor: null,
+    teachSaved: {},
+    evidencePopoverFor: null,
+    candidatePopoverOpen: false,
+    lineItemEdits: {},
+    kbdLegendOpen: false,
+    saveState: "saved",
+    docStatus: {},
+    senderTemplateStatus: {},
+    zoom: 1
+  };
+
+  /* ============================= UTIL ============================= */
+  function el(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+  function fmtGBP(n) { return "£" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  function toast(msg, iconName) {
+    var root = document.getElementById("toast-root");
+    var node = el('<div class="toast">' + icon(iconName || "checkCircle") + '<span>' + msg + '</span></div>');
+    root.appendChild(node);
+    setTimeout(function () { node.style.transition = "opacity 200ms ease"; node.style.opacity = "0"; setTimeout(function () { node.remove(); }, 220); }, 3200);
+  }
+  function findSkill(id) { for (var i = 0; i < DATA.skills.length; i++) if (DATA.skills[i].id === id) return DATA.skills[i]; return null; }
+  function docState(d) {
+    var override = S.docStatus[d.id];
+    return override || d.state;
+  }
+  function stateLabel(state) {
+    return { needs_review: "Needs review", approved: "Approved", failed_export: "Export failed", quarantined: "Quarantined", processing: "Processing" }[state] || state;
+  }
+  function statePill(state) {
+    var map = {
+      needs_review: ["pill-warning", "alertTriangle"],
+      approved: ["pill-success", "check"],
+      failed_export: ["pill-critical", "x"],
+      quarantined: ["pill-neutral", "alertTriangle"],
+      processing: ["pill-info", "sparkle"]
+    };
+    var m = map[state] || ["pill-neutral", "dot3"];
+    return '<span class="pill ' + m[0] + '">' + icon(m[1]) + stateLabel(state) + '</span>';
+  }
+  function riskPill(risk) {
+    if (risk === "high") return '<span class="pill pill-critical">' + icon("alertTriangle") + 'High risk</span>';
+    if (risk === "medium") return '<span class="pill pill-warning">' + icon("alertTriangle") + 'Medium risk</span>';
+    if (risk === "low") return '<span class="pill pill-success">' + icon("check") + 'Low risk</span>';
+    return '<span class="pill pill-neutral">—</span>';
+  }
+
+  /* ============================= RENDER ROOT ============================= */
+  function render() {
+    var root = document.getElementById("root");
+    root.innerHTML = "";
+    if (S.screen === "signin") { root.appendChild(renderSignIn()); return; }
+    if (S.screen === "review") {
+      root.appendChild(renderTopbar());
+      root.appendChild(renderReviewStudio());
+    } else {
+      root.appendChild(renderTopbar());
+      var content = el('<div class="content"></div>');
+      if (S.screen === "skills") content.appendChild(renderSkillsScreen());
+      else if (S.screen === "skillWorkspace") content.appendChild(renderSkillWorkspace());
+      else if (S.screen === "manage") content.appendChild(renderManage());
+      root.appendChild(content);
+    }
+    if (S.uploadOpen) root.appendChild(renderUploadModal());
+    if (S.createSkillOpen) root.appendChild(renderCreateSkillModal());
+    wireGlobalPopoverClose(root);
+  }
+
+  function wireGlobalPopoverClose(root) {
+    root.addEventListener("click", function (e) {
+      if (!e.target.closest("[data-evidence-trigger]") && !e.target.closest(".popover")) {
+        if (S.evidencePopoverFor) { S.evidencePopoverFor = null; render(); }
+      }
+    }, { once: true });
+  }
+
+  /* ============================= TOPBAR ============================= */
+  function renderTopbar() {
+    var bar = el('<div class="topbar"></div>');
+    bar.innerHTML =
+      '<div class="wordmark clickable" data-action="go-skills"><span class="mark">S</span>SOA</div>' +
+      '<div class="org-switch clickable" data-action="noop"><span class="org-avatar">' + DATA.org.name.slice(0, 2).toUpperCase() + '</span>' +
+        '<span>' + DATA.org.name + '</span>' +
+        (DATA.org.env !== "Production" ? '<span class="pill pill-warning">' + DATA.org.env + '</span>' : '') +
+        icon("chevronDown", "faint") + '</div>' +
+      (S.screen !== "skills" ? '<button class="btn btn-subtle" data-action="go-manage">' + icon("settings") + 'Manage</button>' : '') +
+      '<div class="topbar-spacer"></div>' +
+      '<div class="search-trigger clickable" data-action="noop">' + icon("search") + '<span>Search or jump to…</span><span class="kbd" style="margin-left:auto">⌘K</span></div>' +
+      '<button class="btn-icon" data-action="toggle-theme" title="Toggle theme" aria-label="Toggle theme">' + icon(currentIsDark() ? "sun" : "moon") + '</button>' +
+      '<button class="btn-icon" data-action="noop" title="Notifications" aria-label="Notifications" style="position:relative">' + icon("bell") +
+        '<span style="position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:var(--critical)"></span></button>' +
+      '<div class="avatar" title="' + DATA.user.name + '">' + DATA.user.initials + '</div>';
+    bindActions(bar);
+    return bar;
+  }
+  function currentIsDark() {
+    if (S.theme === "dark") return true;
+    if (S.theme === "light") return false;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  /* ============================= SIGN IN ============================= */
+  var SIGNIN_ERRORS = [
+    null,
+    { title: "Incorrect email or password", body: "Check your credentials and try again. After 5 failed attempts your account will be temporarily locked." },
+    { title: "This organization is suspended", body: "Meridian Foods Group's subscription is on hold. Contact your organization admin or SOA billing support." },
+    { title: "This invitation has expired", body: "Ask your organization admin to send a new invitation." },
+    { title: "Sign in with your company identity provider", body: "This organization requires SSO. Continue with your company account instead." }
+  ];
+  function renderSignIn() {
+    var wrap = el('<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--canvas);padding:24px"></div>');
+    var errIdx = S.signinErrorIdx || 0;
+    var err = SIGNIN_ERRORS[errIdx];
+    wrap.innerHTML =
+      '<div style="width:100%;max-width:380px;display:flex;flex-direction:column;gap:24px">' +
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center">' +
+          '<span class="mark" style="width:40px;height:40px;font-size:18px;border-radius:10px">S</span>' +
+          '<h1 class="heading-lg">Sign in to SOA</h1>' +
+          '<p class="body-sm muted">Document operations for validated, ERP-ready sales orders</p>' +
+        '</div>' +
+        (err ? '<div style="display:flex;gap:10px;padding:12px 14px;border-radius:9px;background:var(--critical-soft);border:1px solid var(--critical);color:var(--critical)">' +
+          icon("alertTriangle") + '<div><div class="body-sm" style="font-weight:700">' + err.title + '</div><div class="caption" style="color:var(--critical);opacity:.85">' + err.body + '</div></div></div>' : '') +
+        '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-sm)">' +
+          '<div class="field-row"><label>Work email</label><input type="text" value="priyansh.chordia@meridianfoods.com" id="signin-email"/></div>' +
+          '<div class="field-row"><label>Password</label><input type="text" value="••••••••••" id="signin-pass"/></div>' +
+          '<button class="btn btn-primary" style="width:100%;height:40px" data-action="signin">Sign in</button>' +
+          '<button class="btn btn-subtle" style="width:100%" data-action="cycle-signin-error">Show a different error state (demo)</button>' +
+        '</div>' +
+        '<p class="caption" style="text-align:center">Prototype build — mock data only. Not connected to a real identity provider.</p>' +
+      '</div>';
+    bindActions(wrap);
+    return wrap;
+  }
+
+  /* ============================= SKILLS SCREEN ============================= */
+  function renderSkillsScreen() {
+    var wrap = el('<div class="page"></div>');
+    var head = el('<div class="skills-head"></div>');
+    head.innerHTML =
+      '<div><h1 class="heading-xl">Skills</h1><p class="body-sm muted" style="margin-top:4px">Pick a skill to see its documents, quality, and how it’s learning from corrections.</p></div>' +
+      '<button class="btn btn-secondary" data-action="noop">' + icon("barChart") + 'Org analytics</button>';
+    wrap.appendChild(head);
+
+    var grid = el('<div class="skills-grid"></div>');
+    DATA.skills.forEach(function (sk) { grid.appendChild(renderSkillCard(sk)); });
+    var createCard = el('<button class="create-skill-card" data-action="open-create-skill">' + icon("plus") + '<span class="body-md" style="font-weight:650">Create a skill</span><span class="caption">Set up extraction for a new document type or region</span></button>');
+    grid.appendChild(createCard);
+    wrap.appendChild(grid);
+    bindActions(wrap);
+    return wrap;
+  }
+
+  function renderSkillCard(sk) {
+    var card = el('<div class="skill-card clickable" data-action="open-skill" data-id="' + sk.id + '"></div>');
+    var statusPill = sk.status === "active" ? '<span class="pill pill-success">' + icon("check") + 'Active</span>' :
+      sk.status === "needs-attention" ? '<span class="pill pill-warning">' + icon("alertTriangle") + 'Needs attention</span>' :
+      '<span class="pill pill-neutral">Draft</span>';
+    var trendHtml = sk.strTrend === 0 || sk.strRate === null ? '<span class="faint">—</span>' :
+      (sk.strTrend > 0 ? '<span class="trend-up">↑ ' + sk.strTrend + ' pts</span>' : '<span class="trend-down">↓ ' + Math.abs(sk.strTrend) + ' pts</span>');
+    card.innerHTML =
+      '<div class="skill-card-top">' +
+        '<div class="skill-icon">' + icon("doc") + '</div>' +
+        statusPill +
+      '</div>' +
+      '<div><div class="heading-md">' + sk.name + '</div><div class="caption" style="margin-top:3px">' + sk.docType + '</div></div>' +
+      (sk.docs30d > 0 ?
+        '<div class="skill-stats">' +
+          '<div><div class="skill-stat-label">Documents (30d)</div><div class="skill-stat-value num">' + sk.docs30d + '</div></div>' +
+          '<div><div class="skill-stat-label">Backlog</div><div class="skill-stat-value num">' + sk.backlog + '</div></div>' +
+          '<div><div class="skill-stat-label">Straight-through</div><div class="skill-stat-value num">' + sk.strRate + '%</div></div>' +
+          '<div><div class="skill-stat-label">Trend</div><div class="skill-stat-value">' + trendHtml + '</div></div>' +
+        '</div>' :
+        '<div class="skill-stats" style="border-top:1px solid var(--border);padding-top:10px"><div class="body-sm muted" style="grid-column:1/-1">No documents processed yet — open to add sample documents and publish this skill.</div></div>'
+      ) +
+      '<div class="skill-card-foot"><span class="caption">' + sk.lastActivity + '</span><span class="link-btn">Open ' + icon("chevronRight") + '</span></div>';
+    return card;
+  }
+
+  /* ============================= SKILL WORKSPACE ============================= */
+  function renderSkillWorkspace() {
+    var sk = findSkill(S.currentSkillId);
+    if (!sk) { S.screen = "skills"; return renderSkillsScreen(); }
+    var wrap = el('<div></div>');
+    var head = el('<div class="workspace-head"></div>');
+    var docs = DATA.documents[sk.id] || [];
+    var senders = DATA.senders[sk.id] || [];
+    var proposedCount = 0;
+    senders.forEach(function (s) { s.templates.forEach(function (t) { if (effectiveTemplateStatus(sk.id, s.id, t) === "proposed") proposedCount++; }); });
+    var training = DATA.training[sk.id];
+
+    head.innerHTML =
+      '<div class="breadcrumb"><a data-action="go-skills" href="#">Skills</a>' + icon("chevronRight") + '<span>' + sk.name + '</span></div>' +
+      '<div class="workspace-title-row">' +
+        '<div class="workspace-title"><h1 class="heading-xl">' + sk.name + '</h1>' +
+          (sk.status === "active" ? '<span class="pill pill-success">' + icon("check") + 'Active</span>' : sk.status === "needs-attention" ? '<span class="pill pill-warning">' + icon("alertTriangle") + 'Needs attention</span>' : '<span class="pill pill-neutral">Draft</span>') +
+        '</div>' +
+        '<div style="display:flex;gap:8px"><button class="btn btn-secondary" data-action="open-upload">' + icon("upload") + 'Upload documents</button></div>' +
+      '</div>' +
+      '<div class="tabs">' +
+        tabBtn("documents", "Documents", docs.length) +
+        tabBtn("analytics", "Analytics", null) +
+        tabBtn("senders", "Senders & templates", proposedCount > 0 ? proposedCount : null) +
+        (training ? tabBtn("training", "Training documents", null) : "") +
+      '</div>';
+    wrap.appendChild(head);
+
+    var body = el('<div class="page page-wide"></div>');
+    if (S.tab === "documents") body.appendChild(renderDocumentsTab(sk, docs));
+    else if (S.tab === "analytics") body.appendChild(renderAnalyticsTab(sk));
+    else if (S.tab === "senders") body.appendChild(renderSendersTab(sk, senders));
+    else if (S.tab === "training") body.appendChild(renderTrainingTab(sk, training));
+    wrap.appendChild(body);
+
+    bindActions(wrap);
+    return wrap;
+  }
+  function tabBtn(id, label, count) {
+    return '<button class="tab-btn ' + (S.tab === id ? "active" : "") + '" data-action="set-tab" data-tab="' + id + '">' + label +
+      (count !== null && count !== undefined ? ' <span class="tab-count">' + count + '</span>' : '') + '</button>';
+  }
+
+  function effectiveTemplateStatus(skillId, senderId, t) {
+    var key = skillId + "|" + senderId + "|" + t.field;
+    return S.senderTemplateStatus[key] || t.status;
+  }
+
+  /* ---- Documents tab ---- */
+  function renderDocumentsTab(sk, docs) {
+    var wrap = el('<div></div>');
+    var counts = { all: docs.length, needs_review: 0, approved: 0, failed_export: 0, quarantined: 0, processing: 0 };
+    docs.forEach(function (d) { var st = docState(d); if (counts[st] !== undefined) counts[st]++; });
+
+    var toolbar = el('<div class="toolbar"></div>');
+    toolbar.innerHTML =
+      chipHtml("all", "All", counts.all) + chipHtml("needs_review", "Needs review", counts.needs_review) +
+      chipHtml("approved", "Approved", counts.approved) + chipHtml("failed_export", "Export failed", counts.failed_export) +
+      chipHtml("quarantined", "Quarantined", counts.quarantined) +
+      '<div class="search-box" style="margin-left:auto">' + icon("search") + '<input placeholder="Search PO number or sender" id="doc-search" value="' + S.docSearch + '"/></div>' +
+      '<button class="chip" data-action="noop">' + icon("filter") + 'More filters</button>';
+    wrap.appendChild(toolbar);
+
+    var filtered = docs.filter(function (d) {
+      var st = docState(d);
+      if (S.docFilter !== "all" && st !== S.docFilter) return false;
+      if (S.docSearch && (d.sender + d.po).toLowerCase().indexOf(S.docSearch.toLowerCase()) === -1) return false;
+      return true;
+    });
+
+    if (docs.length === 0) {
+      wrap.appendChild(el(
+        '<div class="empty-state"><div class="icon-wrap">' + icon("doc") + '</div>' +
+        '<div class="heading-md">No documents yet</div>' +
+        '<p class="body-sm" style="max-width:340px">This skill is in draft and hasn’t received any purchase orders. Upload a few sample documents to test extraction before publishing.</p>' +
+        '<button class="btn btn-primary" style="margin-top:6px" data-action="open-upload">' + icon("upload") + 'Upload documents</button></div>'
+      ));
+      bindActions(wrap);
+      return wrap;
+    }
+    if (filtered.length === 0) {
+      wrap.appendChild(el(
+        '<div class="empty-state"><div class="icon-wrap">' + icon("search") + '</div>' +
+        '<div class="heading-md">No documents match these filters</div>' +
+        '<p class="body-sm">Try a different status or clear your search.</p>' +
+        '<button class="btn btn-secondary" style="margin-top:6px" data-action="clear-doc-filters">Clear filters</button></div>'
+      ));
+      bindActions(wrap);
+      return wrap;
+    }
+
+    var tw = el('<div class="table-wrap"></div>');
+    var table = el(
+      '<table><thead><tr>' +
+        '<th>Document</th><th>Sender</th><th>Received</th><th>State</th><th>Risk</th><th>Issues</th><th>Reviewer</th><th>SLA</th><th>Export</th>' +
+      '</tr></thead><tbody></tbody></table>'
+    );
+    var tbody = table.querySelector("tbody");
+    filtered.forEach(function (d) {
+      var st = docState(d);
+      var row = el('<tr class="row-clickable" data-action="open-review" data-doc="' + d.id + '" data-skill="' + sk.id + '"></tr>');
+      row.innerHTML =
+        '<td><div class="doc-ref">' + d.ref + '</div><div class="doc-sub">' + sk.name.replace("PO Extraction — ", "") + '</div></td>' +
+        '<td>' + d.sender + '</td>' +
+        '<td class="num">' + d.received + '</td>' +
+        '<td>' + statePill(st) + '</td>' +
+        '<td>' + riskPill(d.risk) + '</td>' +
+        '<td class="num">' + (d.issues > 0 ? '<span style="color:var(--warning);font-weight:700">' + d.issues + '</span>' : '<span class="faint">0</span>') + '</td>' +
+        '<td>' + (d.reviewer === "Unassigned" ? '<span class="faint">Unassigned</span>' : d.reviewer) + '</td>' +
+        '<td class="num">' + (d.sla === "SLA breached" ? '<span style="color:var(--critical);font-weight:700">' + d.sla + '</span>' : d.sla) + '</td>' +
+        '<td>' + exportPill(d.exportState) + '</td>';
+      tbody.appendChild(row);
+    });
+    tw.appendChild(table);
+    wrap.appendChild(tw);
+    bindActions(wrap);
+    return wrap;
+  }
+  function chipHtml(id, label, count) {
+    return '<button class="chip ' + (S.docFilter === id ? "active" : "") + '" data-action="set-doc-filter" data-filter="' + id + '">' + label + ' <span class="num">' + count + '</span></button>';
+  }
+  function exportPill(state) {
+    if (state === "delivered") return '<span class="pill pill-success">Delivered</span>';
+    if (state === "failed") return '<span class="pill pill-critical">Failed</span>';
+    if (state === "pending") return '<span class="pill pill-neutral">Pending</span>';
+    return '<span class="pill pill-neutral">—</span>';
+  }
+
+  /* ---- Analytics tab ---- */
+  function renderAnalyticsTab(sk) {
+    var wrap = el('<div></div>');
+    var tiles = el('<div class="tiles"></div>');
+    var metrics = [
+      { label: "Straight-through rate", value: (sk.strRate || 0) + "%", trend: sk.strTrend, sub: "vs. previous 30 days" },
+      { label: "Avg. review time", value: "4m 12s", trend: -8, sub: "per document" },
+      { label: "Export success rate", value: "98.2%", trend: 0.4, sub: "last 30 days" },
+      { label: "Critical-field accuracy", value: "96.7%", trend: 1.1, sub: "gold-evaluated" }
+    ];
+    metrics.forEach(function (m) {
+      var t = el('<div class="tile"></div>');
+      var trendHtml = m.trend === 0 ? '<span class="faint">Flat</span>' : (m.trend > 0 ? '<span class="trend-up">↑ ' + m.trend + '</span>' : '<span class="trend-down">↓ ' + Math.abs(m.trend) + '</span>');
+      t.innerHTML = '<div class="label muted">' + m.label + '</div><div class="tile-value num">' + m.value + '</div><div class="tile-trend">' + trendHtml + ' <span class="caption">' + m.sub + '</span></div>';
+      tiles.appendChild(t);
+    });
+    wrap.appendChild(tiles);
+
+    var chartPanel = el('<div class="panel"></div>');
+    var vals = [62, 71, 58, 80, 74, 88, 84, 91, 79, 95, 88, 102];
+    var max = Math.max.apply(null, vals);
+    var bars = vals.map(function (v, i) {
+      return '<div class="bar-col"><div class="bar ' + (i === vals.length - 1 ? "emph" : "") + '" style="height:' + Math.round((v / max) * 120) + 'px"></div><span class="caption">' + (i + 1) + '</span></div>';
+    }).join("");
+    chartPanel.innerHTML =
+      '<div class="panel-head"><span class="heading-md">Documents processed per week</span><span class="caption">Last 12 weeks</span></div>' +
+      '<div class="panel-body"><div class="bars">' + bars + '</div></div>';
+    wrap.appendChild(chartPanel);
+
+    var senderPanel = el('<div class="panel"></div>');
+    var senders = DATA.senders[sk.id] || [];
+    var rowsHtml = senders.length ? senders.map(function (s) {
+      var acc = 80 + (s.docs % 18);
+      return '<div class="sender-perf-row"><span class="body-sm" style="font-weight:600">' + s.name + '</span>' +
+        '<span class="num body-sm">' + s.docs + ' docs</span>' +
+        '<div><div class="meter"><div class="meter-fill" style="width:' + acc + '%"></div></div></div>' +
+        '<span class="num body-sm" style="text-align:right">' + acc + '% accuracy</span></div>';
+    }).join("") : '<div class="body-sm muted" style="padding:12px 0">No sender activity yet.</div>';
+    senderPanel.innerHTML = '<div class="panel-head"><span class="heading-md">Quality by sender</span><span class="caption">Critical-field accuracy</span></div><div class="panel-body">' + rowsHtml + '</div>';
+    wrap.appendChild(senderPanel);
+
+    var costPanel = el('<div class="panel"></div>');
+    costPanel.innerHTML =
+      '<div class="panel-head"><span class="heading-md">Cost & processing path</span><span class="caption">Last 30 days</span></div>' +
+      '<div class="panel-body tiles" style="padding:0;grid-template-columns:repeat(3,1fr)">' +
+        metricMini("Cost per accepted order", "£0.14") +
+        metricMini("Native text path", "71%") +
+        metricMini("OCR fallback path", "29%") +
+      '</div>';
+    wrap.appendChild(costPanel);
+
+    bindActions(wrap);
+    return wrap;
+  }
+  function metricMini(label, value) {
+    return '<div style="padding:8px 0"><div class="label muted">' + label + '</div><div class="tile-value num" style="font-size:18px">' + value + '</div></div>';
+  }
+
+  /* ---- Senders & templates tab ---- */
+  function renderSendersTab(sk, senders) {
+    var wrap = el('<div></div>');
+    var intro = el('<div style="padding:18px 24px 0"><p class="body-sm muted" style="max-width:640px">When a reviewer corrects a field, they can propose it as a layout hint for that sender. Nothing changes for future documents until a supervisor reviews and publishes the proposal here.</p></div>');
+    wrap.appendChild(intro);
+
+    if (senders.length === 0) {
+      wrap.appendChild(el('<div class="empty-state"><div class="icon-wrap">' + icon("users") + '</div><div class="heading-md">No senders yet</div><p class="body-sm">Sender templates appear once documents have been processed and reviewed.</p></div>'));
+      return wrap;
+    }
+
+    senders.forEach(function (s) {
+      var open = !!S.openSenders[s.id];
+      var card = el('<div class="sender-card"></div>');
+      var proposed = s.templates.filter(function (t) { return effectiveTemplateStatus(sk.id, s.id, t) === "proposed"; }).length;
+      var published = s.templates.filter(function (t) { return effectiveTemplateStatus(sk.id, s.id, t) === "published"; }).length;
+      var head = el('<div class="sender-head" data-action="toggle-sender" data-sender="' + s.id + '"></div>');
+      head.innerHTML =
+        '<div class="sender-id"><div class="sender-avatar">' + s.name.slice(0, 2).toUpperCase() + '</div>' +
+          '<div><div class="body-md" style="font-weight:650">' + s.name + '</div><div class="caption">' + s.domain + ' · ' + s.docs + ' documents</div></div></div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          (proposed > 0 ? '<span class="pill pill-warning">' + proposed + ' proposed</span>' : '') +
+          (published > 0 ? '<span class="pill pill-success">' + published + ' published</span>' : '') +
+          (s.templates.length === 0 ? '<span class="pill pill-neutral">No hints yet</span>' : '') +
+          icon(open ? "chevronDown" : "chevronRight", "faint") +
+        '</div>';
+      card.appendChild(head);
+
+      if (open) {
+        var anchors = el('<div class="sender-anchors"></div>');
+        if (s.templates.length === 0) {
+          anchors.innerHTML = '<div class="body-sm muted" style="padding:14px 18px">No field hints proposed for this sender yet.</div>';
+        } else {
+          s.templates.forEach(function (t) {
+            var status = effectiveTemplateStatus(sk.id, s.id, t);
+            var row = el('<div class="anchor-row"></div>');
+            var statusHtml = status === "published" ? '<span class="pill pill-success">' + icon("check") + 'Published</span>' :
+              status === "proposed" ? '<span class="pill pill-warning">' + icon("alertTriangle") + 'Proposed</span>' :
+              '<span class="pill pill-neutral">Rejected</span>';
+            var main = el('<div style="flex:1"></div>');
+            main.innerHTML =
+              '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="body-md" style="font-weight:650">' + t.field + '</span>' + statusHtml + '</div>' +
+              '<div class="body-sm muted">' + t.anchor + '</div>' +
+              (status === "published" ?
+                '<div class="caption" style="margin-top:6px">Published ' + t.publishedAt + ' · ' + t.matchRate + '% match rate since publish · source: ' + t.sourceDoc + '</div>' :
+                '<div class="caption" style="margin-top:6px">Proposed ' + t.proposedAt + ' by ' + t.proposedBy + ' · source: ' + t.sourceDoc + '</div>');
+            if (status === "proposed") {
+              main.innerHTML += '<div class="anchor-compare">' +
+                '<div class="compare-box"><div class="compare-label">Before (original extraction)</div><div class="body-sm">Not located — field left blank, routed to review</div></div>' +
+                '<div class="compare-box after"><div class="compare-label">After (reviewer correction)</div><div class="body-sm">' + (t.field === "Payment terms" ? "N30" : t.field === "Ship-to" ? "Warehouse 3, Trafford Park, Manchester M17 1EH" : "11 Jul 2026") + '</div></div>' +
+              '</div>';
+            }
+            row.appendChild(main);
+            if (status === "proposed") {
+              var actions = el('<div style="display:flex;flex-direction:column;gap:6px;flex:none"></div>');
+              actions.innerHTML =
+                '<button class="btn btn-primary btn-sm" data-action="publish-template" data-skill="' + sk.id + '" data-sender="' + s.id + '" data-field="' + t.field + '">' + icon("check") + 'Publish</button>' +
+                '<button class="btn btn-subtle btn-sm" data-action="reject-template" data-skill="' + sk.id + '" data-sender="' + s.id + '" data-field="' + t.field + '">Reject</button>';
+              row.appendChild(actions);
+            }
+            anchors.appendChild(row);
+          });
+        }
+        card.appendChild(anchors);
+      }
+      wrap.appendChild(card);
+    });
+    bindActions(wrap);
+    return wrap;
+  }
+
+  /* ---- Training tab ---- */
+  function renderTrainingTab(sk, training) {
+    var wrap = el('<div style="padding:20px 24px"></div>');
+    var passRate = Math.round((training.passing / training.total) * 100);
+    var panel = el('<div class="panel" style="margin:0"></div>');
+    panel.innerHTML =
+      '<div class="panel-head"><span class="heading-md">Gold evaluation set</span><button class="btn btn-secondary btn-sm" data-action="run-eval">' + icon("sparkle") + 'Run evaluation</button></div>' +
+      '<div class="panel-body">' +
+        '<div class="tiles" style="padding:0;grid-template-columns:repeat(3,1fr);margin-bottom:16px">' +
+          metricMini("Reference documents", training.total + "") +
+          metricMini("Passing", training.passing + " / " + training.total) +
+          metricMini("Pass rate", passRate + "%") +
+        '</div>' +
+        '<p class="caption">Last run ' + training.lastRun + '. Reference documents have verified ground truth and are used to catch regressions before any schema, rule, or template change is published — they are never used to silently retrain extraction behavior.</p>' +
+      '</div>';
+    wrap.appendChild(panel);
+
+    var listPanel = el('<div class="panel"></div>');
+    var rows = [];
+    for (var i = 1; i <= 6; i++) {
+      var passed = i <= 5;
+      rows.push('<tr><td>Gold-' + String(i).padStart(3, "0") + '</td><td class="muted">Representative PO, ' + (i % 2 ? "native PDF" : "scanned") + '</td><td>' + (passed ? '<span class="pill pill-success">' + icon("check") + 'Pass</span>' : '<span class="pill pill-critical">' + icon("x") + 'Regressed</span>') + '</td></tr>');
+    }
+    listPanel.innerHTML = '<div class="panel-head"><span class="heading-md">Sample results</span></div><div class="table-wrap" style="padding:0 18px 16px"><table style="min-width:0"><thead><tr><th>Document</th><th>Type</th><th>Result</th></tr></thead><tbody>' + rows.join("") + '</tbody></table></div>';
+    wrap.appendChild(listPanel);
+    bindActions(wrap);
+    return wrap;
+  }
+
+  /* ============================= UPLOAD MODAL ============================= */
+  function renderUploadModal() {
+    var overlay = el('<div class="overlay" data-action="close-upload-bg"></div>');
+    var modal = el('<div class="modal"></div>');
+    var steps = ["Select stream", "Add files", "Result"];
+    var body = "";
+    if (S.uploadStep === 1) {
+      body = '<div class="field-row"><label>Skill</label><select><option>' + (findSkill(S.currentSkillId) || DATA.skills[0]).name + '</option></select></div>' +
+        '<div class="field-row"><label>Source</label><select><option>Manual upload</option><option>Email intake</option><option>API</option></select></div>';
+    } else if (S.uploadStep === 2) {
+      body = '<div class="dropzone">' + icon("upload") + '<div class="body-sm" style="margin-top:8px;font-weight:600">Drag files here or browse</div><div class="caption" style="margin-top:4px">PDF, JPEG, PNG, TIFF · up to 50 files</div></div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' +
+          uploadRow("PO_4471301_Acme.pdf", "1.2 MB", "100%") +
+          uploadRow("PO_4471302_Northfield.pdf", "0.8 MB", "64%") +
+        '</div>';
+    } else {
+      body = '<div style="display:flex;flex-direction:column;gap:10px">' +
+        resultRow("Uploaded", 2, "success") + resultRow("Duplicate", 0, "neutral") + resultRow("Rejected", 0, "critical") + resultRow("Quarantined", 0, "warning") +
+        '<p class="caption">2 documents registered and queued for processing. This does not mean they were processed successfully — check the Documents tab for state.</p>' +
+      '</div>';
+    }
+    modal.innerHTML =
+      '<div class="modal-head"><span class="heading-md">Upload documents</span><button class="btn-icon" data-action="close-upload">' + icon("x") + '</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="step-dots">' + steps.map(function (_, i) { return '<span class="step-dot ' + (i + 1 === S.uploadStep ? "active" : "") + '"></span>'; }).join("") + '</div>' +
+        body +
+      '</div>' +
+      '<div class="modal-foot">' +
+        (S.uploadStep > 1 ? '<button class="btn btn-subtle" data-action="upload-back">Back</button>' : '') +
+        '<div style="flex:1"></div>' +
+        (S.uploadStep < 3 ? '<button class="btn btn-primary" data-action="upload-next">Continue</button>' : '<button class="btn btn-primary" data-action="close-upload">Done</button>') +
+      '</div>';
+    overlay.appendChild(modal);
+    modal.addEventListener("click", function (e) { e.stopPropagation(); });
+    bindActions(overlay);
+    return overlay;
+  }
+  function uploadRow(name, size, pct) {
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' + icon("doc", "faint") +
+      '<div style="flex:1"><div class="body-sm" style="font-weight:600">' + name + '</div><div class="caption">' + size + '</div></div>' +
+      '<div style="width:70px"><div class="meter"><div class="meter-fill" style="width:' + pct + '"></div></div></div>' +
+      '<span class="caption num">' + pct + '</span></div>';
+  }
+  function resultRow(label, count, tone) {
+    var cls = tone === "success" ? "pill-success" : tone === "critical" ? "pill-critical" : tone === "warning" ? "pill-warning" : "pill-neutral";
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:7px"><span class="body-sm">' + label + '</span><span class="pill ' + cls + '">' + count + '</span></div>';
+  }
+
+  /* ============================= CREATE SKILL MODAL ============================= */
+  function renderCreateSkillModal() {
+    var overlay = el('<div class="overlay" data-action="close-create-bg"></div>');
+    var modal = el('<div class="modal"></div>');
+    var steps = ["Name & type", "Sample documents", "Review"];
+    var body = "";
+    if (S.createStep === 1) {
+      body = '<div class="field-row"><label>Skill name</label><input type="text" value="PO Extraction — France" id="new-skill-name"/></div>' +
+        '<div class="field-row"><label>Document type</label><select><option>Purchase order</option><option disabled>Invoice (coming later)</option></select></div>' +
+        '<div class="field-row"><label>Base process</label><select><option>Sales order automation (default schema)</option></select></div>';
+    } else if (S.createStep === 2) {
+      body = '<div class="dropzone">' + icon("upload") + '<div class="body-sm" style="margin-top:8px;font-weight:600">Add 3–5 representative purchase orders</div><div class="caption" style="margin-top:4px">Used to test the default schema before publishing</div></div>' +
+        '<p class="caption">You can skip this and add documents later — the skill will start in draft.</p>';
+    } else {
+      body = '<div style="display:flex;flex-direction:column;gap:10px">' +
+        '<div class="body-sm">Skill <strong>PO Extraction — France</strong> will be created in <span class="pill pill-neutral">Draft</span> status with the default sales-order schema inherited from the base process.</div>' +
+        '<p class="caption">You can configure fields, rules, and routing before publishing it for live traffic.</p></div>';
+    }
+    modal.innerHTML =
+      '<div class="modal-head"><span class="heading-md">Create a skill</span><button class="btn-icon" data-action="close-create">' + icon("x") + '</button></div>' +
+      '<div class="modal-body"><div class="step-dots">' + steps.map(function (_, i) { return '<span class="step-dot ' + (i + 1 === S.createStep ? "active" : "") + '"></span>'; }).join("") + '</div>' + body + '</div>' +
+      '<div class="modal-foot">' +
+        (S.createStep > 1 ? '<button class="btn btn-subtle" data-action="create-back">Back</button>' : '') +
+        '<div style="flex:1"></div>' +
+        (S.createStep < 3 ? '<button class="btn btn-primary" data-action="create-next">Continue</button>' : '<button class="btn btn-primary" data-action="create-finish">Create skill</button>') +
+      '</div>';
+    overlay.appendChild(modal);
+    modal.addEventListener("click", function (e) { e.stopPropagation(); });
+    bindActions(overlay);
+    return overlay;
+  }
+
+  /* ============================= MANAGE (secondary admin) ============================= */
+  function renderManage() {
+    var wrap = el('<div></div>');
+    var head = el('<div class="workspace-head"></div>');
+    head.innerHTML =
+      '<div class="breadcrumb"><a data-action="go-skills" href="#">Skills</a>' + icon("chevronRight") + '<span>Manage</span></div>' +
+      '<div class="workspace-title-row"><h1 class="heading-xl">Manage</h1></div>';
+    wrap.appendChild(head);
+    var nav = el('<div class="manage-nav"></div>');
+    var items = [["catalogs", "Catalogs"], ["integrations", "Integrations"], ["orgAnalytics", "Org analytics"], ["settings", "Settings"]];
+    nav.innerHTML = items.map(function (it) {
+      return '<button class="tab-btn ' + (S.manageTab === it[0] ? "active" : "") + '" data-action="set-manage-tab" data-tab="' + it[0] + '">' + it[1] + '</button>';
+    }).join("");
+    wrap.appendChild(nav);
+
+    var body = el('<div class="page"></div>');
+    if (S.manageTab === "catalogs") body.appendChild(renderCatalogs());
+    else if (S.manageTab === "integrations") body.appendChild(renderIntegrations());
+    else if (S.manageTab === "orgAnalytics") body.appendChild(renderOrgAnalytics());
+    else body.appendChild(renderSettingsArea());
+    wrap.appendChild(body);
+    bindActions(wrap);
+    return wrap;
+  }
+
+  function renderCatalogs() {
+    var wrap = el('<div></div>');
+    var rows = [
+      ["Customers", "CSV import", "v14", "412 records", "2 days ago", "3 skills"],
+      ["Ship-to addresses", "CSV import", "v9", "588 records", "5 days ago", "3 skills"],
+      ["Materials", "XLSX import", "v22", "3,140 records", "Today", "2 skills"]
+    ];
+    var tw = el('<div class="table-wrap" style="padding:20px 0"></div>');
+    tw.appendChild(el('<table><thead><tr><th>Catalog</th><th>Source</th><th>Version</th><th>Records</th><th>Freshness</th><th>Used by</th></tr></thead><tbody>' +
+      rows.map(function (r) { return '<tr>' + r.map(function (c) { return '<td>' + c + '</td>'; }).join("") + '</tr>'; }).join("") +
+      '</tbody></table>'));
+    wrap.appendChild(tw);
+    return wrap;
+  }
+  function renderIntegrations() {
+    var wrap = el('<div style="padding:20px 0;display:flex;flex-direction:column;gap:14px"></div>');
+    wrap.innerHTML =
+      '<div class="panel" style="margin:0"><div class="panel-head"><span class="heading-md">ERP webhook — Production</span><span class="pill pill-success">' + icon("check") + 'Healthy</span></div>' +
+        '<div class="panel-body body-sm muted">Signed webhook delivery to customer-hosted endpoint. 1,204 deliveries in the last 30 days, 98.2% success rate.</div></div>' +
+      '<div class="panel" style="margin:0"><div class="panel-head"><span class="heading-md">Canonical JSON export — DACH</span><span class="pill pill-critical">' + icon("x") + 'Delivery failing</span></div>' +
+        '<div class="panel-body"><p class="body-sm muted">Last attempt rejected customer code <strong>DE-2291</strong>. Approved order has not been changed. Reference: EXP-7H2K.</p>' +
+        '<button class="btn btn-secondary btn-sm" style="margin-top:10px" data-action="retry-delivery">' + icon("reopen") + 'Retry delivery</button></div></div>';
+    bindActions(wrap);
+    return wrap;
+  }
+  function renderOrgAnalytics() {
+    var wrap = el('<div class="tiles" style="padding:20px 0"></div>');
+    [["Documents this month", "1,842"], ["Org-wide straight-through", "83%"], ["Avg. export success", "97.6%"], ["Open review backlog", "20"]].forEach(function (m) {
+      wrap.appendChild(el('<div class="tile"><div class="label muted">' + m[0] + '</div><div class="tile-value num">' + m[1] + '</div></div>'));
+    });
+    return wrap;
+  }
+  function renderSettingsArea() {
+    var wrap = el('<div style="padding:20px 0;display:flex;flex-direction:column;gap:14px"></div>');
+    wrap.innerHTML =
+      '<div class="panel" style="margin:0"><div class="panel-head"><span class="heading-md">Organization profile</span></div>' +
+        '<div class="panel-body body-sm"><strong>' + DATA.org.name + '</strong><br/><span class="muted">Plan: ' + DATA.org.plan + ' · Environment: ' + DATA.org.env + '</span></div></div>' +
+      '<div class="panel" style="margin:0"><div class="panel-head"><span class="heading-md">Users & roles</span><button class="btn btn-secondary btn-sm" data-action="noop">' + icon("plus") + 'Invite</button></div>' +
+        '<div class="table-wrap" style="padding:0 18px 16px"><table style="min-width:0"><thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead><tbody>' +
+          '<tr><td>Priyansh Chordia</td><td>Reviewer</td><td><span class="pill pill-success">Active</span></td></tr>' +
+          '<tr><td>Sade Okafor</td><td>Supervisor</td><td><span class="pill pill-success">Active</span></td></tr>' +
+          '<tr><td>Marius Bauer</td><td>Reviewer</td><td><span class="pill pill-success">Active</span></td></tr>' +
+          '<tr><td>Alex Whitfield</td><td>Integration admin</td><td><span class="pill pill-neutral">Invited</span></td></tr>' +
+        '</tbody></table></div></div>' +
+      '<div class="panel" style="margin:0"><div class="panel-head"><span class="heading-md">API credentials</span></div>' +
+        '<div class="panel-body body-sm muted">' + icon("key") + ' 2 active credentials · last rotated 41 days ago</div></div>';
+    return wrap;
+  }
+
+  /* ============================= REVIEW STUDIO ============================= */
+  function renderReviewStudio() {
+    var wrap = el('<div class="studio"></div>');
+    var head = el('<div class="studio-head"></div>');
+    var allResolved = REASONS.every(function (r) { return S.resolved[r.id]; });
+    head.innerHTML =
+      '<button class="btn-icon" data-action="close-review" title="Back to queue">' + icon("arrowLeft") + '</button>' +
+      '<div class="studio-head-meta"><span class="body-md" style="font-weight:650">' + REVIEW_DOC.ref + ' · ' + REVIEW_DOC.sender + '</span>' +
+        '<span class="caption">' + REVIEW_DOC.skillName + ' · ' + REVIEW_DOC.sla + ' · Task ' + REVIEW_DOC.position + '</span></div>' +
+      '<div style="flex:1"></div>' +
+      '<span class="caption" id="save-state-label">' + saveStateLabel() + '</span>' +
+      '<button class="btn-icon" data-action="toggle-kbd" title="Keyboard shortcuts">' + icon("question") + '</button>' +
+      '<button class="btn btn-destructive btn-sm" data-action="noop">Reject / escalate</button>' +
+      '<button class="btn btn-primary btn-sm" data-action="approve-doc" ' + (allResolved ? "" : "disabled") + '>' + icon("check") + 'Approve</button>';
+    wrap.appendChild(head);
+
+    var body = el('<div class="studio-body"></div>');
+    body.appendChild(renderThumbRail());
+    body.appendChild(renderDocViewer());
+    body.appendChild(renderFieldPanel());
+    wrap.appendChild(body);
+
+    if (S.kbdLegendOpen) wrap.appendChild(renderKbdLegend());
+    bindActions(wrap);
+    return wrap;
+  }
+  function saveStateLabel() {
+    if (S.saveState === "saving") return "Saving…";
+    return "Saved";
+  }
+
+  function renderThumbRail() {
+    var rail = el('<div class="thumb-rail"></div>');
+    rail.innerHTML =
+      '<div class="thumb active">1</div><div class="thumb">2</div>' +
+      '<div class="caption" style="text-align:center">Page 1 of 2</div>';
+    return rail;
+  }
+
+  function renderDocViewer() {
+    var viewer = el('<div class="doc-viewer"></div>');
+    var toolbar = el(
+      '<div class="doc-toolbar"><div class="doc-toolbar-inner">' +
+      '<button class="btn-icon btn-sm" data-action="zoom-out">' + icon("zoomOut") + '</button>' +
+      '<span class="caption num" style="width:40px;text-align:center">' + Math.round(S.zoom * 100) + '%</span>' +
+      '<button class="btn-icon btn-sm" data-action="zoom-in">' + icon("zoomIn") + '</button>' +
+      '</div></div>'
+    );
+    var paperWrap = el('<div></div>');
+    var paper = el('<div class="paper" style="transform:scale(' + S.zoom + ');transform-origin:top center"></div>');
+    paper.style.padding = "0";
+    paper.appendChild(buildPaperContent());
+    paperWrap.appendChild(paper);
+
+    var container = el('<div></div>');
+    container.appendChild(toolbar);
+    container.appendChild(paperWrap);
+    viewer.appendChild(container);
+    return viewer;
+  }
+
+  function buildPaperContent() {
+    var doc = el('<div style="position:relative;width:100%;height:100%;padding:0"></div>');
+    doc.innerHTML =
+      '<div style="position:absolute;top:20px;left:20px;width:300px"><div style="font-size:19px;font-weight:700;letter-spacing:0.02em">ACME INDUSTRIAL SUPPLY LTD</div><div style="font-size:11px;color:#555;margin-top:3px">14 Foundry Road, Leeds LS9 8AH, United Kingdom</div></div>' +
+      '<div style="position:absolute;top:20px;left:404px;width:250px;text-align:right;font-size:20px;font-weight:700;letter-spacing:0.03em">PURCHASE ORDER</div>' +
+      '<div style="position:absolute;top:66px;left:404px;width:250px;text-align:right;font-size:12px;color:#333">PO Number: <strong>4471209</strong></div>' +
+      '<div style="position:absolute;top:90px;left:404px;width:250px;text-align:right;font-size:12px;color:#333">Order Date: <span style="opacity:.55">11 Jul 2026</span></div>' +
+      '<div style="position:absolute;top:114px;left:404px;width:250px;text-align:right;font-size:12px;color:#333">Requested Delivery: <strong>22 Jul 2026</strong></div>' +
+      '<div style="position:absolute;top:140px;left:404px;width:250px;text-align:right;font-size:11px;color:#666">Buyer: J. Fenwick, Procurement</div>' +
+      '<div style="position:absolute;top:92px;left:22px;width:260px;font-size:11px;color:#333;line-height:1.5"><strong style="font-size:12px">Bill To:</strong><br/>Acme Industrial Supply Ltd<br/>14 Foundry Road<br/>Leeds LS9 8AH, UK</div>' +
+      '<div style="position:absolute;top:178px;left:22px;width:260px;font-size:11px;color:#333;line-height:1.5"><strong style="font-size:12px">Deliver To:</strong><br/>Acme Industrial — Warehouse 3<br/>Trafford Park<br/>Manchester M17 1EH, UK</div>' +
+      '<div style="position:absolute;top:284px;left:22px;width:200px;font-size:11px;color:#999">Terms: <span style="opacity:.4">(not printed)</span></div>' +
+      '<div style="position:absolute;top:284px;left:240px;width:90px;font-size:11px;color:#333">Currency: GBP</div>' +
+      '<div style="position:absolute;top:284px;left:350px;width:120px;font-size:11px;color:#333">Incoterms: DAP</div>' +
+      buildLineItemsHtml() +
+      '<div style="position:absolute;top:616px;left:424px;width:234px;font-size:11px;color:#333;line-height:1.7">' +
+        '<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>£1,071.60</span></div>' +
+        '<div style="display:flex;justify-content:space-between"><span>Freight</span><span>£25.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between"><span>Tax (20%)</span><span>£219.32</span></div>' +
+        '<div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid #ccc;margin-top:4px;padding-top:4px"><span>Total</span><span>£1,315.92</span></div>' +
+      '</div>' +
+      '<div class="stamp" style="top:52px;left:380px">RECEIVED 11/07</div>';
+
+    Object.keys(REVIEW_DOC.regions).forEach(function (key) {
+      var r = REVIEW_DOC.regions[key];
+      var reason = REASONS.filter(function (rr) { return rr.id === key; })[0];
+      var cls = "paper-region";
+      if (reason) cls += " issue-" + reason.level;
+      if (S.activeReason === key) cls += " hl";
+      var region = el('<div class="' + cls + '" data-action="select-region" data-field="' + key + '" style="top:' + r.top + 'px;left:' + r.left + 'px;width:' + r.width + 'px;height:' + r.height + 'px"></div>');
+      doc.appendChild(region);
+    });
+    return doc;
+  }
+  function buildLineItemsHtml() {
+    var rows = LINE_ITEMS.map(function (li) {
+      var priceStr = li.price === null ? '<span style="opacity:.5">?</span>' : fmtGBP(li.price);
+      var totalStr = li.total === null ? '<span style="opacity:.5">?</span>' : fmtGBP(li.total);
+      return '<tr' + (li.flag ? ' style="background:rgba(154,98,0,0.12)"' : '') + '>' +
+        '<td style="padding:4px 6px">' + li.line + '</td><td style="padding:4px 6px">' + li.item + '</td>' +
+        '<td style="padding:4px 6px">' + li.desc + '</td><td style="padding:4px 6px;text-align:right">' + li.qty + '</td>' +
+        '<td style="padding:4px 6px">' + li.uom + '</td><td style="padding:4px 6px;text-align:right">' + priceStr + '</td>' +
+        '<td style="padding:4px 6px;text-align:right">' + totalStr + '</td></tr>';
+    }).join("");
+    return '<div style="position:absolute;top:322px;left:22px;width:636px;font-size:10.5px">' +
+      '<table style="width:100%;border-collapse:collapse"><thead><tr style="border-bottom:1.5px solid #333;font-weight:700">' +
+      '<td style="padding:4px 6px">Line</td><td style="padding:4px 6px">Item</td><td style="padding:4px 6px">Description</td><td style="padding:4px 6px;text-align:right">Qty</td><td style="padding:4px 6px">UOM</td><td style="padding:4px 6px;text-align:right">Unit price</td><td style="padding:4px 6px;text-align:right">Total</td>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function renderFieldPanel() {
+    var panel = el('<div style="display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--border);background:var(--surface)"></div>');
+    var nav = el('<div class="reason-nav"></div>');
+    var navHead = el('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"></div>');
+    navHead.innerHTML = '<span class="label muted">Review reasons</span>' +
+      '<button class="link-btn" style="font-size:11px" data-action="toggle-all-fields">' + (S.showAllFields ? "Show flagged only" : "Show all fields") + '</button>';
+    nav.appendChild(navHead);
+    REASONS.forEach(function (r) {
+      var resolved = S.resolved[r.id];
+      var item = el('<div class="reason-item ' + (S.activeReason === r.id ? "active" : "") + '" data-action="select-reason" data-field="' + r.id + '"></div>');
+      item.innerHTML =
+        '<span class="reason-dot ' + (resolved ? "resolved" : r.level) + '"></span>' +
+        '<div><div class="body-sm" style="font-weight:600">' + r.title + (resolved ? ' <span class="caption" style="color:var(--success)">· resolved</span>' : '') + '</div>' +
+        '<div class="caption">' + r.desc + '</div></div>';
+      nav.appendChild(item);
+    });
+    panel.appendChild(nav);
+
+    var scroll = el('<div class="field-panel-scroll"></div>');
+    var visibleFields = S.showAllFields ? FIELDS : FIELDS.filter(function (f) { return REASONS.some(function (r) { return r.id === f.id; }); });
+    visibleFields.forEach(function (f) { scroll.appendChild(renderFieldCard(f)); });
+    scroll.appendChild(renderLineItemGridPanel());
+    panel.appendChild(scroll);
+
+    panel.appendChild(renderApprovalBar());
+    return panel;
+  }
+
+  function renderFieldCard(f) {
+    var resolved = S.resolved[f.id];
+    var flaggedClass = (!resolved && f.status !== "ok") ? "flagged " + f.status : "";
+    var card = el('<div class="field-card ' + flaggedClass + '" data-field-card="' + f.id + '"></div>');
+    var val = S.fieldValues[f.id] !== undefined ? S.fieldValues[f.id] : f.value;
+    var confHtml = f.status === "critical" ? '<span class="pill pill-critical">' + f.confidence + '% confidence</span>' :
+      f.status === "warning" ? '<span class="pill pill-warning">' + (f.confidence || "low") + (typeof f.confidence === "number" ? "% confidence" : "") + '</span>' :
+      '<span class="pill pill-success">' + f.confidence + '% confidence</span>';
+    card.innerHTML =
+      '<div class="field-card-top"><div class="field-label-row"><span class="body-sm" style="font-weight:650">' + f.label + '</span>' + (f.critical ? '<span class="pill pill-accent">Critical</span>' : '') + '</div>' + confHtml + '</div>' +
+      '<input class="field-input" data-field-input="' + f.id + '" value="' + escapeAttr(val) + '" placeholder="Not detected — enter a value"/>' +
+      (f.raw && f.raw !== val && f.raw !== "same" ? '<div class="caption" style="margin-top:5px">Raw: ' + f.raw + '</div>' : '') +
+      '<div class="field-meta-row"><button class="evidence-link" data-evidence-trigger data-action="toggle-evidence" data-field="' + f.id + '">' + icon("evidence") + 'View evidence</button>' +
+      (f.id === "shipTo" ? '<button class="evidence-link" data-action="open-candidates">' + icon("link") + 'Match candidates</button>' : '') +
+      '</div>';
+    if (S.evidencePopoverFor === f.id) card.appendChild(renderEvidencePopover(f));
+    if (S.candidatePopoverOpen && f.id === "shipTo") card.appendChild(renderCandidatePopover());
+    if (S.teachPromptFor === f.id && !S.teachSaved[f.id]) {
+      card.appendChild(el(
+        '<div class="teach-banner"><span>Save this position as a template hint for future <strong>' + REVIEW_DOC.sender + '</strong> documents?</span>' +
+        '<div style="display:flex;gap:8px"><button class="btn btn-primary btn-sm" data-action="teach-yes" data-field="' + f.id + '">Yes, propose it</button>' +
+        '<button class="btn btn-subtle btn-sm" data-action="teach-no" data-field="' + f.id + '">Not now</button></div></div>'
+      ));
+    }
+    if (S.teachSaved[f.id]) {
+      card.appendChild(el('<div class="caption" style="margin-top:8px;color:var(--accent)">' + icon("check") + ' Proposed as a template hint — awaiting supervisor publish in Senders & templates.</div>'));
+    }
+    return card;
+  }
+  function escapeAttr(s) { return String(s == null ? "" : s).replace(/"/g, "&quot;"); }
+
+  function renderEvidencePopover(f) {
+    var pop = el('<div class="popover" style="right:10px;top:90px"></div>');
+    var rows = [
+      ["Source", "Page 1, header block"],
+      ["Method", f.id === "poDate" ? "OCR (Tesseract) — low text confidence" : "Native PDF text"],
+      ["Provider / model", "Local extraction v2.3"],
+      ["Schema version", "v7 · published Jun 28"],
+      ["Coordinate certainty", f.id === "poDate" ? "Page-level only — stamp overlaps field" : "Precise bounding box"],
+      ["Validation", f.status === "ok" ? "Passed" : f.status === "critical" ? "Below confidence threshold" : "Unresolved"]
+    ];
+    pop.innerHTML = '<div class="body-sm" style="font-weight:650;margin-bottom:6px">Evidence — ' + f.label + '</div>' +
+      rows.map(function (r) { return '<div class="popover-row"><span class="muted">' + r[0] + '</span><span style="text-align:right;font-weight:600">' + r[1] + '</span></div>'; }).join("") +
+      (f.id === "poNumber" ? '<div class="caption" style="margin-top:8px;color:var(--accent)">' + icon("sparkle") + ' Matched sender template “Acme Industrial Supply Ltd”, published 3 weeks ago</div>' : '');
+    return pop;
+  }
+  function renderCandidatePopover() {
+    var pop = el('<div class="popover" style="right:10px;top:150px;width:340px"></div>');
+    var html = '<div class="body-sm" style="font-weight:650;margin-bottom:8px">Ship-to candidates</div><div class="candidate-list">';
+    SHIP_TO_CANDIDATES.forEach(function (c, i) {
+      var selected = S.fieldValues.shipTo === c.name;
+      html += '<div class="candidate-item ' + (selected ? "selected" : "") + '" data-action="select-candidate" data-idx="' + i + '">' +
+        '<div style="flex:1"><div class="body-sm" style="font-weight:600">' + c.name + '</div>' +
+        c.breakdown.map(function (b) { return '<div class="score-bar-row"><span style="width:88px" class="caption">' + b[0] + '</span><div class="meter"><div class="meter-fill" style="width:' + Math.round((b[2] / b[1]) * 100) + '%"></div></div><span class="caption num">' + b[2] + '/' + b[1] + '</span></div>'; }).join("") +
+        '</div><span class="pill ' + (c.score >= 80 ? "pill-success" : "pill-warning") + '" style="margin-left:8px">' + c.score + '</span></div>';
+    });
+    html += '</div>';
+    pop.innerHTML = html;
+    return pop;
+  }
+
+  function renderLineItemGridPanel() {
+    var wrap = el('<div class="grid-panel"></div>');
+    var head = el('<div class="grid-panel-head"><span class="body-sm" style="font-weight:650">Line items</span><span class="caption">4 rows · 1 flagged</span></div>');
+    wrap.appendChild(head);
+    var tw = el('<div class="scroll-x" style="padding:0 4px 10px"></div>');
+    var rows = LINE_ITEMS.map(function (li) {
+      var priceCell;
+      if (li.flag) {
+        var chosen = S.lineItemEdits[li.line];
+        priceCell = '<select data-action="pick-price" data-line="' + li.line + '"><option value="">Select…</option>' +
+          li.candidates.map(function (c) { return '<option value="' + c + '" ' + (chosen == c ? "selected" : "") + '>' + fmtGBP(c) + '</option>'; }).join("") + '</select>';
+      } else {
+        priceCell = '<span class="num">' + fmtGBP(li.price) + '</span>';
+      }
+      var totalDisplay = li.flag ? (S.lineItemEdits[li.line] ? '<span class="num">' + fmtGBP(li.qty * S.lineItemEdits[li.line]) + '</span>' : '<span class="faint">—</span>') : '<span class="num">' + fmtGBP(li.total) + '</span>';
+      return '<tr class="' + (li.flag ? "flag" : "") + '"><td class="num">' + li.line + '</td><td>' + li.item + '</td><td class="num">' + li.qty + ' ' + li.uom + '</td><td>' + priceCell + '</td><td>' + totalDisplay + '</td></tr>';
+    }).join("");
+    tw.appendChild(el('<table class="li-table"><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Line total</th></tr></thead><tbody>' + rows + '</tbody></table>'));
+    wrap.appendChild(tw);
+    wrap.appendChild(el('<div style="padding:8px 12px;border-top:1px solid var(--border);display:flex;justify-content:space-between" class="body-sm"><span class="muted">Totals reconcile</span><span style="color:var(--success);font-weight:650">' + icon("check") + ' Passed</span></div>'));
+    return wrap;
+  }
+
+  function renderApprovalBar() {
+    var bar = el('<div class="approval-bar"></div>');
+    var resolvedCount = REASONS.filter(function (r) { return S.resolved[r.id]; }).length;
+    var overrides = Object.keys(S.teachSaved).length;
+    bar.innerHTML =
+      '<ul class="approval-summary-list">' +
+        '<li>' + icon(resolvedCount === REASONS.length ? "checkCircle" : "alertTriangle", resolvedCount === REASONS.length ? "" : "") + resolvedCount + ' of ' + REASONS.length + ' review reasons resolved</li>' +
+        '<li>' + icon("check") + overrides + ' field override' + (overrides === 1 ? "" : "s") + ' made this session</li>' +
+        '<li>' + icon("link") + 'Export destination: Signed webhook — ERP (Production)</li>' +
+      '</ul>' +
+      (resolvedCount < REASONS.length ?
+        '<div class="caption" style="color:var(--warning);margin-bottom:8px">' + icon("alertTriangle") + ' Resolve all review reasons before approving.</div>' : '') +
+      '<button class="btn btn-primary" style="width:100%" data-action="approve-doc" ' + (resolvedCount === REASONS.length ? "" : "disabled") + '>' + icon("check") + 'Approve order</button>';
+    return bar;
+  }
+
+  function renderKbdLegend() {
+    var pop = el('<div class="popover kbd-legend" style="width:280px"></div>');
+    var rows = [["J / K", "Next / previous reason"], ["Tab", "Next field"], ["Enter", "Edit / commit field"], ["E", "Focus evidence"], ["M", "Match candidates"], ["A", "Approval summary"], ["R", "Reject / escalate"], ["[ / ]", "Previous / next page"], ["+ / -", "Zoom document"], ["?", "Toggle this guide"]];
+    pop.innerHTML = '<div class="body-sm" style="font-weight:650;margin-bottom:6px">Keyboard shortcuts</div><div class="kbd-legend-grid">' +
+      rows.map(function (r) { return '<span class="kbd">' + r[0] + '</span><span class="caption">' + r[1] + '</span>'; }).join("") + '</div>';
+    return pop;
+  }
+
+  /* ============================= ACTIONS ============================= */
+  function bindActions(root) {
+    root.querySelectorAll("[data-action]").forEach(function (node) {
+      if (node.dataset.bound) return;
+      node.dataset.bound = "1";
+      node.addEventListener("click", function (e) {
+        var action = node.getAttribute("data-action");
+        handleAction(action, node, e);
+      });
+    });
+    root.querySelectorAll("#doc-search").forEach(function (n) {
+      n.addEventListener("input", function () { S.docSearch = n.value; renderKeepScroll(); });
+    });
+    root.querySelectorAll("[data-field-input]").forEach(function (n) {
+      n.addEventListener("change", function () {
+        var fid = n.getAttribute("data-field-input");
+        S.fieldValues[fid] = n.value;
+        S.resolved[fid] = true;
+        S.saveState = "saving";
+        S.teachPromptFor = fid;
+        renderKeepScroll();
+        setTimeout(function () { S.saveState = "saved"; var lbl = document.getElementById("save-state-label"); if (lbl) lbl.textContent = "Saved"; }, 650);
+      });
+    });
+    root.querySelectorAll("select[data-action='pick-price']").forEach(function (n) {
+      if (n.dataset.bound2) return; n.dataset.bound2 = "1";
+      n.addEventListener("change", function () {
+        var line = n.getAttribute("data-line");
+        S.lineItemEdits[line] = parseFloat(n.value);
+        toast("Line " + line + " unit price updated", "check");
+        render();
+      });
+    });
+  }
+
+  function renderKeepScroll() { render(); }
+
+  function handleAction(action, node, e) {
+    e.stopPropagation();
+    switch (action) {
+      case "noop": break;
+      case "toggle-theme": S.theme = currentIsDark() ? "light" : "dark"; applyTheme(); render(); break;
+      case "go-skills": S.screen = "skills"; render(); break;
+      case "go-manage": S.screen = "manage"; render(); break;
+      case "open-skill": S.currentSkillId = node.getAttribute("data-id"); S.screen = "skillWorkspace"; S.tab = "documents"; S.docFilter = "all"; render(); break;
+      case "set-tab": S.tab = node.getAttribute("data-tab"); render(); break;
+      case "set-manage-tab": S.manageTab = node.getAttribute("data-tab"); render(); break;
+      case "set-doc-filter": S.docFilter = node.getAttribute("data-filter"); render(); break;
+      case "clear-doc-filters": S.docFilter = "all"; S.docSearch = ""; render(); break;
+      case "open-upload": S.uploadOpen = true; S.uploadStep = 1; render(); break;
+      case "close-upload": case "close-upload-bg": S.uploadOpen = false; render(); break;
+      case "upload-next": S.uploadStep = Math.min(3, S.uploadStep + 1); render(); break;
+      case "upload-back": S.uploadStep = Math.max(1, S.uploadStep - 1); render(); break;
+      case "open-create-skill": S.createSkillOpen = true; S.createStep = 1; render(); break;
+      case "close-create": case "close-create-bg": S.createSkillOpen = false; render(); break;
+      case "create-next": S.createStep = Math.min(3, S.createStep + 1); render(); break;
+      case "create-back": S.createStep = Math.max(1, S.createStep - 1); render(); break;
+      case "create-finish":
+        DATA.skills.push({ id: "sk_fr_" + Date.now(), name: "PO Extraction — France", docType: "Purchase order", status: "draft", docs30d: 0, backlog: 0, strRate: null, strTrend: 0, lastActivity: "Never run", hasTraining: false });
+        DATA.documents["sk_fr_" + Object.keys(DATA.documents).length] = [];
+        S.createSkillOpen = false; S.screen = "skills"; render(); toast("Skill created in draft", "check");
+        break;
+      case "toggle-sender": var sid = node.getAttribute("data-sender"); S.openSenders[sid] = !S.openSenders[sid]; render(); break;
+      case "publish-template": {
+        var key = node.getAttribute("data-skill") + "|" + node.getAttribute("data-sender") + "|" + node.getAttribute("data-field");
+        S.senderTemplateStatus[key] = "published";
+        render(); toast("Template hint published — future documents from this sender will use it", "checkCircle");
+        break;
+      }
+      case "reject-template": {
+        var key2 = node.getAttribute("data-skill") + "|" + node.getAttribute("data-sender") + "|" + node.getAttribute("data-field");
+        S.senderTemplateStatus[key2] = "rejected";
+        render(); toast("Proposal rejected — no change made", "x");
+        break;
+      }
+      case "run-eval": toast("Evaluation started — this can take a few minutes in production", "sparkle"); break;
+      case "retry-delivery": toast("Delivery replay queued", "reopen"); break;
+      case "open-review": S.screen = "review"; S.activeReason = "poDate"; render(); break;
+      case "close-review": S.screen = "skillWorkspace"; render(); break;
+      case "select-reason": case "select-region":
+        S.activeReason = node.getAttribute("data-field");
+        S.evidencePopoverFor = null; S.candidatePopoverOpen = false;
+        render();
+        setTimeout(function () {
+          var card = document.querySelector('[data-field-card="' + S.activeReason + '"]');
+          if (card) card.scrollIntoView({ block: "nearest", behavior: currentIsDark() === null ? "auto" : "smooth" });
+        }, 0);
+        break;
+      case "toggle-all-fields": S.showAllFields = !S.showAllFields; render(); break;
+      case "toggle-evidence": {
+        var fid2 = node.getAttribute("data-field");
+        S.evidencePopoverFor = S.evidencePopoverFor === fid2 ? null : fid2;
+        S.candidatePopoverOpen = false;
+        render();
+        break;
+      }
+      case "open-candidates": S.candidatePopoverOpen = !S.candidatePopoverOpen; S.evidencePopoverFor = null; render(); break;
+      case "select-candidate": {
+        var idx = parseInt(node.getAttribute("data-idx"), 10);
+        S.fieldValues.shipTo = SHIP_TO_CANDIDATES[idx].name;
+        S.resolved.shipTo = true;
+        S.candidatePopoverOpen = false;
+        S.teachPromptFor = "shipTo";
+        render();
+        break;
+      }
+      case "teach-yes": {
+        var tf = node.getAttribute("data-field");
+        S.teachSaved[tf] = true;
+        S.teachPromptFor = null;
+        render();
+        toast("Proposed as a template hint for " + REVIEW_DOC.sender, "sparkle");
+        break;
+      }
+      case "teach-no": S.teachPromptFor = null; render(); break;
+      case "toggle-kbd": S.kbdLegendOpen = !S.kbdLegendOpen; render(); break;
+      case "zoom-in": S.zoom = Math.min(1.4, S.zoom + 0.1); render(); break;
+      case "zoom-out": S.zoom = Math.max(0.6, S.zoom - 0.1); render(); break;
+      case "approve-doc":
+        if (node.hasAttribute("disabled")) break;
+        S.docStatus.d1 = "approved";
+        S.screen = "skillWorkspace";
+        render();
+        toast("PO-4471209 approved and queued for export", "checkCircle");
+        break;
+      case "signin": S.screen = "skills"; render(); break;
+      case "cycle-signin-error":
+        S.signinErrorIdx = ((S.signinErrorIdx || 0) + 1) % SIGNIN_ERRORS.length;
+        render();
+        break;
+      default: break;
+    }
+  }
+
+  function applyTheme() {
+    if (S.theme) document.documentElement.setAttribute("data-theme", S.theme);
+    else document.documentElement.removeAttribute("data-theme");
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (S.screen !== "review") return;
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+    if (e.key === "j" || e.key === "k") {
+      var ids = REASONS.map(function (r) { return r.id; });
+      var idx = ids.indexOf(S.activeReason);
+      idx = e.key === "j" ? Math.min(ids.length - 1, idx + 1) : Math.max(0, idx - 1);
+      S.activeReason = ids[idx]; render();
+    } else if (e.key === "?") { S.kbdLegendOpen = !S.kbdLegendOpen; render(); }
+    else if (e.key === "Escape") { S.evidencePopoverFor = null; S.candidatePopoverOpen = false; S.kbdLegendOpen = false; render(); }
+  });
+
+  applyTheme();
+  render();
+})();
+</script>
