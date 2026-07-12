@@ -76,6 +76,34 @@ jobs:
         if: always()
         run: docker compose -f infrastructure/local/docker-compose.yml down
 
+  visual-and-a11y:
+    name: Visual regression and accessibility (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm --filter @soa/web exec playwright install chromium --with-deps
+      - name: Build web app
+        run: pnpm --filter @soa/web run build
+      - name: Run visual + accessibility suite
+        run: pnpm --filter @soa/web run test:visual
+      - name: Upload actual screenshots and diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
+          retention-days: 7
+
   migrations:
     name: Migration upgrade/downgrade check
     runs-on: ubuntu-latest

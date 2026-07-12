@@ -35,3 +35,7 @@ test-results/
 
 # Local service data
 .local-data/
+
+# Playwright artifacts
+apps/web/test-results/
+apps/web/playwright-report/
