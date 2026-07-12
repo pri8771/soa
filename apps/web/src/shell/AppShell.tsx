@@ -12,6 +12,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { CommandPalette } from "./CommandPalette";
+import { OrganizationSwitcher } from "./OrganizationSwitcher";
 import { useShellSession } from "./ShellContext";
 import "./shell.css";
 
@@ -141,9 +142,7 @@ export function AppShell({
       </nav>
 
       <header className="soa-shell-topbar">
-        <span className="soa-shell-org" data-testid="current-organization">
-          {session.organization.name}
-        </span>
+        <OrganizationSwitcher />
         {session.devSession ? (
           <Badge tone="warning" className="soa-shell-dev-badge">
             Development identity

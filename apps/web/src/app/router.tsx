@@ -10,6 +10,7 @@ import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
+import { SelectOrganization } from "../screens/SelectOrganization";
 import { Workbench } from "../screens/Workbench";
 
 const rootRoute = createRootRoute({
@@ -27,6 +28,12 @@ const workbenchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workbench",
   component: Workbench,
+});
+
+const selectOrganizationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/select-organization",
+  component: SelectOrganization,
 });
 
 const appRoute = createRoute({
@@ -48,6 +55,7 @@ function areaRoute<const P extends string>(path: P, title: string, epic: string)
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
+  selectOrganizationRoute,
   appRoute.addChildren([
     areaRoute("overview", "Overview", "ANA"),
     areaRoute("documents", "Documents", "ING"),

@@ -1,13 +1,10 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { createAppRouter } from "../app/router";
+import { renderApp as renderAppAtPath } from "../test/render";
 
 async function renderApp(initialPath = "/app/northstar/overview") {
-  const router = createAppRouter(createMemoryHistory({ initialEntries: [initialPath] }));
-  await router.load();
-  render(<RouterProvider router={router} />);
+  const { router } = await renderAppAtPath(initialPath);
   await screen.findByRole("navigation", { name: "Primary" });
   return router;
 }

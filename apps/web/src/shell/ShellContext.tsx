@@ -17,6 +17,8 @@ export interface ShellSession {
   permissions: ReadonlySet<string>;
   devSession: boolean;
   userLabel: string;
+  /** Other organizations the user can switch to (active memberships only). */
+  availableOrganizations?: ShellOrganization[];
 }
 
 const ShellSessionContext = createContext<ShellSession | null>(null);

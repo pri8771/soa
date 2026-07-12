@@ -1,7 +1,6 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 
-import { createAppRouter } from "../app/router";
+import { renderApp } from "../test/render";
 
 const REQUIRED_SECTIONS = [
   "buttons",
@@ -16,9 +15,7 @@ const REQUIRED_SECTIONS = [
 
 describe("Workbench", () => {
   it("renders every required component section", async () => {
-    const router = createAppRouter(createMemoryHistory({ initialEntries: ["/workbench"] }));
-    await router.load();
-    const { container } = render(<RouterProvider router={router} />);
+    const { container } = await renderApp("/workbench");
     await screen.findByRole("heading", { name: "Component workbench" });
     for (const section of REQUIRED_SECTIONS) {
       expect(
