@@ -14,6 +14,7 @@ from soa_api.routers import health
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
+from soa_db import DatabaseSessions, create_database_engine
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def create_app(
     settings: ApiSettings | None = None,
     telemetry: Telemetry | None = None,
     oidc_validator: "OidcTokenValidator | None" = None,
+    db: DatabaseSessions | None = None,
 ) -> FastAPI:
     """Create the API application.
 
@@ -54,9 +56,18 @@ def create_app(
         redoc_url=None,
         openapi_url="/openapi.json" if not resolved.is_production else None,
     )
-    app.state.dependencies = Dependencies(
-        settings=resolved, telemetry=resolved_telemetry, oidc_validator=oidc_validator
+    resolved_db = db
+    if resolved_db is None:
+        resolved_db = DatabaseSessions(create_database_engine(resolved.database_url))
+
+    deps = Dependencies(
+        settings=resolved,
+        telemetry=resolved_telemetry,
+        oidc_validator=oidc_validator,
+        db=resolved_db,
     )
+    deps.register_readiness_check("database", resolved_db.ping)
+    app.state.dependencies = deps
 
     @app.middleware("http")
     async def correlation_middleware(

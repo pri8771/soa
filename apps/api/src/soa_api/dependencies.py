@@ -6,14 +6,16 @@ stored on ``app.state`` so request handlers resolve shared resources without
 module-level globals.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.settings import ApiSettings
 from soa_config.telemetry import Telemetry
+from soa_db import DatabaseSessions
 
 if TYPE_CHECKING:
     from soa_api.auth.oidc import OidcTokenValidator
@@ -32,6 +34,7 @@ class Dependencies:
     settings: ApiSettings
     telemetry: Telemetry = field(default_factory=Telemetry.noop)
     oidc_validator: "OidcTokenValidator | None" = None
+    db: DatabaseSessions | None = None
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:
@@ -54,3 +57,20 @@ def get_dependencies(request: Request) -> Dependencies:
     deps = request.app.state.dependencies
     assert isinstance(deps, Dependencies)
     return deps
+
+
+async def get_db_session(
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> AsyncIterator[AsyncSession]:
+    """Session-per-request unit of work: commits on success, rolls back on
+    error, stays open for the whole request."""
+    if deps.db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not configured.",
+        )
+    async with deps.db.session_scope() as session:
+        yield session
+
+
+DbSession = Annotated[AsyncSession, Depends(get_db_session)]

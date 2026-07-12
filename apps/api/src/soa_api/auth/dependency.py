@@ -7,14 +7,21 @@ Resolution order:
 3. Otherwise 401 with the structured error envelope.
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
+from soa_api.auth.authorization import (
+    AuthorizationDeniedError,
+    AuthorizationService,
+    AuthorizedContext,
+    DenyReason,
+)
 from soa_api.auth.dev_identity import DEV_USER_HEADER, authenticate_dev_user
 from soa_api.auth.errors import AuthenticationError
 from soa_api.auth.principal import Principal
-from soa_api.dependencies import Dependencies, get_dependencies
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 
 
 async def get_current_principal(
@@ -48,3 +55,41 @@ async def get_current_principal(
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_current_principal)]
+
+_DENY_STATUS: dict[DenyReason, int] = {
+    # Organization existence is not information non-members may learn.
+    DenyReason.ORGANIZATION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    DenyReason.ORGANIZATION_NOT_OPERATIONAL: status.HTTP_403_FORBIDDEN,
+    DenyReason.NOT_A_MEMBER: status.HTTP_404_NOT_FOUND,
+    DenyReason.MEMBERSHIP_INACTIVE: status.HTTP_403_FORBIDDEN,
+    DenyReason.PERMISSION_MISSING: status.HTTP_403_FORBIDDEN,
+    DenyReason.RESOURCE_NOT_OWNED: status.HTTP_404_NOT_FOUND,
+}
+
+
+def require_permission(
+    permission: str,
+) -> Callable[..., Awaitable[AuthorizedContext]]:
+    """Dependency factory: routes declare the permission they need and
+    receive an AuthorizedContext — the only sanctioned way to reach tenant
+    data. Route path must include ``{organization_slug}``."""
+
+    async def dependency(
+        organization_slug: str,
+        principal: CurrentPrincipal,
+        session: DbSession,
+    ) -> AuthorizedContext:
+        service = AuthorizationService(session)
+        try:
+            return await service.authorize(
+                principal,
+                organization_slug=organization_slug,
+                required_permission=permission,
+            )
+        except AuthorizationDeniedError as exc:
+            raise HTTPException(
+                status_code=_DENY_STATUS[exc.reason],
+                detail=str(exc),
+            ) from None
+
+    return dependency

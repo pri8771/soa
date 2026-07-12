@@ -4,10 +4,15 @@ import soa_api
 from soa_api.app import create_app
 from soa_api.dependencies import Dependencies
 from soa_api.settings import ApiSettings, Environment
+from soa_db import DatabaseSessions, create_database_engine
+
+
+def make_db() -> DatabaseSessions:
+    return DatabaseSessions(create_database_engine("sqlite+aiosqlite:///:memory:"))
 
 
 def make_client(settings: ApiSettings | None = None) -> TestClient:
-    app = create_app(settings or ApiSettings(environment=Environment.TEST))
+    app = create_app(settings or ApiSettings(environment=Environment.TEST), db=make_db())
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -18,27 +23,23 @@ def test_liveness() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_readiness_with_no_dependencies_is_ok() -> None:
+def test_readiness_with_healthy_database_is_ok() -> None:
     client = make_client()
     response = client.get("/health/ready")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["dependencies"] == []
+    assert body["dependencies"] == [{"name": "database", "healthy": True}]
 
 
 def test_readiness_reports_unhealthy_dependency_as_503() -> None:
-    app = create_app(ApiSettings(environment=Environment.TEST))
+    app = create_app(ApiSettings(environment=Environment.TEST), db=make_db())
     deps: Dependencies = app.state.dependencies
 
     async def failing_check() -> bool:
         raise RuntimeError("connection refused")
 
-    async def passing_check() -> bool:
-        return True
-
-    deps.register_readiness_check("database", failing_check)
-    deps.register_readiness_check("object-store", passing_check)
+    deps.register_readiness_check("object-store", failing_check)
 
     client = TestClient(app, raise_server_exceptions=False)
     response = client.get("/health/ready")
@@ -46,7 +47,7 @@ def test_readiness_reports_unhealthy_dependency_as_503() -> None:
     body = response.json()
     assert body["status"] == "degraded"
     statuses = {dep["name"]: dep["healthy"] for dep in body["dependencies"]}
-    assert statuses == {"database": False, "object-store": True}
+    assert statuses == {"database": True, "object-store": False}
 
 
 def test_version_endpoint() -> None:
