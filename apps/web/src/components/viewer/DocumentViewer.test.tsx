@@ -62,8 +62,8 @@ describe("Document viewer (REV-004)", () => {
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(screen.getByText("125%")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Rotate page" }));
-    const rotated = await screen.findByAltText("Page 2 of 2");
-    expect(rotated.style.transform).toBe("rotate(90deg)");
+    // Rotation lives on the shared page container (image + overlays).
+    expect(screen.getByTestId("page-container").style.transform).toBe("rotate(90deg)");
   });
 
   it("supports the documented keyboard map", async () => {
@@ -79,8 +79,9 @@ describe("Document viewer (REV-004)", () => {
     await user.keyboard("+");
     expect(screen.getByText("125%")).toBeInTheDocument();
     await user.keyboard("r");
-    const image = await screen.findByAltText("Page 1 of 2");
-    await waitFor(() => expect(image.style.transform).toBe("rotate(90deg)"));
+    await waitFor(() =>
+      expect(screen.getByTestId("page-container").style.transform).toBe("rotate(90deg)"),
+    );
   });
 
   it("thumbnails jump to their page and mark the current one", async () => {
@@ -156,5 +157,96 @@ describe("Document viewer (REV-004)", () => {
   it("is honest when there are no rendered pages", async () => {
     renderViewer(QUEUED_DOC);
     expect(await screen.findByText(/No rendered pages yet/)).toBeInTheDocument();
+  });
+});
+
+const EVIDENCE = [
+  {
+    id: "ev-po",
+    label: "po_number",
+    page_number: 1,
+    polygon: [
+      [170, 220],
+      [340, 220],
+      [340, 440],
+      [170, 440],
+    ] as [number, number][],
+    kind: "active" as const,
+  },
+  {
+    id: "ev-total",
+    label: "total_amount",
+    page_number: 2,
+    polygon: null, // page-level evidence: honest, no invented box
+  },
+];
+
+function renderViewerWithEvidence(options?: {
+  activeEvidenceId?: string | null;
+  onEvidenceSelect?: (id: string) => void;
+}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DocumentViewer
+        organizationSlug="northstar"
+        documentId={FAILED_DOC}
+        evidence={EVIDENCE}
+        activeEvidenceId={options?.activeEvidenceId ?? null}
+        onEvidenceSelect={options?.onEvidenceSelect}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+describe("Evidence overlays (REV-005)", () => {
+  it("positions overlays in page percentages inside the rotated container", async () => {
+    const user = userEvent.setup();
+    renderViewerWithEvidence();
+    await screen.findByText("Page 1 of 2");
+    const overlay = await screen.findByRole("button", { name: /Evidence for po_number/ });
+    // 170..340 of 1700 wide and 220..440 of 2200 tall -> 10% boxes.
+    expect(overlay.style.left).toBe("10%");
+    expect(overlay.style.top).toBe("10%");
+    expect(overlay.style.width).toBe("10%");
+    expect(overlay.style.height).toBe("10%");
+    // The overlay lives INSIDE the container that carries zoom+rotation,
+    // so the transform can never separate it from the page image.
+    const container = screen.getByTestId("page-container");
+    expect(container.contains(overlay)).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Rotate page" }));
+    expect(screen.getByTestId("page-container").style.transform).toBe("rotate(90deg)");
+    expect(overlay.style.left).toBe("10%"); // unchanged: percentages hold
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(overlay.style.left).toBe("10%");
+  });
+
+  it("has a non-visual description of where the evidence sits", async () => {
+    renderViewerWithEvidence();
+    const overlay = await screen.findByRole("button", { name: /Evidence for po_number/ });
+    expect(overlay.getAttribute("aria-label")).toContain("top left of the page");
+  });
+
+  it("source -> field: clicking an overlay reports its id", async () => {
+    const user = userEvent.setup();
+    const selected: string[] = [];
+    renderViewerWithEvidence({ onEvidenceSelect: (id) => selected.push(id) });
+    const overlay = await screen.findByRole("button", { name: /Evidence for po_number/ });
+    await user.click(overlay);
+    expect(selected).toEqual(["ev-po"]);
+  });
+
+  it("field -> source: activating an evidence id jumps to its page", async () => {
+    renderViewerWithEvidence({ activeEvidenceId: "ev-total" });
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+  });
+
+  it("renders page-level evidence honestly, without inventing a box", async () => {
+    renderViewerWithEvidence({ activeEvidenceId: "ev-total" });
+    await screen.findByText("Page 2 of 2");
+    const marker = await screen.findByRole("button", { name: /Evidence for total_amount/ });
+    expect(marker).toHaveTextContent("total_amount: somewhere on this page");
+    expect(marker.getAttribute("aria-label")).toContain("no exact region was captured");
+    expect(marker.style.width).toBe(""); // a label, not a fake region
   });
 });

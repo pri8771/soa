@@ -27,6 +27,7 @@ import {
   requestArtifactDownload,
   type DocumentPageEntry,
 } from "../../api/client";
+import { describeEvidencePosition, toPercentBox } from "./geometry";
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 //: Signed URLs are renewed this long before their stated expiry.
@@ -129,12 +130,34 @@ interface SearchHit {
   count: number;
 }
 
+/** One piece of evidence to highlight (REV-005). Coordinates are the
+ * PRC-005 raster pixels; ``polygon: null`` is PAGE-LEVEL evidence — the
+ * value is on the page but no exact region was captured, and the overlay
+ * says so instead of inventing a box. */
+export interface EvidenceHighlight {
+  id: string;
+  label: string;
+  page_number: number;
+  polygon: readonly (readonly [number, number])[] | null;
+  /** Active = the selected field's evidence; related = candidates/context. */
+  kind?: "active" | "related";
+}
+
 export function DocumentViewer({
   organizationSlug,
   documentId,
+  evidence = [],
+  activeEvidenceId = null,
+  onEvidenceSelect,
 }: {
   organizationSlug: string;
   documentId: string;
+  /** Overlays to draw; the field editors (REV-007/008) supply these. */
+  evidence?: EvidenceHighlight[];
+  /** Field -> source: selecting this id jumps the viewer to its page. */
+  activeEvidenceId?: string | null;
+  /** Source -> field: fired when the user clicks an overlay. */
+  onEvidenceSelect?: (id: string) => void;
 }) {
   const resolve = useSignedUrl(organizationSlug);
   const pagesQuery = useQuery({
@@ -167,6 +190,16 @@ export function DocumentViewer({
     },
     [pageCount],
   );
+
+  // Field -> source: when a field's evidence becomes active, show its page.
+  useEffect(() => {
+    if (activeEvidenceId === null) return;
+    const target = evidence.find((entry) => entry.id === activeEvidenceId);
+    if (target !== undefined) goTo(target.page_number);
+    // Intentionally keyed on the ID: re-render churn in the evidence array
+    // must not re-trigger navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeEvidenceId, goTo]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if ((event.target as HTMLElement).tagName === "INPUT") return;
@@ -390,21 +423,89 @@ export function DocumentViewer({
           }}
         >
           {current ? (
-            // Only the CURRENT page mounts at full size — bounded memory
-            // even for very large documents.
-            <PageImage
-              artifactId={current.image_artifact_id}
-              alt={`Page ${current.page_number} of ${pageCount}`}
-              resolve={resolve}
-              loading="eager"
+            // The ROTATION lives on this shared container: the image and
+            // every overlay rotate together, and overlays are positioned
+            // in percentages of the page box, so zoom needs no recompute
+            // either — the coordinate transform cannot drift (REV-005).
+            <div
+              data-testid="page-container"
               style={{
+                position: "relative",
                 width: `${Math.round(zoom * 100)}%`,
-                maxWidth: "none",
                 transform: rotation ? `rotate(${rotation}deg)` : undefined,
                 transformOrigin: "center center",
-                display: "block",
               }}
-            />
+            >
+              {/* Only the CURRENT page mounts at full size — bounded
+                  memory even for very large documents. */}
+              <PageImage
+                artifactId={current.image_artifact_id}
+                alt={`Page ${current.page_number} of ${pageCount}`}
+                resolve={resolve}
+                loading="eager"
+                style={{ width: "100%", maxWidth: "none", display: "block" }}
+              />
+              {evidence
+                .filter((entry) => entry.page_number === current.page_number)
+                .map((entry) => {
+                  const active = entry.id === activeEvidenceId || entry.kind === "active";
+                  const description = describeEvidencePosition(
+                    entry.polygon,
+                    current.width_px,
+                    current.height_px,
+                  );
+                  if (entry.polygon === null) {
+                    // Page-level evidence: say so — never invent a box.
+                    return (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        aria-label={`Evidence for ${entry.label}: ${description}`}
+                        onClick={() => onEvidenceSelect?.(entry.id)}
+                        style={{
+                          position: "absolute",
+                          top: 4,
+                          left: 4,
+                          border: active ? "2px solid #d97706" : "1px dashed #d97706",
+                          background: "rgba(217, 119, 6, 0.9)",
+                          color: "#fff",
+                          borderRadius: 4,
+                          padding: "2px 6px",
+                          font: "var(--soa-font-caption)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {entry.label}: somewhere on this page
+                      </button>
+                    );
+                  }
+                  const box = toPercentBox(entry.polygon, current.width_px, current.height_px);
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      aria-label={`Evidence for ${entry.label}: ${description}`}
+                      onClick={() => onEvidenceSelect?.(entry.id)}
+                      style={{
+                        position: "absolute",
+                        left: `${box.left}%`,
+                        top: `${box.top}%`,
+                        width: `${box.width}%`,
+                        height: `${box.height}%`,
+                        border: active
+                          ? "2px solid var(--soa-accent, #4c6ef5)"
+                          : "2px dashed rgba(76, 110, 245, 0.5)",
+                        background: active
+                          ? "rgba(76, 110, 245, 0.18)"
+                          : "rgba(76, 110, 245, 0.08)",
+                        borderRadius: 2,
+                        padding: 0,
+                        cursor: "pointer",
+                      }}
+                    />
+                  );
+                })}
+            </div>
           ) : null}
         </div>
       </div>
