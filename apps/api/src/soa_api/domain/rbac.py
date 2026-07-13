@@ -63,6 +63,10 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "credentials.manage",
         "audit.read",
         "analytics.read",
+        # Exporting a customer's full data bundle for one document
+        # (SEC-009) is a sensitive portability/subject-access action —
+        # its own grant, separate from documents.read.
+        "data.export",
         "jobs.read",
         "jobs.manage",
         "jobs.admin",
@@ -157,6 +161,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "catalogs.read",
             "integrations.read",
             "analytics.read",
+            "data.export",
             "jobs.read",
         }
     ),
