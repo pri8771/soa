@@ -50,6 +50,7 @@ RLS_PROTECTED_TABLES = (
     "review_tasks",  # 0024
     "field_corrections",  # 0025
     "review_comments",  # 0026
+    "canonical_payloads",  # 0028
 )
 
 

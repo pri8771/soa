@@ -15,6 +15,7 @@ dependencies = [
     "soa-storage",
     "soa-normalize",
     "soa-rules",
+    "soa-canonical",
     "email-validator>=2.2",
     "python-multipart>=0.0.12",
 ]
@@ -26,6 +27,7 @@ soa-db = { workspace = true }
 soa-storage = { workspace = true }
 soa-normalize = { workspace = true }
 soa-rules = { workspace = true }
+soa-canonical = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -4,6 +4,7 @@ second-approval hook, and rejection permissions."""
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,10 +77,13 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
 _SEED_COUNTER = iter(range(100))
 
 
-async def seed_reviewable(client: TestClient, db: DatabaseSessions) -> str:
+async def seed_reviewable(
+    client: TestClient, db: DatabaseSessions, po_number: str | None = None
+) -> str:
     """A document in REVIEW_REQUIRED with an OPEN task over a run whose
-    po_number is missing (a BLOCKING rule) and whose header total
-    disagrees with the single line (also blocking) — both correctable."""
+    po_number is missing by default (a BLOCKING rule) and whose header
+    total disagrees with the single line (also blocking) — both
+    correctable. Pass ``po_number`` to seed it present."""
     index = next(_SEED_COUNTER)
     org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
     stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
@@ -106,7 +110,7 @@ async def seed_reviewable(client: TestClient, db: DatabaseSessions) -> str:
             triggered_by="system:test",
         )
         values: list[tuple[str, str | None, int | None]] = [
-            ("po_number", None, None),  # missing: blocking rule fires
+            ("po_number", po_number, None),  # missing by default: blocking rule fires
             ("order_date", "2026-03-14", None),
             ("customer_name", "Acme", None),
             ("currency", "USD", None),
@@ -304,7 +308,9 @@ async def test_critical_blockers_require_authorized_override(
     harness: tuple[TestClient, DatabaseSessions],
 ) -> None:
     client, db = harness
-    task_id = await seed_reviewable(client, db)
+    # PO number present so the sole blocker (the totals mismatch) is
+    # overridable AND the canonical order remains buildable (CAN-003).
+    task_id = await seed_reviewable(client, db, po_number="PO-77")
     claim(client, task_id, REVIEWER)
 
     # Blockers unresolved, no override requested: refused with the rule keys.
@@ -312,7 +318,7 @@ async def test_critical_blockers_require_authorized_override(
         f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=REVIEWER
     )
     assert refused.status_code == 409
-    assert "required.po_number" in refused.json()["error"]["message"]
+    assert "totals.header_matches_lines" in refused.json()["error"]["message"]
 
     # An override reason without the override PERMISSION is still refused.
     unauthorized = client.post(
@@ -413,6 +419,103 @@ async def test_rejection_permissions_reason_and_idempotency(
         f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=SUPERVISOR
     )
     assert flipped.status_code == 409
+
+
+async def canonical_payloads_for(
+    db: DatabaseSessions, client: TestClient, task_id: str
+) -> list[Any]:
+    from soa_db.canonical_payloads import CanonicalPayload, CanonicalPayloadRepository
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        task = await ReviewTaskRepository(session, context).get(uuid.UUID(task_id))
+        assert task is not None
+        repo = CanonicalPayloadRepository(session, context)
+        stmt = repo._scoped_select().where(CanonicalPayload.run_id == task.run_id)
+        return list((await session.execute(stmt)).scalars().all())
+
+
+async def test_approval_persists_the_immutable_canonical_payload(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """CAN-003: approving builds and stores the canonical order exactly
+    once per run, with provenance references; duplicates add nothing."""
+    from soa_canonical import validate_order
+
+    client, db = harness
+    task_id = await seed_reviewable(client, db)
+    version = claim(client, task_id, SUPERVISOR)
+    version = correct(client, task_id, version, SUPERVISOR, field_key="po_number", value="PO-1")
+    correct(client, task_id, version, SUPERVISOR, field_key="total_amount", value="450.00")
+
+    approved = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=SUPERVISOR
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["canonical_payload_id"]
+
+    (payload_row,) = await canonical_payloads_for(db, client, task_id)
+    assert payload_row.schema_version == "1.0.0"
+    payload = payload_row.payload
+    validate_order(payload)
+    assert payload["identifiers"]["po_number"] == "PO-1"
+    assert payload["totals"]["grand_total"] == {"amount": "450.00", "currency": "USD"}
+    assert payload["line_items"][0]["line_total"] == {"amount": "450.00", "currency": "USD"}
+    # Provenance: the corrected field names its reviewer; extracted
+    # fields carry their origin.
+    assert payload["provenance"]["identifiers.po_number"]["origin"] == "corrected"
+    assert payload["provenance"]["identifiers.po_number"]["actor"].startswith("user:")
+    assert payload["provenance"]["dates.order_date"]["origin"] == "extracted"
+
+    # A duplicate approval adds NOTHING (idempotent + immutable).
+    duplicate = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=SUPERVISOR
+    )
+    assert duplicate.status_code == 200
+    assert len(await canonical_payloads_for(db, client, task_id)) == 1
+
+
+async def test_mapping_errors_block_approval_clearly(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """CAN-003: a payload that cannot be built refuses the approval with
+    every problem named — even an authorized override cannot approve a
+    document whose canonical order would be incomplete."""
+    client, db = harness
+    task_id = await seed_reviewable(client, db)  # po_number missing
+    claim(client, task_id, SUPERVISOR)
+
+    blocked = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve",
+        json={"override_reason": "pushing it through anyway"},
+        headers=SUPERVISOR,
+    )
+    assert blocked.status_code == 409
+    message = blocked.json()["error"]["message"]
+    assert "canonical order cannot be built" in message
+    assert "identifiers.po_number" in message
+
+    # Nothing was committed: the task is still in progress and OWNED,
+    # no payload exists, and fixing the field unblocks the approval.
+    still_mine = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()["task"]
+    assert still_mine["state"] == "in_progress"
+    assert await canonical_payloads_for(db, client, task_id) == []
+
+    fixed = correct(
+        client, task_id, still_mine["version"], SUPERVISOR, field_key="po_number", value="PO-9"
+    )
+    approved = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve",
+        json={"override_reason": "totals confirmed by phone"},
+        headers=SUPERVISOR,
+    )
+    assert approved.status_code == 200, approved.text
+    assert fixed > 0
+    (payload_row,) = await canonical_payloads_for(db, client, task_id)
+    assert payload_row.payload["identifiers"]["po_number"] == "PO-9"
 
 
 async def test_second_approval_hook_demands_a_distinct_approver(

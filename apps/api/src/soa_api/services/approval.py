@@ -28,7 +28,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_api.services.canonical import build_canonical_order, persist_canonical_order
 from soa_api.services.revalidation import revalidate_run
+from soa_canonical.mapping import CanonicalMappingError
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import Document, DocumentState, transition_document
 from soa_db.outbox import enqueue_event
@@ -164,7 +166,27 @@ async def approve_document(
                 "This approval requires a SECOND approver; you already recorded the first approval."
             )
 
+    # The canonical payload is built BEFORE anything is committed to
+    # (CAN-003): if the selected values cannot form a canonical order,
+    # the approval is refused with every problem named and the task
+    # stays in progress — never an approved document without a payload.
+    try:
+        order = await build_canonical_order(session, context, document=document, run_id=task.run_id)
+    except CanonicalMappingError as exc:
+        raise ApprovalStateError(
+            f"Approval blocked — the canonical order cannot be built: {'; '.join(exc.errors)}"
+        ) from None
+
     await complete_task(session, context, task=task, outcome="approved", actor_id=actor)
+    canonical = await persist_canonical_order(
+        session,
+        context,
+        document=document,
+        run_id=task.run_id,
+        task_id=task.id,
+        order=order,
+        actor_id=actor,
+    )
     await transition_document(
         session,
         context,
@@ -213,6 +235,8 @@ async def approve_document(
             "task_id": str(task.id),
             "approved_by": actor,
             "override_used": override_used,
+            "canonical_payload_id": str(canonical.id),
+            "canonical_sha256": canonical.sha256,
         },
         organization_id=context.organization_id,
         dedupe_key=f"document.approved:{document.id}:{task.run_id}",
@@ -223,6 +247,7 @@ async def approve_document(
         "task_version": task.version,
         "warnings": remaining,
         "override_used": override_used,
+        "canonical_payload_id": str(canonical.id),
     }
 
 
