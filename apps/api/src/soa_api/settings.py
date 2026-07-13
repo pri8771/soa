@@ -54,6 +54,12 @@ class ApiSettings(WebServiceSettings):
     upload_session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
     max_upload_bytes: int = Field(default=52_428_800, ge=1)  # 50 MiB
     max_pending_upload_sessions: int = Field(default=100, ge=1)
+    # Resource-limit platform maxima (ING-005). Streams may configure
+    # LOWER values via resolved configuration; never higher.
+    max_pages_per_document: int = Field(default=50, ge=1)
+    max_total_pixels: int = Field(default=100_000_000, ge=1)  # 100 MP raster
+    max_decompressed_bytes: int = Field(default=262_144_000, ge=1)  # 250 MiB
+    max_conversion_seconds: int = Field(default=120, ge=1)
 
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:

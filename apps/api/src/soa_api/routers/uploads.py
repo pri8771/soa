@@ -27,7 +27,7 @@ from soa_api.dependencies import (
     ObjectStoreDep,
     get_dependencies,
 )
-from soa_api.domain.streams import StreamRepository, StreamStatus
+from soa_api.domain.streams import StreamRepository, StreamStatus, StreamVersionRepository
 from soa_api.domain.uploads import (
     UploadPolicyError,
     UploadSession,
@@ -38,6 +38,13 @@ from soa_api.domain.uploads import (
     validate_upload_declaration,
 )
 from soa_api.services.file_inspection import InspectionVerdict, inspect_file
+from soa_api.services.file_limits import (
+    FileLimits,
+    LimitViolation,
+    check_size,
+    record_limit_violation,
+    resolve_limits,
+)
 from soa_api.services.malware import ScanVerdict
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType, record_audit_event
@@ -115,15 +122,53 @@ async def create_upload(
             detail="This stream is archived and no longer accepts documents.",
         )
 
+    # Effective limits (ING-005): the stream's published configuration may
+    # LOWER platform maxima, never raise them.
+    platform_limits = FileLimits(
+        max_size_bytes=deps.settings.max_upload_bytes,
+        max_pages=deps.settings.max_pages_per_document,
+        max_total_pixels=deps.settings.max_total_pixels,
+        max_decompressed_bytes=deps.settings.max_decompressed_bytes,
+        max_conversion_seconds=deps.settings.max_conversion_seconds,
+    )
+    stream_config: dict[str, object] = {}
+    if stream.active_version_id is not None:
+        active = await StreamVersionRepository(session, authorized.org_context).get(
+            stream.active_version_id
+        )
+        if active is not None and active.resolved_snapshot:
+            config = active.resolved_snapshot.get("config")
+            if isinstance(config, dict):
+                stream_config = config
+    limits = resolve_limits(platform_limits, stream_config)
+
     repo = UploadSessionRepository(session, authorized.org_context)
     try:
+        check_size(body.size_bytes, limits)
         validate_upload_declaration(
             content_type=body.content_type,
             size_bytes=body.size_bytes,
             pending_sessions=await repo.count_pending(),
-            max_size_bytes=deps.settings.max_upload_bytes,
+            max_size_bytes=limits.max_size_bytes,
             max_pending_sessions=deps.settings.max_pending_upload_sessions,
         )
+    except LimitViolation as exc:
+        # Limit violations are auditable (ING-005). The 422 rolls the
+        # request transaction back, so the audit event gets its own.
+        if deps.db is not None:
+            async with deps.db.session_scope() as audit_session:
+                await record_limit_violation(
+                    audit_session,
+                    authorized.org_context,
+                    violation=exc,
+                    target_type="stream",
+                    target_id=stream.id,
+                    actor_id=_actor(authorized),
+                    actor_type=ActorType.USER,
+                )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
     except UploadPolicyError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
