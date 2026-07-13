@@ -1,0 +1,213 @@
+"""Integration and mapping-profile model tests (EXP-001): fail-closed
+types, separated credentials (rotation, redaction, audit hygiene), and
+the published-mapping immutability discipline."""
+
+import uuid
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+from soa_api.domain.integrations import (
+    IntegrationCredentialRepository,
+    IntegrationRepository,
+    MappingProfileVersionRepository,
+    UnknownIntegrationTypeError,
+    create_integration,
+    create_mapping_draft,
+    credential_secret_for_delivery,
+    publish_mapping_draft,
+    store_integration_credential,
+)
+from soa_api.domain.versioning import ImmutableVersionError, InvalidVersionStateError
+from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_db.audit import AuditEvent
+from soa_db.repository import OrganizationContext
+
+ORG_A = uuid.UUID("11111111-1111-4111-8111-111111111111")
+ORG_B = uuid.UUID("22222222-2222-4222-8222-222222222222")
+CONTEXT = OrganizationContext(organization_id=ORG_A)
+
+MAPPING = {"fields": [{"target": "PoNumber", "source": "identifiers.po_number"}]}
+TARGET = {"type": "object", "required": ["PoNumber"]}
+
+
+@pytest.fixture
+async def db(tmp_path: Path) -> DatabaseSessions:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/integrations.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return DatabaseSessions(engine)
+
+
+async def make_integration(db: DatabaseSessions) -> uuid.UUID:
+    async with db.session_scope() as session:
+        integration = await create_integration(
+            session,
+            CONTEXT,
+            name="Northstar ERP webhook",
+            slug="northstar-erp",
+            integration_type="webhook",
+            endpoint_url="https://erp.northstar.example/orders",
+            actor_id="user:x",
+        )
+        return integration.id
+
+
+async def test_unknown_integration_types_fail_closed(db: DatabaseSessions) -> None:
+    async with db.session_scope() as session:
+        with pytest.raises(UnknownIntegrationTypeError, match="sap-rfc"):
+            await create_integration(
+                session,
+                CONTEXT,
+                name="X",
+                slug="x",
+                integration_type="sap-rfc",
+                actor_id="user:x",
+            )
+
+
+async def test_credentials_are_separated_rotated_and_never_audited(
+    db: DatabaseSessions,
+) -> None:
+    integration_id = await make_integration(db)
+    async with db.session_scope() as session:
+        integration = await IntegrationRepository(session, CONTEXT).get(integration_id)
+        assert integration is not None
+        first = await store_integration_credential(
+            session,
+            CONTEXT,
+            integration=integration,
+            kind="webhook_hmac_secret",
+            secret="whsec_original_value",
+            actor_id="user:x",
+        )
+        # The integration row carries only the REFERENCE.
+        assert integration.credential_id == first.id
+        assert "whsec_original_value" not in repr(first)
+        assert (
+            await credential_secret_for_delivery(session, CONTEXT, integration=integration)
+            == "whsec_original_value"
+        )
+
+        rotated = await store_integration_credential(
+            session,
+            CONTEXT,
+            integration=integration,
+            kind="webhook_hmac_secret",
+            secret="whsec_rotated_value",
+            actor_id="user:x",
+        )
+        assert integration.credential_id == rotated.id
+        stale = await IntegrationCredentialRepository(session, CONTEXT).get(first.id)
+        assert stale is not None and stale.revoked_at is not None
+        assert (
+            await credential_secret_for_delivery(session, CONTEXT, integration=integration)
+            == "whsec_rotated_value"
+        )
+
+        with pytest.raises(ValueError, match="non-empty secret"):
+            await store_integration_credential(
+                session,
+                CONTEXT,
+                integration=integration,
+                kind="webhook_hmac_secret",
+                secret="   ",
+                actor_id="user:x",
+            )
+
+        # Audit records THAT credentials changed — never their values.
+        events = (
+            (
+                await session.execute(
+                    select(AuditEvent).where(AuditEvent.action.like("%credential%"))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {event.action for event in events} == {
+            "integration.credential_set",
+            "integration.credential_rotated",
+        }
+        assert "whsec" not in str([event.summary for event in events])
+
+
+async def test_published_mappings_are_immutable_and_superseded_in_order(
+    db: DatabaseSessions,
+) -> None:
+    integration_id = await make_integration(db)
+    async with db.session_scope() as session:
+        repo = IntegrationRepository(session, CONTEXT)
+        integration = await repo.get(integration_id)
+        assert integration is not None
+        draft = await create_mapping_draft(
+            session,
+            CONTEXT,
+            integration=integration,
+            definition=MAPPING,
+            target_schema=TARGET,
+            actor_id="user:x",
+        )
+        # Drafts edit freely.
+        draft.definition = {**MAPPING, "constants": [{"target": "Source", "value": "SOA"}]}
+        await session.flush()
+        published = await publish_mapping_draft(
+            session, CONTEXT, integration=integration, draft=draft, actor_id="user:x"
+        )
+        assert published.state == "published"
+        assert integration.active_mapping_version_id == published.id
+        version_one = published.id
+
+    # A published mapping cannot change — not its definition, not its
+    # target schema.
+    with pytest.raises(ImmutableVersionError):
+        async with db.session_scope() as session:
+            row = await MappingProfileVersionRepository(session, CONTEXT).get(version_one)
+            assert row is not None
+            row.definition = {"fields": []}
+            await session.flush()
+
+    async with db.session_scope() as session:
+        integration = await IntegrationRepository(session, CONTEXT).get(integration_id)
+        assert integration is not None
+        second = await create_mapping_draft(
+            session,
+            CONTEXT,
+            integration=integration,
+            definition=MAPPING,
+            target_schema=TARGET,
+            actor_id="user:x",
+        )
+        assert second.version_number == 2
+        # Publishing a non-draft is refused.
+        first_row = await MappingProfileVersionRepository(session, CONTEXT).get(version_one)
+        assert first_row is not None
+        with pytest.raises(InvalidVersionStateError):
+            await publish_mapping_draft(
+                session, CONTEXT, integration=integration, draft=first_row, actor_id="user:x"
+            )
+        await publish_mapping_draft(
+            session, CONTEXT, integration=integration, draft=second, actor_id="user:x"
+        )
+        versions = await MappingProfileVersionRepository(session, CONTEXT).list_for_integration(
+            integration.id
+        )
+        assert [(v.version_number, v.state) for v in versions] == [
+            (1, "superseded"),
+            (2, "published"),
+        ]
+        assert integration.active_mapping_version_id == second.id
+
+
+async def test_everything_is_tenant_scoped(db: DatabaseSessions) -> None:
+    integration_id = await make_integration(db)
+    async with db.session_scope() as session:
+        other = OrganizationContext(organization_id=ORG_B)
+        assert await IntegrationRepository(session, other).get(integration_id) is None
+        assert await IntegrationRepository(session, other).get_by_slug("northstar-erp") is None
+
+    from soa_db.tenant_guard import RLS_PROTECTED_TABLES
+
+    for table in ("integrations", "integration_credentials", "mapping_profile_versions"):
+        assert table in RLS_PROTECTED_TABLES

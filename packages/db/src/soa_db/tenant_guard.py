@@ -51,6 +51,9 @@ RLS_PROTECTED_TABLES = (
     "field_corrections",  # 0025
     "review_comments",  # 0026
     "canonical_payloads",  # 0028
+    "integrations",  # 0029
+    "integration_credentials",  # 0029
+    "mapping_profile_versions",  # 0029
 )
 
 
