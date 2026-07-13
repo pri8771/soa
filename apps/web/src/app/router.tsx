@@ -18,6 +18,8 @@ import { StreamDetail } from "../screens/StreamDetail";
 import { Streams } from "../screens/Streams";
 import { DocumentDetail } from "../screens/DocumentDetail";
 import { DocumentsQueue } from "../screens/DocumentsQueue";
+import { Integrations } from "../screens/Integrations";
+import { MappingStudio } from "../screens/MappingStudio";
 import { ReviewQueue } from "../screens/ReviewQueue";
 import { ReviewStudio } from "../screens/ReviewStudio";
 import { UploadDocuments } from "../screens/UploadDocuments";
@@ -125,6 +127,18 @@ const reviewStudioRoute = createRoute({
   component: ReviewStudio,
 });
 
+const integrationsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "integrations",
+  component: Integrations,
+});
+
+const mappingStudioRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "integrations/$integrationSlug",
+  component: MappingStudio,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams",
@@ -162,7 +176,8 @@ const routeTree = rootRoute.addChildren([
     streamDetailRoute,
     streamConfigureRoute,
     areaRoute("catalogs", "Catalogs", "CAT"),
-    areaRoute("integrations", "Integrations", "EXP"),
+    integrationsRoute,
+    mappingStudioRoute,
     jobsRoute,
     areaRoute("analytics", "Analytics", "ANA"),
     areaRoute("settings", "Settings", "TEN/SEC"),

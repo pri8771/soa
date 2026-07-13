@@ -1005,6 +1005,127 @@ export function rejectReviewTask(
   });
 }
 
+// --- Integrations and mapping profiles (EXP-003/004) ---
+
+export interface IntegrationEntry {
+  id: string;
+  name: string;
+  slug: string;
+  integration_type: string;
+  status: string;
+  endpoint_url: string | null;
+  credential_configured: boolean;
+  active_mapping_version_id: string | null;
+  version: number;
+  created_at: string;
+}
+
+export interface MappingFieldSpec {
+  target: string;
+  source: string;
+  format?: Record<string, unknown>;
+  default?: unknown;
+  when?: Record<string, unknown>;
+  required?: boolean;
+}
+
+export interface MappingDefinition {
+  fields?: MappingFieldSpec[];
+  constants?: { target: string; value: unknown }[];
+  lines?: { source: string; target: string; fields: MappingFieldSpec[] };
+}
+
+export interface MappingVersionRecord {
+  id: string;
+  integration_id: string;
+  version_number: number;
+  state: string;
+  definition: MappingDefinition;
+  target_schema: Record<string, unknown>;
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+  version: number;
+}
+
+export interface IntegrationDetail {
+  integration: IntegrationEntry;
+  mapping_versions: MappingVersionRecord[];
+}
+
+export interface MappingValidationResult {
+  valid: boolean;
+  errors: string[];
+  payload: Record<string, unknown> | null;
+  trace: Record<string, unknown>[];
+  notes?: string[];
+}
+
+export function fetchIntegrations(organizationSlug: string): Promise<{
+  items: IntegrationEntry[];
+}> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations`);
+}
+
+export function fetchIntegrationDetail(
+  organizationSlug: string,
+  integrationSlug: string,
+): Promise<IntegrationDetail> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integrationSlug}`);
+}
+
+export function createMappingDraft(
+  organizationSlug: string,
+  integrationSlug: string,
+  body: { definition: MappingDefinition; target_schema: Record<string, unknown> },
+): Promise<MappingVersionRecord> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integrationSlug}/mapping-versions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateMappingDraft(
+  organizationSlug: string,
+  integrationSlug: string,
+  versionId: string,
+  recordVersion: number,
+  body: { definition: MappingDefinition; target_schema: Record<string, unknown> },
+): Promise<MappingVersionRecord> {
+  return apiFetch(
+    `/orgs/${organizationSlug}/integrations/${integrationSlug}/mapping-versions/${versionId}`,
+    {
+      method: "PATCH",
+      headers: { "If-Match": String(recordVersion) },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function validateMappingVersion(
+  organizationSlug: string,
+  integrationSlug: string,
+  versionId: string,
+): Promise<MappingValidationResult> {
+  return apiFetch(
+    `/orgs/${organizationSlug}/integrations/${integrationSlug}` +
+      `/mapping-versions/${versionId}/validate`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function publishMappingVersion(
+  organizationSlug: string,
+  integrationSlug: string,
+  versionId: string,
+): Promise<MappingVersionRecord> {
+  return apiFetch(
+    `/orgs/${organizationSlug}/integrations/${integrationSlug}` +
+      `/mapping-versions/${versionId}/publish`,
+    { method: "POST" },
+  );
+}
+
 // --- Canonical payload (CAN-004) ---
 
 export interface CanonicalPayloadResponse {

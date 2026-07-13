@@ -677,7 +677,78 @@ export const DEFAULT_WORKSPACE = {
   context: { stream_slug: "email", config_fingerprint: "f".repeat(64) },
 };
 
+export const DEFAULT_INTEGRATION = {
+  id: "e1111111-1111-4111-8111-111111111111",
+  name: "Northstar ERP webhook",
+  slug: "erp",
+  integration_type: "webhook",
+  status: "active",
+  endpoint_url: "https://erp.northstar.example/orders",
+  credential_configured: true,
+  active_mapping_version_id: null,
+  version: 2,
+  created_at: "2026-07-12T09:00:00+00:00",
+};
+
+export const DEFAULT_MAPPING_DRAFT = {
+  id: "e2222222-2222-4222-8222-222222222222",
+  integration_id: DEFAULT_INTEGRATION.id,
+  version_number: 1,
+  state: "draft",
+  definition: {
+    fields: [
+      { target: "PoNumber", source: "identifiers.po_number", required: true },
+      {
+        target: "OrderDate",
+        source: "dates.order_date",
+        format: { kind: "date", pattern: "MM/DD/YYYY" },
+      },
+    ],
+    constants: [{ target: "SourceSystem", value: "SOA" }],
+    lines: {
+      source: "line_items",
+      target: "Lines",
+      fields: [{ target: "Sku", source: "sku" }],
+    },
+  },
+  target_schema: { type: "object", required: ["PoNumber", "GrandTotal"] },
+  change_summary: null,
+  published_at: null,
+  published_by: null,
+  version: 3,
+};
+
 export const handlers = [
+  http.get("/api/orgs/:slug/integrations", () =>
+    HttpResponse.json({ items: [DEFAULT_INTEGRATION] }),
+  ),
+  http.get("/api/orgs/:slug/integrations/:integrationSlug", () =>
+    HttpResponse.json({
+      integration: DEFAULT_INTEGRATION,
+      mapping_versions: [DEFAULT_MAPPING_DRAFT],
+    }),
+  ),
+  http.patch("/api/orgs/:slug/integrations/:integrationSlug/mapping-versions/:versionId", () =>
+    HttpResponse.json({ ...DEFAULT_MAPPING_DRAFT, version: 4 }),
+  ),
+  http.post(
+    "/api/orgs/:slug/integrations/:integrationSlug/mapping-versions/:versionId/validate",
+    () =>
+      HttpResponse.json({
+        valid: true,
+        errors: [],
+        payload: { PoNumber: "PO-100042", OrderDate: "03/14/2026", SourceSystem: "SOA" },
+        trace: [],
+        notes: [],
+      }),
+  ),
+  http.post(
+    "/api/orgs/:slug/integrations/:integrationSlug/mapping-versions/:versionId/publish",
+    () => HttpResponse.json({ ...DEFAULT_MAPPING_DRAFT, state: "published", version: 4 }),
+  ),
+  http.post("/api/orgs/:slug/integrations/:integrationSlug/mapping-versions", () =>
+    HttpResponse.json({ ...DEFAULT_MAPPING_DRAFT, id: "e3", version_number: 2 }, { status: 201 }),
+  ),
   http.get("/api/orgs/:slug/review-tasks/:taskId/workspace", () =>
     HttpResponse.json(DEFAULT_WORKSPACE),
   ),
