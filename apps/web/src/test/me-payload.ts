@@ -30,6 +30,8 @@ export const DEFAULT_ME = {
         "streams.read",
         "streams.manage",
         "catalogs.read",
+        "catalogs.manage",
+        "catalogs.activate",
         "integrations.read",
         "integrations.manage",
         "analytics.read",

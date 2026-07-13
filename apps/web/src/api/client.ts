@@ -1328,3 +1328,113 @@ export function previewProviderRouting(
     body: JSON.stringify(body),
   });
 }
+
+// --- Catalogs (CAT-004/005) ---
+
+export interface CatalogSummary {
+  id: string;
+  name: string;
+  slug: string;
+  catalog_type: string;
+  source: string;
+  active_version_id: string | null;
+}
+
+export interface CatalogVersionSummary {
+  id: string;
+  version_number: number;
+  state: string;
+  record_count: number;
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+}
+
+export interface CatalogImportMapping {
+  source_id: string;
+  display_name: string;
+  aliases?: string | null;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  attributes?: Record<string, string>;
+}
+
+export interface CatalogImportResult {
+  status: "previewed" | "draft_created" | "parsed";
+  records: number;
+  issues: { row_number: number; message: string }[];
+  warnings: string[];
+  encoding: string;
+  preview: {
+    added: string[];
+    changed: string[];
+    deactivated: string[];
+    unchanged: number;
+  };
+  version: CatalogVersionSummary | null;
+}
+
+export interface CatalogRecordEntry {
+  id: string;
+  source_id: string;
+  display_name: string;
+  aliases: string[];
+  attributes: Record<string, string>;
+  effective_from: string | null;
+  effective_to: string | null;
+}
+
+export function fetchCatalogs(organizationSlug: string): Promise<{ items: CatalogSummary[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/catalogs`);
+}
+
+export function fetchCatalogDetail(
+  organizationSlug: string,
+  catalogSlug: string,
+): Promise<{ catalog: CatalogSummary; versions: CatalogVersionSummary[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/catalogs/${catalogSlug}`);
+}
+
+export function importCatalogFile(
+  organizationSlug: string,
+  catalogSlug: string,
+  body: {
+    filename: string;
+    content_base64: string;
+    mapping: CatalogImportMapping;
+    sheet?: string | null;
+    allow_partial?: boolean;
+    dry_run?: boolean;
+  },
+): Promise<CatalogImportResult> {
+  return apiFetch(`/orgs/${organizationSlug}/catalogs/${catalogSlug}/imports`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchCatalogRecords(
+  organizationSlug: string,
+  catalogSlug: string,
+  versionId: string,
+  options: { q?: string; cursor?: string } = {},
+): Promise<{ items: CatalogRecordEntry[]; has_more: boolean; next_cursor: string | null }> {
+  const params = new URLSearchParams();
+  if (options.q) params.set("q", options.q);
+  if (options.cursor) params.set("cursor", options.cursor);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return apiFetch(
+    `/orgs/${organizationSlug}/catalogs/${catalogSlug}/versions/${versionId}/records${suffix}`,
+  );
+}
+
+export function activateCatalogVersion(
+  organizationSlug: string,
+  catalogSlug: string,
+  versionId: string,
+): Promise<CatalogVersionSummary> {
+  return apiFetch(
+    `/orgs/${organizationSlug}/catalogs/${catalogSlug}/versions/${versionId}/activate`,
+    { method: "POST" },
+  );
+}

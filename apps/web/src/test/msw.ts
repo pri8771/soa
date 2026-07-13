@@ -1040,6 +1040,134 @@ export const handlers = [
     const body = (await request.json()) as { overrides: Record<string, unknown> };
     return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));
   }),
+  http.get("/api/orgs/:slug/catalogs", () =>
+    HttpResponse.json({
+      items: [
+        {
+          id: "cat-1",
+          name: "Products",
+          slug: "products",
+          catalog_type: "products",
+          source: "csv_import",
+          active_version_id: "catv-1",
+        },
+        {
+          id: "cat-2",
+          name: "Customers",
+          slug: "customers",
+          catalog_type: "customers",
+          source: "manual",
+          active_version_id: null,
+        },
+      ],
+    }),
+  ),
+  http.get("/api/orgs/:slug/catalogs/:catalogSlug", () =>
+    HttpResponse.json({
+      catalog: {
+        id: "cat-1",
+        name: "Products",
+        slug: "products",
+        catalog_type: "products",
+        source: "csv_import",
+        active_version_id: "catv-1",
+      },
+      versions: [
+        {
+          id: "catv-1",
+          version_number: 1,
+          state: "published",
+          record_count: 2,
+          change_summary: "initial import",
+          published_at: "2026-07-01T10:00:00Z",
+          published_by: "user:u-1",
+        },
+        {
+          id: "catv-2",
+          version_number: 2,
+          state: "draft",
+          record_count: 3,
+          change_summary: "CSV import: 3 rows (1 skipped)",
+          published_at: null,
+          published_by: null,
+        },
+      ],
+    }),
+  ),
+  http.get("/api/orgs/:slug/catalogs/:catalogSlug/versions/:versionId/records", ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get("q") ?? "").toLowerCase();
+    const items = [
+      {
+        id: "rec-1",
+        source_id: "SKU-1",
+        display_name: "Widget 9mm",
+        aliases: ["WIDGET-9"],
+        attributes: { uom: "EA" },
+        effective_from: "2026-01-01",
+        effective_to: null,
+      },
+      {
+        id: "rec-2",
+        source_id: "SKU-2",
+        display_name: "Flange Kit",
+        aliases: [],
+        attributes: { uom: "BOX" },
+        effective_from: null,
+        effective_to: null,
+      },
+    ].filter(
+      (record) =>
+        !q ||
+        record.source_id.toLowerCase().includes(q) ||
+        record.display_name.toLowerCase().includes(q) ||
+        record.aliases.some((alias) => alias.toLowerCase().includes(q)),
+    );
+    return HttpResponse.json({ items, has_more: false, next_cursor: null });
+  }),
+  http.post("/api/orgs/:slug/catalogs/:catalogSlug/imports", async ({ request }) => {
+    const body = (await request.json()) as { dry_run?: boolean; allow_partial?: boolean };
+    const base = {
+      records: 2,
+      issues: [{ row_number: 3, message: "missing 'sku'" }],
+      warnings: [],
+      encoding: "utf-8",
+      preview: { added: ["SKU-3"], changed: ["SKU-1"], deactivated: ["SKU-2"], unchanged: 0 },
+    };
+    if (body.dry_run) {
+      return HttpResponse.json({ ...base, status: "previewed", version: null });
+    }
+    if (!body.allow_partial) {
+      return HttpResponse.json(
+        { error: { message: "1 rows failed validation; fix the file or pass allow_partial" } },
+        { status: 422 },
+      );
+    }
+    return HttpResponse.json({
+      ...base,
+      status: "draft_created",
+      version: {
+        id: "catv-3",
+        version_number: 3,
+        state: "draft",
+        record_count: 2,
+        change_summary: null,
+        published_at: null,
+        published_by: null,
+      },
+    });
+  }),
+  http.post("/api/orgs/:slug/catalogs/:catalogSlug/versions/:versionId/activate", ({ params }) =>
+    HttpResponse.json({
+      id: params.versionId,
+      version_number: 2,
+      state: "published",
+      record_count: 3,
+      change_summary: null,
+      published_at: "2026-07-13T10:00:00Z",
+      published_by: "user:u-1",
+    }),
+  ),
   http.get("/api/orgs/:slug/providers", () =>
     HttpResponse.json({
       items: [

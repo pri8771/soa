@@ -24,7 +24,7 @@ describe("app shell routes", () => {
   });
 
   it("renders placeholder screens for unbuilt areas", async () => {
-    await renderAt("/app/northstar/catalogs");
-    expect(await screen.findByText("Catalogs is not built yet")).toBeInTheDocument();
+    await renderAt("/app/northstar/analytics");
+    expect(await screen.findByText("Analytics is not built yet")).toBeInTheDocument();
   });
 });
