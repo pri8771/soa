@@ -1040,6 +1040,13 @@ export const handlers = [
     const body = (await request.json()) as { overrides: Record<string, unknown> };
     return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));
   }),
+  http.get("/api/orgs/:slug/streams/:streamSlug/simulation", () =>
+    HttpResponse.json({
+      available: false,
+      reason:
+        "No evaluation runs are recorded for this stream yet. Evaluations run a candidate configuration against a published gold dataset; results appear here once run storage lands.",
+    }),
+  ),
   http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),
   http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),
   http.get("/api/orgs/:slug/processes/:processSlug", () =>

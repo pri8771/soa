@@ -563,6 +563,28 @@ async def list_streams(
     return items
 
 
+@router.get("/orgs/{organization_slug}/streams/{stream_slug}/simulation")
+async def get_stream_simulation(
+    stream_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Simulation comparison for this stream (AIO-018). Honest until
+    evaluation runs are persisted: the runner and promotion gate exist
+    (AIO-016/017), but no run results are stored per configuration
+    version yet, so there is nothing real to compare — the endpoint
+    says so instead of inventing numbers."""
+    await _load_stream(session, authorized, stream_slug)
+    return {
+        "available": False,
+        "reason": (
+            "No evaluation runs are recorded for this stream yet. Evaluations "
+            "run a candidate configuration against a published gold dataset; "
+            "results appear here once run storage lands."
+        ),
+    }
+
+
 @router.post("/orgs/{organization_slug}/streams/{stream_slug}/archive")
 async def archive_stream(
     stream_slug: str,

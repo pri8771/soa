@@ -599,3 +599,26 @@ async def test_stream_draft_edit_and_resolve_preview_over_http(
         headers=ADMIN,
     )
     assert frozen.status_code == 409
+
+
+def test_stream_simulation_is_honest_until_runs_are_persisted(client: TestClient) -> None:
+    """AIO-018: the simulation endpoint exists, is permissioned, and says
+    plainly that no evaluation runs are recorded yet — it never invents
+    comparison numbers."""
+    make_org(client)
+    make_process(client)
+    client.post(
+        "/orgs/northstar/processes/purchase-orders/streams",
+        json={"name": "Email intake", "slug": "email"},
+        headers=ADMIN,
+    )
+    response = client.get("/orgs/northstar/streams/email/simulation", headers=ADMIN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is False
+    assert "No evaluation runs" in body["reason"]
+    assert client.get("/orgs/northstar/streams/ghost/simulation", headers=ADMIN).status_code == 404
+    # A non-member cannot even see the organization (tenancy convention).
+    assert (
+        client.get("/orgs/northstar/streams/email/simulation", headers=OUTSIDER).status_code == 404
+    )

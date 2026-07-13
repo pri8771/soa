@@ -1225,3 +1225,61 @@ export function escalateReviewTask(
     body: JSON.stringify({ reason }),
   });
 }
+
+// --- Simulation (AIO-018) ---
+
+export interface SimulationRate {
+  current: number;
+  candidate: number;
+}
+
+export interface SimulationFinding {
+  kind: string;
+  detail: string;
+  waivable: boolean;
+}
+
+export interface SimulationFieldDiff {
+  field: string;
+  current_exact_rate: number | null;
+  candidate_exact_rate: number | null;
+  delta: number | null;
+}
+
+export interface SimulationCohortDiff {
+  cohort: string;
+  current_exact_rate: number | null;
+  candidate_exact_rate: number | null;
+  delta: number | null;
+}
+
+export interface SimulationDocument {
+  document_sha256: string;
+  split: string;
+  wrong_fields: string[];
+  auto_approved: boolean;
+}
+
+export interface SimulationComparison {
+  current_label: string;
+  candidate_label: string;
+  field_exact_rate: SimulationRate;
+  field_normalized_rate: SimulationRate;
+  false_auto_approval_rate: SimulationRate;
+  review_rate: SimulationRate;
+  total_cost_cents: SimulationRate;
+  findings: SimulationFinding[];
+  field_diffs: SimulationFieldDiff[];
+  cohort_diffs: SimulationCohortDiff[];
+  documents: SimulationDocument[];
+}
+
+export type SimulationResponse =
+  { available: false; reason: string } | { available: true; comparison: SimulationComparison };
+
+export function fetchStreamSimulation(
+  organizationSlug: string,
+  streamSlug: string,
+): Promise<SimulationResponse> {
+  return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/simulation`);
+}
