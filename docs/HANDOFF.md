@@ -4,7 +4,7 @@
 
 ## 1. Current state
 
-- **Progress (updated as epics complete):** FND (12), DB (5), TEN (12), DSN (9), JOB (8), CFG (14), STO (6), ING (14), and PRC (14) are DONE — implemented, tested, committed to `dev`, CI green. Next action: `REV-001` in `docs/BUILD_BACKLOG.md`, then the rest of REV in order.
+- **Progress (updated as epics complete):** FND (12), DB (5), TEN (12), DSN (9), JOB (8), CFG (14), STO (6), ING (14), PRC (14), and REV (16) are DONE — implemented, tested, committed to `dev`, CI green. (REV-016's study protocol is written — `docs/REVIEW_USABILITY_BENCHMARK.md` — but the human study itself runs during PIL; its release gate stays open until then.) Next action: `CAN-001` in `docs/BUILD_BACKLOG.md`, then the rest of CAN in order.
 - **CI conventions learned the hard way:**
   - The migrations job runs all `-m postgres` tests as the non-superuser `soa_app` role (superusers bypass RLS; the bootstrap image user is a superuser).
   - RLS policies must use `NULLIF(current_setting(...), '')::uuid` — a reverted `SET LOCAL` GUC reads as `''` on pooled connections.
