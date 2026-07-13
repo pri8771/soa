@@ -62,6 +62,9 @@ class ApiSettings(WebServiceSettings):
     max_conversion_seconds: int = Field(default=120, ge=1)
     # Public API ingestion (ING-013): per-credential sliding-window limit.
     api_ingest_rate_per_minute: int = Field(default=60, ge=1)
+    # Email intake (ING-014): the webhook only accepts requests carrying
+    # this shared secret; unset disables the endpoint entirely.
+    email_intake_secret: str | None = None
 
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:
