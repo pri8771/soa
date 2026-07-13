@@ -131,3 +131,13 @@ async def test_uuid7_is_time_sortable() -> None:
     assert first.version == 7
     assert second.version == 7
     assert first.int < second.int
+
+
+def test_uuid7_is_monotonic_within_one_millisecond() -> None:
+    """Ids minted in the same millisecond must still sort in generation
+    order — cursor pagination treats id order as creation order, and
+    same-millisecond randomness once flaked CI exactly here."""
+    ids = [uuid7() for _ in range(5000)]
+    assert ids == sorted(ids, key=lambda value: value.int)
+    assert len(set(ids)) == len(ids)
+    assert all(value.version == 7 for value in ids)

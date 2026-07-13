@@ -9,6 +9,7 @@
 """
 
 import os
+import threading
 import time
 import uuid
 from datetime import UTC, datetime
@@ -22,16 +23,40 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm.properties import MappedColumn
 from sqlalchemy.types import TypeDecorator
 
+_uuid7_lock = threading.Lock()
+_uuid7_last_ms = 0
+_uuid7_seq = 0
+
 
 def uuid7() -> uuid.UUID:
-    """Time-ordered UUID (RFC 9562 v7): 48-bit ms timestamp + randomness."""
-    timestamp_ms = time.time_ns() // 1_000_000
-    rand = int.from_bytes(os.urandom(10), "big")
+    """Time-ordered UUID (RFC 9562 v7): 48-bit ms timestamp, a
+    per-process monotonic sequence in rand_a, 62 random bits in rand_b.
+
+    The sequence (RFC 9562 §6.2 method 1) makes ids generated in the
+    same millisecond sort in generation order — cursor pagination and
+    "newest first" listings rely on id order matching creation order,
+    and pure same-millisecond randomness broke that (a real CI flake)."""
+    global _uuid7_last_ms, _uuid7_seq
+    with _uuid7_lock:
+        timestamp_ms = time.time_ns() // 1_000_000
+        if timestamp_ms <= _uuid7_last_ms:
+            _uuid7_seq += 1
+            if _uuid7_seq > 0xFFF:
+                # Counter exhausted within one millisecond: borrow the
+                # next one; monotonicity beats timestamp exactness.
+                _uuid7_last_ms += 1
+                _uuid7_seq = 0
+            timestamp_ms = _uuid7_last_ms
+        else:
+            _uuid7_last_ms = timestamp_ms
+            _uuid7_seq = 0
+        seq = _uuid7_seq
+    rand = int.from_bytes(os.urandom(8), "big")
     value = (timestamp_ms & 0xFFFFFFFFFFFF) << 80
     value |= 0x7 << 76  # version 7
-    value |= (rand >> 6) & (0xFFF << 64)
+    value |= (seq & 0xFFF) << 64  # rand_a: monotonic sequence
     value |= 0b10 << 62  # RFC 4122 variant
-    value |= rand & 0x3FFFFFFFFFFFFFFF
+    value |= rand & 0x3FFFFFFFFFFFFFFF  # rand_b
     return uuid.UUID(int=value)
 
 
