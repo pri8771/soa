@@ -28,6 +28,7 @@ import {
 import { ApprovalPanel } from "../components/review/ApprovalPanel";
 import { ConflictResolver, type ConflictEntry } from "../components/review/ConflictResolver";
 import { HeaderFieldEditor, type SaveState } from "../components/review/HeaderFieldEditor";
+import { SplitLayout } from "../components/review/SplitLayout";
 import { LineItemGrid, type GridRow } from "../components/review/LineItemGrid";
 import { DocumentViewer, type EvidenceHighlight } from "../components/viewer/DocumentViewer";
 import { AppShell } from "../shell/AppShell";
@@ -429,35 +430,35 @@ export function ReviewStudio() {
           </div>
         ) : null}
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0, 3fr) minmax(20rem, 2fr)",
-            gap: "var(--soa-space-4)",
-            alignItems: "start",
-          }}
-        >
-          <DocumentViewer
-            organizationSlug={slug}
-            documentId={data.document.id}
-            evidence={evidence}
-            activeEvidenceId={activeEvidenceId}
-            onEvidenceSelect={(id) => setActiveFieldKey(id.split("#")[0])}
-          />
-          <HeaderFieldEditor
-            fields={headerFields}
-            reasons={data.task.reasons}
-            drafts={drafts}
-            saveStates={saveStates}
-            activeFieldKey={activeFieldKey}
-            onFieldFocus={setActiveFieldKey}
-            onDraftChange={(fieldKey, value) =>
-              setDrafts((prev) => ({ ...prev, [fieldKey]: value }))
-            }
-            onSave={(fieldKey, value) => void enqueueSave(fieldKey, null, value)}
-            readOnly={!editable}
-          />
-        </div>
+        <SplitLayout
+          storageKey="soa.review.split"
+          leftLabel="Document"
+          rightLabel="Fields"
+          left={
+            <DocumentViewer
+              organizationSlug={slug}
+              documentId={data.document.id}
+              evidence={evidence}
+              activeEvidenceId={activeEvidenceId}
+              onEvidenceSelect={(id) => setActiveFieldKey(id.split("#")[0])}
+            />
+          }
+          right={
+            <HeaderFieldEditor
+              fields={headerFields}
+              reasons={data.task.reasons}
+              drafts={drafts}
+              saveStates={saveStates}
+              activeFieldKey={activeFieldKey}
+              onFieldFocus={setActiveFieldKey}
+              onDraftChange={(fieldKey, value) =>
+                setDrafts((prev) => ({ ...prev, [fieldKey]: value }))
+              }
+              onSave={(fieldKey, value) => void enqueueSave(fieldKey, null, value)}
+              readOnly={!editable}
+            />
+          }
+        />
 
         {Object.keys({ ...data.line_items, ...(pendingRows.length ? { lines: [] } : {}) }).map(
           (table) => {
