@@ -183,7 +183,11 @@ class TestSnapshot:
                 since=now - timedelta(days=1),
                 until=now + timedelta(days=1),
             )
-            assert snapshot["backlog"]["review_tasks"] == {"open": 2, "in_progress": 0}
+            assert snapshot["backlog"]["review_tasks"] == {
+                "open": 2,
+                "in_progress": 0,
+                "blocking": 0,
+            }
             assert snapshot["backlog"]["documents_by_state"]["received"] == 3
             assert snapshot["sla"]["overdue_now"] == 1
             assert snapshot["sla"]["active_with_sla"] == 2
@@ -249,6 +253,7 @@ class TestDefinitions:
             "backlog.review_tasks",
             "sla.overdue_now",
             "sla.breached_completed",
+            "exceptions.documents_by_state",
             "exports.jobs_by_state",
             "exports.attempt_success",
         }

@@ -29,6 +29,7 @@ import { SelectOrganization } from "../screens/SelectOrganization";
 import { CatalogManager } from "../screens/CatalogManager";
 import { Catalogs } from "../screens/Catalogs";
 import { Providers } from "../screens/Providers";
+import { Operations } from "../screens/Operations";
 import { Simulation } from "../screens/Simulation";
 import { Workbench } from "../screens/Workbench";
 
@@ -185,12 +186,18 @@ const simulationRoute = createRoute({
   component: Simulation,
 });
 
+const operationsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "overview",
+  component: Operations,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
   selectOrganizationRoute,
   appRoute.addChildren([
-    areaRoute("overview", "Overview", "ANA"),
+    operationsRoute,
     documentsRoute,
     uploadDocumentsRoute,
     documentDetailRoute,

@@ -31,6 +31,7 @@ const STATE_OPTIONS = [
   { id: "rejected", label: "Rejected" },
   { id: "quarantined", label: "Quarantined" },
   { id: "failed_retryable", label: "Failed (retryable)" },
+  { id: "failed_terminal", label: "Failed (terminal)" },
   { id: "cancelled", label: "Cancelled" },
 ];
 

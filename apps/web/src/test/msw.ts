@@ -775,6 +775,83 @@ export const handlers = [
       },
     });
   }),
+  http.get("/api/orgs/:slug/analytics/operations", () =>
+    HttpResponse.json({
+      window: {
+        since: "2026-06-29T00:00:00+00:00",
+        until: "2026-07-13T00:00:00+00:00",
+        timezone: "UTC",
+      },
+      stream_id: null,
+      volume: {
+        per_day: [
+          { day: "2026-07-11", state: "completed", count: 4 },
+          { day: "2026-07-12", state: "review_required", count: 2 },
+        ],
+      },
+      latency: {
+        runs_measured: 6,
+        sample_capped: false,
+        avg_ms: 412.5,
+        p50_ms: 390,
+        p95_ms: 940,
+      },
+      backlog: {
+        documents_by_state: { review_required: 2, extracting: 1 },
+        review_tasks: { open: 2, in_progress: 1, blocking: 1 },
+      },
+      exceptions: {
+        documents_by_state: {
+          quarantined: 1,
+          failed_retryable: 0,
+          failed_terminal: 1,
+          rejected: 0,
+          cancelled: 0,
+        },
+      },
+      sla: {
+        overdue_now: 1,
+        active_with_sla: 3,
+        breached_completed: 1,
+        completed_with_sla: 4,
+      },
+      exports: {
+        jobs_by_state: { succeeded: 3, failed_retryable: 1 },
+        attempts_total: 5,
+        attempts_delivered: 3,
+      },
+      notes: [],
+      definitions: {
+        "sla.overdue_now": {
+          key: "sla.overdue_now",
+          description: "Active review tasks past their SLA right now (snapshot).",
+          numerator: "open/in_progress tasks with sla_due_at < now",
+          denominator: "active_with_sla: open/in_progress tasks that have an SLA",
+          timezone: "UTC (day buckets are UTC calendar days; window is [since, until))",
+        },
+      },
+      needs_attention: [
+        {
+          key: "overdue_reviews",
+          label: "Review tasks past their SLA",
+          count: 1,
+          link: { screen: "review", filters: { view: "overdue" } },
+        },
+        {
+          key: "quarantined_documents",
+          label: "Quarantined documents",
+          count: 1,
+          link: { screen: "documents", filters: { docState: "quarantined" } },
+        },
+        {
+          key: "failing_exports",
+          label: "Export jobs failing in the window",
+          count: 1,
+          link: { screen: "integrations", filters: {} },
+        },
+      ],
+    }),
+  ),
   http.get("/api/orgs/:slug/review-tasks/:taskId/catalog-candidates", ({ request }) => {
     const url = new URL(request.url);
     const q = url.searchParams.get("q") ?? "";

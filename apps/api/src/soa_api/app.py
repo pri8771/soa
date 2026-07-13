@@ -11,6 +11,7 @@ from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import (
+    analytics,
     artifacts,
     catalogs,
     documents,
@@ -164,6 +165,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(documents.router)
     app.include_router(review.router)
+    app.include_router(analytics.router)
     app.include_router(instructions.router)
     app.include_router(integrations.router)
     app.include_router(exports.router)

@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { DEFAULT_ME, server } from "../test/msw";
@@ -67,7 +67,10 @@ describe("Organization switching (TEN-012)", () => {
       expect(screen.getByTestId("current-organization")).toHaveTextContent("Meridian Foods"),
     );
     // The restricted org lacks documents.review: Review nav must not linger.
-    expect(screen.queryByRole("link", { name: /Review/ })).not.toBeInTheDocument();
+    // (Scoped to the primary nav — the ANA-004 dashboard body has its
+    // own review drill-down links.)
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).queryByRole("link", { name: /Review/ })).not.toBeInTheDocument();
   });
 });
 

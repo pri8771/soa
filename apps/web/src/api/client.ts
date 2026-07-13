@@ -957,6 +957,59 @@ export function correctField(
   });
 }
 
+// --- Operations dashboard (ANA-004) ---
+
+export interface MetricDefinitionEntry {
+  key: string;
+  description: string;
+  numerator: string;
+  denominator: string;
+  timezone: string;
+}
+
+export interface AttentionItem {
+  key: string;
+  label: string;
+  count: number;
+  link: { screen: string; filters: Record<string, string> };
+}
+
+export interface OperationsSnapshot {
+  window: { since: string; until: string; timezone: string };
+  stream_id: string | null;
+  volume: { per_day: { day: string; state: string; count: number }[] };
+  latency: {
+    runs_measured: number;
+    sample_capped: boolean;
+    avg_ms: number | null;
+    p50_ms: number | null;
+    p95_ms: number | null;
+  };
+  backlog: {
+    documents_by_state: Record<string, number>;
+    review_tasks: Record<string, number>;
+  };
+  exceptions: { documents_by_state: Record<string, number> };
+  sla: {
+    overdue_now: number;
+    active_with_sla: number;
+    breached_completed: number;
+    completed_with_sla: number;
+  };
+  exports: {
+    jobs_by_state: Record<string, number>;
+    attempts_total: number;
+    attempts_delivered: number;
+  };
+  notes: string[];
+  definitions: Record<string, MetricDefinitionEntry>;
+  needs_attention: AttentionItem[];
+}
+
+export function fetchOperationsSnapshot(organizationSlug: string): Promise<OperationsSnapshot> {
+  return apiFetch(`/orgs/${organizationSlug}/analytics/operations`);
+}
+
 // --- Catalog candidate matching in review (CAT-010) ---
 
 export interface CatalogMatchFeature {

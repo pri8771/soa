@@ -39,6 +39,18 @@ LATENCY_SAMPLE_CAP = 50_000
 
 _ACTIVE_TASK_STATES = (ReviewTaskState.OPEN.value, ReviewTaskState.IN_PROGRESS.value)
 
+#: Documents needing intervention rather than patience.
+EXCEPTIONAL_DOCUMENT_STATES = tuple(
+    state.value
+    for state in (
+        DocumentState.QUARANTINED,
+        DocumentState.FAILED_RETRYABLE,
+        DocumentState.FAILED_TERMINAL,
+        DocumentState.REJECTED,
+        DocumentState.CANCELLED,
+    )
+)
+
 #: Document states that count as work still in the pipeline.
 BACKLOG_DOCUMENT_STATES = tuple(
     state.value
@@ -110,6 +122,15 @@ DEFINITIONS: dict[str, MetricDefinition] = {
             description="Completed review tasks that finished after their SLA.",
             numerator="tasks completed in the window with completed_at > sla_due_at",
             denominator=("completed_with_sla: tasks completed in the window that had an SLA"),
+        ),
+        MetricDefinition(
+            key="exceptions.documents_by_state",
+            description=(
+                "Documents currently in an exceptional state — quarantined, "
+                "failed, rejected, cancelled (snapshot, not windowed)."
+            ),
+            numerator="documents in the exceptional state NOW",
+            denominator="none — an absolute count",
         ),
         MetricDefinition(
             key="exports.jobs_by_state",
@@ -221,6 +242,15 @@ async def operational_snapshot(
         )
     )
     documents_by_state = {row.state: row[1] for row in backlog_rows}
+    exception_rows = await session.execute(
+        scoped_documents(
+            select(Document.state, func.count())
+            .where(Document.state.in_(EXCEPTIONAL_DOCUMENT_STATES))
+            .group_by(Document.state)
+        )
+    )
+    exceptions_by_state = {state: 0 for state in EXCEPTIONAL_DOCUMENT_STATES}
+    exceptions_by_state.update({row.state: row[1] for row in exception_rows})
     task_rows = await session.execute(
         select(ReviewTask.state, func.count())
         .where(
@@ -229,8 +259,17 @@ async def operational_snapshot(
         )
         .group_by(ReviewTask.state)
     )
-    review_tasks = {state: 0 for state in _ACTIVE_TASK_STATES}
+    review_tasks: dict[str, int] = {state: 0 for state in _ACTIVE_TASK_STATES}
     review_tasks.update({row.state: row[1] for row in task_rows})
+    review_tasks["blocking"] = (
+        await session.execute(
+            select(func.count()).where(
+                ReviewTask.organization_id == org,
+                ReviewTask.state.in_(_ACTIVE_TASK_STATES),
+                ReviewTask.blocking.is_(True),
+            )
+        )
+    ).scalar_one()
 
     # --- SLA ---
     now = utcnow()
@@ -323,6 +362,7 @@ async def operational_snapshot(
             "documents_by_state": documents_by_state,
             "review_tasks": review_tasks,
         },
+        "exceptions": {"documents_by_state": exceptions_by_state},
         "sla": {
             "overdue_now": overdue_now,
             "active_with_sla": active_with_sla,
@@ -342,6 +382,7 @@ async def operational_snapshot(
 __all__ = [
     "BACKLOG_DOCUMENT_STATES",
     "DEFINITIONS",
+    "EXCEPTIONAL_DOCUMENT_STATES",
     "LATENCY_SAMPLE_CAP",
     "LatencyStats",
     "MetricDefinition",
