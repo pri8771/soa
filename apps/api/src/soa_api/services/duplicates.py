@@ -97,11 +97,62 @@ async def mark_duplicate(
     )
 
 
-#: Seam for business-level duplicate checks (customer + PO number). The
-#: PRC validation stage sets this once extracted fields exist; intake
-#: only handles exact content duplicates.
+#: Seam for business-level duplicate checks (customer + PO number),
+#: filled by CAT-013 below. Intake only handles exact content
+#: duplicates; the validation stage calls the hook once extracted
+#: fields exist.
 BusinessDuplicateHook = Callable[
     [AsyncSession, OrganizationContext, uuid.UUID, Mapping[str, object]],
     Awaitable[list[Document]],
 ]
-BUSINESS_DUPLICATE_HOOK: BusinessDuplicateHook | None = None
+
+
+async def find_business_duplicate_documents(
+    session: AsyncSession,
+    context: OrganizationContext,
+    document_id: uuid.UUID,
+    extracted: Mapping[str, object],
+) -> list[Document]:
+    """The CAT-013 implementation of the business-duplicate seam: other
+    documents in the same stream whose effective PO number (and, where
+    comparable, customer) matches the given extracted header values."""
+    from sqlalchemy import select
+
+    from soa_db.duplicate_po import find_po_duplicates
+
+    document = await DocumentRepository(session, context).get(document_id)
+    if document is None:
+        return []
+
+    def text(key: str) -> str | None:
+        value = extracted.get(key)
+        return str(value) if value is not None and str(value).strip() else None
+
+    search = await find_po_duplicates(
+        session,
+        context,
+        stream_id=document.stream_id,
+        exclude_document_id=document.id,
+        po_number=text("po_number"),
+        customer=text("customer_name"),
+        order_date=text("order_date"),
+    )
+    if not search.candidates:
+        return []
+    order = {candidate.document_id: index for index, candidate in enumerate(search.candidates)}
+    rows = (
+        (
+            await session.execute(
+                select(Document).where(
+                    Document.organization_id == context.organization_id,
+                    Document.id.in_(order),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return sorted(rows, key=lambda row: order[row.id])
+
+
+BUSINESS_DUPLICATE_HOOK: BusinessDuplicateHook | None = find_business_duplicate_documents
