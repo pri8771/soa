@@ -12,6 +12,7 @@ members = [
     "soa-config",
     "soa-db",
     "soa-fixtures",
+    "soa-storage",
     "soa-worker",
     "soa-workspace",
 ]
@@ -1427,6 +1428,11 @@ version = "0.1.0"
 source = { editable = "packages/test-fixtures" }
 
 [[package]]
+name = "soa-storage"
+version = "0.1.0"
+source = { editable = "packages/storage" }
+
+[[package]]
 name = "soa-worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
@@ -1454,6 +1460,7 @@ dependencies = [
     { name = "soa-config" },
     { name = "soa-db" },
     { name = "soa-fixtures" },
+    { name = "soa-storage" },
     { name = "soa-worker" },
 ]
 
@@ -1474,6 +1481,7 @@ requires-dist = [
     { name = "soa-config", editable = "packages/config" },
     { name = "soa-db", editable = "packages/db" },
     { name = "soa-fixtures", editable = "packages/test-fixtures" },
+    { name = "soa-storage", editable = "packages/storage" },
     { name = "soa-worker", editable = "apps/worker" },
 ]
 
