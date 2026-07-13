@@ -71,13 +71,17 @@ support.
   (`apps/api/src/soa_api/services/file_inspection.py`); size/page caps
   (`apps/api/src/soa_api/services/file_limits.py`); malware scan stage with
   quarantine state and no-download rule (`apps/api/src/soa_api/services/malware.py`);
-  rendering and native-text extraction run in subprocess sandboxes with
-  rlimits, closed fds, and wall-clock kills
-  (`apps/worker/src/soa_worker/render_sandbox.py`,
-  `apps/worker/src/soa_worker/native_text_sandbox.py`); tesseract runs with
-  rlimits and a thread cap (`apps/worker/src/soa_worker/tesseract_ocr.py`).
-- **Residual:** sandboxes are process-level (rlimits/argv seams), not
-  seccomp/namespace jails — SEC-004 hardens further.
+  rendering, native-text extraction, and OCR run in subprocess sandboxes
+  through the shared SEC-004 launch profile
+  (`apps/worker/src/soa_worker/sandbox.py`): secret-free environments,
+  temp/home confined to per-run scratch dirs, CPU/memory/file-size/
+  open-file rlimits, no core dumps, python-level network and fork/exec
+  denial, own sessions with whole-group wall-clock kills — see
+  `docs/SANDBOX_PROFILE.md`.
+- **Residual:** the python-level denials stop Python-level attacks only; a
+  native-code exploit is bound by rlimits but fully contained only by the
+  container layer (non-root, read-only rootfs, seccomp, `cap_drop: ALL`)
+  that `docs/SANDBOX_PROFILE.md` §3 mandates for deployment (REL epic).
 
 ### 4.3 Prompt injection (documents attacking the extraction model)
 
@@ -181,15 +185,15 @@ support.
 
 | # | Risk | Severity | Closes via |
 | --- | --- | --- | --- |
-| R1 | No rate limiting on any endpoint | High | SEC-003 |
+| R1 | No rate limiting on any endpoint | High | SEC-003 — **closed** (`apps/api/src/soa_api/services/rate_limit.py`; per-process scope, distributed limiting slots in with OPEN-001 infra) |
 | R2 | Support access model absent; operator DB access is the fallback | High | ANA-008 + OPEN-002 |
 | R3 | Production IdP not selected; no MFA | High | OPEN-002 |
-| R4 | Security headers/CSP/CORS not hardened for production | Medium | SEC-002 |
-| R5 | Sandboxes are rlimit-level, not kernel-isolated | Medium | SEC-004 |
+| R4 | Security headers/CSP/CORS not hardened for production | Medium | SEC-002 — **closed** (`apps/api/src/soa_api/app.py`, `apps/web/vite.config.ts`) |
+| R5 | Sandboxes are rlimit-level, not kernel-isolated | Medium | SEC-004 — **process layer closed** (`apps/worker/src/soa_worker/sandbox.py`); container profile mandated for deployment (`docs/SANDBOX_PROFILE.md` §3, verified in REL) |
 | R6 | Webhook targets lack SSRF/egress filtering | Medium | SEC epic hardening |
 | R7 | Audit trail has no tamper-evident offsite copy | Medium | OPEN-001 infra |
 | R8 | Worker main loop does not claim jobs yet (availability, not confidentiality) | Medium | PRC wiring |
-| R9 | Quotas defined (ANA-009) but not enforced inline | Low | SEC-003 |
+| R9 | Quotas defined (ANA-009) but not enforced inline | Low | quota wiring — SEC-003 shipped abuse limits, deliberately not billing quotas |
 | R10 | Hosted provider adapters unbuilt; residency controls untested end-to-end | Low | OPEN-003/004 |
 
 ## 6. Review log

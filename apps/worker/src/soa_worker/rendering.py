@@ -11,7 +11,6 @@ file, timeouts and crashes are retryable operational failures.
 
 import asyncio
 import json
-import os
 import stat
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from soa_worker.render_sandbox import EXIT_LIMIT, EXIT_MALFORMED
+from soa_worker.sandbox import kill_process_tree, python_child_environment
 
 RENDERABLE_TYPES = frozenset({"application/pdf", "image/png", "image/jpeg", "image/tiff"})
 
@@ -82,8 +82,13 @@ async def render_document(
         input_path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
         output_dir = Path(workdir) / "pages"
         output_dir.mkdir()
+        child_tmp = Path(workdir) / "tmp"
+        child_tmp.mkdir()
 
         argv = _SANDBOX_ARGV or [sys.executable, "-m", "soa_worker.render_sandbox"]
+        # SEC-004 launch profile: secret-free environment, temp/home
+        # confined to the per-run scratch dir, own session so a timeout
+        # kills the whole process group.
         process = await asyncio.create_subprocess_exec(
             *argv,
             str(input_path),
@@ -96,14 +101,16 @@ async def render_document(
             str(effective.memory_bytes),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            env=python_child_environment(str(child_tmp)),
+            cwd=workdir,
+            start_new_session=True,
         )
         try:
             stdout, _ = await asyncio.wait_for(
                 process.communicate(), timeout=effective.timeout_seconds
             )
         except TimeoutError:
-            process.kill()
+            kill_process_tree(process)
             await process.wait()
             raise RenderError(
                 RenderFailure.TIMEOUT,

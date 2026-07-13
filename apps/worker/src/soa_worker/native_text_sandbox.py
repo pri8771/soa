@@ -30,7 +30,8 @@ import json
 import math
 import sys
 
-from soa_worker.render_sandbox import EXIT_MALFORMED, _lock_down
+from soa_worker.render_sandbox import EXIT_MALFORMED
+from soa_worker.sandbox import lock_down_python_child as _lock_down
 
 EXIT_ENCRYPTED = 4
 

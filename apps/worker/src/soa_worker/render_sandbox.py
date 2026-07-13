@@ -3,13 +3,12 @@
 Runs as ``python -m soa_worker.render_sandbox <input> <content_type>
 <output_dir> <max_pages> <max_pixels_per_page> <dpi> <cpu_seconds>
 <memory_bytes>`` and NEVER in the worker process: the parent enforces a
-wall-clock timeout by killing this process; this process constrains
-itself before touching any renderer:
-
-- ``RLIMIT_CPU`` and ``RLIMIT_AS`` cap CPU seconds and address space;
-- socket creation is disabled outright — a renderer has no business on
-  the network, and active content that tried would get an exception;
-- the input file is opened read-only and never written.
+wall-clock timeout by killing this process's whole group; this process
+constrains itself before touching any renderer via the shared
+``soa_worker.sandbox`` lockdown (SEC-004): CPU/address-space/file-size/
+open-file rlimits, no core dumps, no process creation, sockets and
+fork/exec disabled at the python level, a secret-free environment, and
+the input file opened read-only and never written.
 
 Renderers: PDFium via pypdfium2 (does not execute embedded JavaScript
 or other active content — pages are rasterized, scripts are inert
@@ -25,22 +24,10 @@ anything else is a crash the parent classifies.
 import json
 import sys
 
+from soa_worker.sandbox import lock_down_python_child as _lock_down
+
 EXIT_MALFORMED = 2
 EXIT_LIMIT = 3
-
-
-def _lock_down(cpu_seconds: int, memory_bytes: int) -> None:
-    import resource
-    import socket
-
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-
-    def _no_network(*_args: object, **_kwargs: object) -> None:
-        raise PermissionError("network access is disabled inside the render sandbox")
-
-    socket.socket = _no_network  # type: ignore[misc,assignment]
-    socket.create_connection = _no_network  # type: ignore[assignment]
 
 
 def _fail(code: int, message: str) -> None:

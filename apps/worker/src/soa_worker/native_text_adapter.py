@@ -25,7 +25,6 @@ Classification is honest and closed:
 
 import asyncio
 import json
-import os
 import stat
 import sys
 import tempfile
@@ -43,6 +42,7 @@ from soa_worker.providers.native_text import (
 )
 from soa_worker.render_sandbox import EXIT_MALFORMED
 from soa_worker.rendering import RenderLimits
+from soa_worker.sandbox import kill_process_tree, python_child_environment
 
 PROVIDER_NAME = "pdfium-native-text"
 
@@ -85,8 +85,13 @@ class PdfiumNativeTextProvider:
             input_path.write_bytes(request.data)
             # The original is read-only for the child; it can never be modified.
             input_path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+            child_tmp = Path(workdir) / "tmp"
+            child_tmp.mkdir()
 
             argv = _SANDBOX_ARGV or [sys.executable, "-m", "soa_worker.native_text_sandbox"]
+            # SEC-004 launch profile: secret-free environment, temp/home
+            # confined to the per-run scratch dir, own session so a
+            # timeout kills the whole process group.
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 str(input_path),
@@ -97,14 +102,16 @@ class PdfiumNativeTextProvider:
                 str(limits.memory_bytes),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                env=python_child_environment(str(child_tmp)),
+                cwd=workdir,
+                start_new_session=True,
             )
             try:
                 stdout, _ = await asyncio.wait_for(
                     process.communicate(), timeout=limits.timeout_seconds
                 )
             except TimeoutError:
-                process.kill()
+                kill_process_tree(process)
                 await process.wait()
                 raise NativeTextError(
                     f"native text extraction exceeded the {limits.timeout_seconds:.0f}s budget",

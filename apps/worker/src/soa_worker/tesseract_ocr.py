@@ -13,9 +13,12 @@ Boundaries and honesty:
   tesseract pack name for is refused, and a mapped pack that is not
   installed is refused naming what IS installed — a stream can only
   configure languages the deployment can actually recognise;
-- each page run is resource-limited (CPU seconds and address space via
-  rlimits, single-threaded via ``OMP_THREAD_LIMIT``) and wall-clock
-  bounded — a hung engine is killed and reported retryable;
+- each page run gets the shared SEC-004 launch profile: rlimits (CPU
+  seconds, address space, file size, open files, no core dumps),
+  single-threaded via ``OMP_THREAD_LIMIT``, a secret-free environment
+  with temp confined to the per-run scratch dir, its own session, and
+  a wall-clock bound — a hung engine is killed (whole process group)
+  and reported retryable;
 - confidence is tesseract's own word confidence scaled to [0, 1],
   never rescaled to look better.
 
@@ -25,13 +28,11 @@ capability clearly instead of failing at first use.
 """
 
 import asyncio
-import os
-import resource
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 
 from soa_worker.providers.ocr import (
@@ -44,6 +45,7 @@ from soa_worker.providers.ocr import (
     OcrResult,
     OcrWord,
 )
+from soa_worker.sandbox import child_environment, kill_process_tree, set_resource_limits
 
 PROVIDER_NAME = "tesseract"
 
@@ -231,13 +233,14 @@ class TesseractOcrProvider:
     async def _run_page(self, page: OcrPageInput, packs: str) -> str:
         limits = self._limits
 
-        def _constrain() -> None:
-            resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
-            resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
-
         with tempfile.TemporaryDirectory(prefix="soa-ocr-") as workdir:
             image_path = Path(workdir) / "page.png"
             image_path.write_bytes(page.image)
+            child_tmp = Path(workdir) / "tmp"
+            child_tmp.mkdir()
+            # SEC-004 launch profile: rlimits via preexec, secret-free
+            # environment, temp confined to the scratch dir, own
+            # session so a timeout kills the whole process group.
             process = await asyncio.create_subprocess_exec(
                 "tesseract",
                 str(image_path),
@@ -249,15 +252,17 @@ class TesseractOcrProvider:
                 "tsv",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                env={**os.environ, "OMP_THREAD_LIMIT": "1"},
-                preexec_fn=_constrain,
+                env=child_environment(str(child_tmp), extra={"OMP_THREAD_LIMIT": "1"}),
+                cwd=workdir,
+                start_new_session=True,
+                preexec_fn=partial(set_resource_limits, limits.cpu_seconds, limits.memory_bytes),
             )
             try:
                 stdout, _ = await asyncio.wait_for(
                     process.communicate(), timeout=limits.timeout_seconds
                 )
             except TimeoutError:
-                process.kill()
+                kill_process_tree(process)
                 await process.wait()
                 raise OcrProviderError(
                     f"OCR of page {page.page_number} exceeded the "
