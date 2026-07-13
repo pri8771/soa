@@ -61,6 +61,8 @@ from soa_db.documents import (
     create_document,
     transition_document,
 )
+from soa_db.jobs import enqueue_job
+from soa_db.outbox import enqueue_event
 from soa_db.types import utcnow, uuid7
 from soa_storage import ObjectNotFoundError
 from soa_storage.keys import artifact_key
@@ -431,6 +433,34 @@ async def complete_upload(
                 document=document,
                 to_state=DocumentState.QUEUED,
                 actor_id="system:malware-scan",
+            )
+            # Registration is atomic (ING-007): the processing job and the
+            # outbox event commit with the document/artifact/audit rows or
+            # not at all, and dedupe keys make both exactly-once even
+            # under concurrent completes.
+            await enqueue_job(
+                session,
+                job_type="document.preprocess",
+                payload={
+                    "document_id": str(document.id),
+                    "stream_id": str(record.stream_id),
+                    "organization_id": str(authorized.org_context.organization_id),
+                },
+                organization_id=authorized.org_context.organization_id,
+                dedupe_key=f"document.preprocess:{document.id}",
+                priority=document.priority,
+            )
+            await enqueue_event(
+                session,
+                event_type="document.registered",
+                payload={
+                    "document_id": str(document.id),
+                    "stream_id": str(record.stream_id),
+                    "source_channel": document.source_channel,
+                    "content_sha256": document.content_sha256,
+                },
+                organization_id=authorized.org_context.organization_id,
+                dedupe_key=f"document.registered:{document.id}",
             )
     return CompleteResponse(document_id=str(record.document_id), state=document.state)
 
