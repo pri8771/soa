@@ -3,7 +3,7 @@ name = "soa-storage"
 version = "0.1.0"
 description = "Vendor-neutral object storage interface, contract tests, and adapters"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["aiobotocore>=2.15"]
 
 [build-system]
 requires = ["hatchling"]

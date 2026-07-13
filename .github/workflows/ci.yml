@@ -194,6 +194,39 @@ jobs:
           SOA_TEST_POSTGRES_URL: postgresql+asyncpg://soa_app:soa_app_password@localhost:5432/soa
         run: uv run pytest -m postgres -v
 
+  storage:
+    name: Object storage contract (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      SOA_TEST_MINIO_URL: http://127.0.0.1:9000
+      SOA_TEST_MINIO_ACCESS_KEY: soa_dev
+      SOA_TEST_MINIO_SECRET_KEY: soa_dev_password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      # docker run (not a service container) because the minio image needs
+      # a command argument, which GitHub service containers cannot pass.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=soa_dev -e MINIO_ROOT_PASSWORD=soa_dev_password \
+            minio/minio:latest server /data
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO did not become healthy" >&2
+          docker logs minio >&2
+          exit 1
+      - name: S3 adapter contract tests against real MinIO
+        run: uv run pytest -m minio -v
+
   docs:
     name: Documentation links and commands
     runs-on: ubuntu-latest

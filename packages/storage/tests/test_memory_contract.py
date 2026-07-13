@@ -11,7 +11,7 @@ from soa_storage.contract import ObjectStoreContract
 
 
 class TestMemoryObjectStoreContract(ObjectStoreContract):
-    def make_store(self) -> ObjectStore:
+    async def make_store(self) -> ObjectStore:
         return MemoryObjectStore()
 
 
@@ -52,11 +52,17 @@ def test_protocol_conformance_is_structural() -> None:
 
 
 def test_no_vendor_sdk_types_leak_from_the_interface() -> None:
-    # STO-001 acceptance: the contract module pulls in no vendor SDK.
+    # STO-001 acceptance: importing the package (interface + memory
+    # adapter) must not pull in any vendor SDK. Checked in a subprocess so
+    # other test modules (e.g. the S3 adapter's own tests) can't pollute
+    # sys.modules first.
+    import subprocess
     import sys
 
-    import soa_storage  # noqa: F401
-
-    vendor_prefixes = ("boto", "aiobotocore", "minio", "google.cloud", "azure")
-    leaked = [m for m in sys.modules if m.startswith(vendor_prefixes)]
-    assert leaked == [], f"vendor SDK modules imported by soa_storage: {leaked}"
+    probe = (
+        "import sys, soa_storage;"
+        "prefixes = ('boto', 'aiobotocore', 'minio', 'google.cloud', 'azure');"
+        "leaked = [m for m in sys.modules if m.startswith(prefixes)];"
+        "assert leaked == [], f'vendor SDK modules imported: {leaked}'"
+    )
+    subprocess.run([sys.executable, "-c", probe], check=True)
