@@ -83,6 +83,10 @@ def test_create_list_detail_and_cross_tenant_invisibility(client: TestClient) ->
     listed = client.get("/orgs/northstar/processes", headers=ADMIN)
     assert listed.status_code == 200
     assert [p["slug"] for p in listed.json()] == ["purchase-orders"]
+    row = listed.json()[0]
+    assert row["streams_count"] == 0
+    assert row["draft_count"] == 0
+    assert row["active_version_number"] is None
 
     detail = client.get("/orgs/northstar/processes/purchase-orders", headers=ADMIN)
     assert detail.status_code == 200

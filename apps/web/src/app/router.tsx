@@ -9,6 +9,7 @@ import {
 import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
 import { JobsQueue } from "../screens/JobsQueue";
+import { Processes } from "../screens/Processes";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
 import { SelectOrganization } from "../screens/SelectOrganization";
@@ -59,6 +60,12 @@ const jobsRoute = createRoute({
   component: JobsQueue,
 });
 
+const processesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "processes",
+  component: Processes,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -67,7 +74,7 @@ const routeTree = rootRoute.addChildren([
     areaRoute("overview", "Overview", "ANA"),
     areaRoute("documents", "Documents", "ING"),
     areaRoute("review", "Review", "REV"),
-    areaRoute("processes", "Processes", "CFG"),
+    processesRoute,
     areaRoute("streams", "Streams", "CFG"),
     areaRoute("catalogs", "Catalogs", "CAT"),
     areaRoute("integrations", "Integrations", "EXP"),

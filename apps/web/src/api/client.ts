@@ -145,3 +145,21 @@ export function cancelJob(
     body: JSON.stringify({ reason }),
   });
 }
+
+// --- Processes (CFG-008/009) ---
+
+export interface ProcessSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "archived";
+  active_version_id: string | null;
+  active_version_number: number | null;
+  streams_count: number;
+  draft_count: number;
+  version: number;
+}
+
+export function fetchProcesses(organizationSlug: string): Promise<ProcessSummary[]> {
+  return apiFetch<ProcessSummary[]>(`/orgs/${organizationSlug}/processes`);
+}

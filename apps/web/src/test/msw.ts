@@ -45,7 +45,33 @@ export const DEFAULT_JOB_STATS = {
   oldest_pending_run_after: "2026-07-12T08:00:00+00:00",
 };
 
+export const DEFAULT_PROCESSES = [
+  {
+    id: "31111111-1111-4111-8111-111111111111",
+    name: "Purchase orders",
+    slug: "purchase-orders",
+    status: "active",
+    active_version_id: "32222222-2222-4222-8222-222222222222",
+    active_version_number: 3,
+    streams_count: 2,
+    draft_count: 1,
+    version: 4,
+  },
+  {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "Order confirmations",
+    slug: "order-confirmations",
+    status: "archived",
+    active_version_id: null,
+    active_version_number: null,
+    streams_count: 0,
+    draft_count: 0,
+    version: 1,
+  },
+];
+
 export const handlers = [
+  http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),
   http.get("/api/orgs/:slug/jobs/stats", () => HttpResponse.json(DEFAULT_JOB_STATS)),
   http.get("/api/orgs/:slug/jobs", ({ request }) => {

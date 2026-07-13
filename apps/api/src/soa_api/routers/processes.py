@@ -13,6 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
@@ -76,6 +77,15 @@ class ProcessResponse(BaseModel):
             active_version_id=str(process.active_version_id) if process.active_version_id else None,
             version=process.version,
         )
+
+
+class ProcessListItem(ProcessResponse):
+    """Browser row (CFG-009): counts and the active version number ride
+    along so the list renders without N+1 detail fetches."""
+
+    active_version_number: int | None
+    streams_count: int
+    draft_count: int
 
 
 class VersionResponse(BaseModel):
@@ -207,11 +217,53 @@ async def _load_version(
 async def list_processes(
     authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.read"))],
     session: DbSession,
-) -> list[ProcessResponse]:
+) -> list[ProcessListItem]:
+    org_id = authorized.org_context.organization_id
     page = await ProcessRepository(session, authorized.org_context).list_page(
         CursorRequest(limit=200)
     )
-    return [ProcessResponse.from_model(process) for process in page.items]
+    stream_rows = (
+        await session.execute(
+            select(Stream.process_id, func.count())
+            .where(Stream.organization_id == org_id)
+            .group_by(Stream.process_id)
+        )
+    ).all()
+    stream_counts: dict[uuid.UUID, int] = {row[0]: int(row[1]) for row in stream_rows}
+    draft_rows = (
+        await session.execute(
+            select(ProcessVersion.process_id, func.count())
+            .where(
+                ProcessVersion.organization_id == org_id,
+                ProcessVersion.state == VersionState.DRAFT,
+            )
+            .group_by(ProcessVersion.process_id)
+        )
+    ).all()
+    draft_counts: dict[uuid.UUID, int] = {row[0]: int(row[1]) for row in draft_rows}
+    active_ids = [p.active_version_id for p in page.items if p.active_version_id is not None]
+    active_numbers: dict[uuid.UUID, int] = {}
+    if active_ids:
+        number_rows = (
+            await session.execute(
+                select(ProcessVersion.id, ProcessVersion.version_number).where(
+                    ProcessVersion.organization_id == org_id,
+                    ProcessVersion.id.in_(active_ids),
+                )
+            )
+        ).all()
+        active_numbers = {row[0]: int(row[1]) for row in number_rows}
+    return [
+        ProcessListItem(
+            **ProcessResponse.from_model(process).model_dump(),
+            active_version_number=active_numbers.get(process.active_version_id)
+            if process.active_version_id
+            else None,
+            streams_count=int(stream_counts.get(process.id, 0)),
+            draft_count=int(draft_counts.get(process.id, 0)),
+        )
+        for process in page.items
+    ]
 
 
 @router.post("/orgs/{organization_slug}/processes", status_code=status.HTTP_201_CREATED)
