@@ -62,6 +62,9 @@ def register_error_handlers(app: FastAPI, settings: ApiSettings) -> None:
                 message=str(exc.detail),
                 correlation_id=_correlation_id(request),
             ),
+            # Preserve semantic headers (Retry-After, WWW-Authenticate, …) —
+            # the envelope changes the body, never the HTTP contract.
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)

@@ -60,6 +60,8 @@ class ApiSettings(WebServiceSettings):
     max_total_pixels: int = Field(default=100_000_000, ge=1)  # 100 MP raster
     max_decompressed_bytes: int = Field(default=262_144_000, ge=1)  # 250 MiB
     max_conversion_seconds: int = Field(default=120, ge=1)
+    # Public API ingestion (ING-013): per-credential sliding-window limit.
+    api_ingest_rate_per_minute: int = Field(default=60, ge=1)
 
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:

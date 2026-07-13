@@ -37,13 +37,6 @@ from soa_api.domain.uploads import (
     is_expired,
     validate_upload_declaration,
 )
-from soa_api.services.duplicates import (
-    DuplicatePolicy,
-    find_exact_duplicate,
-    get_duplicate_policy,
-    mark_duplicate,
-)
-from soa_api.services.file_inspection import InspectionVerdict, inspect_file
 from soa_api.services.file_limits import (
     FileLimits,
     LimitViolation,
@@ -51,19 +44,13 @@ from soa_api.services.file_limits import (
     record_limit_violation,
     resolve_limits,
 )
-from soa_api.services.malware import ScanVerdict
-from soa_db.artifacts import ArtifactKind, create_artifact
+from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import (
     Document,
     DocumentRepository,
-    DocumentState,
     SourceChannel,
-    create_document,
-    transition_document,
 )
-from soa_db.jobs import enqueue_job
-from soa_db.outbox import enqueue_event
 from soa_db.types import utcnow, uuid7
 from soa_storage import ObjectNotFoundError
 from soa_storage.keys import artifact_key
@@ -316,31 +303,30 @@ async def complete_upload(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="; ".join(problems)
         )
 
-    document = await create_document(
+    data = await store.get(record.object_key)
+    stream_config = await _stream_config_by_id(session, authorized, record.stream_id)
+    # The shared intake pipeline (ING-003/004/006/007): document + artifact
+    # creation, inspection, scan, duplicate policy, and — when queued —
+    # the exactly-once preprocess job and outbox event, all in this
+    # request's transaction.
+    document = await finalize_document_intake(
         session,
         authorized.org_context,
-        document_id=record.document_id,
-        stream_id=record.stream_id,
-        source_channel=SourceChannel.UPLOAD,
-        original_filename=record.declared_filename,
-        content_sha256=record.declared_sha256,
-        size_bytes=record.declared_size_bytes,
-        content_type=record.declared_content_type,
-        client_reference=record.client_reference,
-        source_metadata={"uploader": _actor(authorized)},
-        actor_id=_actor(authorized),
-    )
-    await create_artifact(
-        session,
-        authorized.org_context,
-        document_id=record.document_id,
-        kind=ArtifactKind.ORIGINAL,
-        object_key=record.object_key,
-        sha256=record.declared_sha256,
-        size_bytes=record.declared_size_bytes,
-        content_type=record.declared_content_type,
-        produced_by_stage="intake",
-        actor_type=ActorType.USER,
+        declaration=IntakeDeclaration(
+            stream_id=record.stream_id,
+            stream_config=stream_config,
+            source_channel=SourceChannel.UPLOAD,
+            filename=record.declared_filename,
+            content_type=record.declared_content_type,
+            sha256=record.declared_sha256,
+            size_bytes=record.declared_size_bytes,
+            object_key=record.object_key,
+            client_reference=record.client_reference,
+            source_metadata={"uploader": _actor(authorized)},
+            document_id=record.document_id,
+        ),
+        data=data,
+        scanner=scanner,
         actor_id=_actor(authorized),
     )
     record.state = UploadSessionState.COMPLETED.value
@@ -356,126 +342,6 @@ async def complete_upload(
         organization_id=authorized.org_context.organization_id,
         summary={"document_id": str(record.document_id)},
     )
-
-    # File-safety inspection (ING-003): trust the bytes, not the label.
-    # Runs synchronously here until ING-004/007 move it onto worker jobs.
-    await transition_document(
-        session,
-        authorized.org_context,
-        document=document,
-        to_state=DocumentState.VALIDATING_FILE,
-        actor_id=_actor(authorized),
-        actor_type=ActorType.USER,
-    )
-    data = await store.get(record.object_key)
-    inspection = inspect_file(
-        head=data[:64],
-        declared_type=record.declared_content_type,
-        filename=record.declared_filename,
-    )
-    if inspection.verdict is not InspectionVerdict.PASSED:
-        outcome = {
-            InspectionVerdict.REJECTED: DocumentState.REJECTED,
-            InspectionVerdict.QUARANTINED: DocumentState.QUARANTINED,
-        }[inspection.verdict]
-        await transition_document(
-            session,
-            authorized.org_context,
-            document=document,
-            to_state=outcome,
-            reason=inspection.reason,
-            actor_id="system:file-inspection",
-        )
-        return CompleteResponse.from_document(document)
-
-    # Malware scan (ING-004): unscanned files never proceed. A scanner
-    # outage parks the document as failed_retryable — fail closed, retry
-    # later; it does NOT pass unscanned.
-    scan = await scanner.scan(data)
-    if scan.verdict is ScanVerdict.INFECTED:
-        await transition_document(
-            session,
-            authorized.org_context,
-            document=document,
-            to_state=DocumentState.QUARANTINED,
-            reason=f"malware detected: {scan.detail}",
-            actor_id="system:malware-scan",
-        )
-    elif scan.verdict is ScanVerdict.ERROR:
-        await transition_document(
-            session,
-            authorized.org_context,
-            document=document,
-            to_state=DocumentState.FAILED_RETRYABLE,
-            reason=f"malware scan unavailable: {scan.detail}",
-            actor_id="system:malware-scan",
-        )
-    else:
-        # Exact-duplicate policy (ING-006): duplicates are never silent.
-        duplicate = await find_exact_duplicate(
-            session,
-            authorized.org_context,
-            stream_id=record.stream_id,
-            content_sha256=record.declared_sha256,
-            exclude_document_id=document.id,
-        )
-        policy = get_duplicate_policy(
-            await _stream_config_by_id(session, authorized, record.stream_id)
-        )
-        if duplicate is not None:
-            await mark_duplicate(
-                session,
-                authorized.org_context,
-                document=document,
-                original=duplicate,
-                policy=policy,
-                actor_id="system:duplicate-detection",
-            )
-        if duplicate is not None and policy is DuplicatePolicy.REJECT:
-            await transition_document(
-                session,
-                authorized.org_context,
-                document=document,
-                to_state=DocumentState.REJECTED,
-                reason=f"exact duplicate of document {duplicate.id}",
-                actor_id="system:duplicate-detection",
-            )
-        else:
-            await transition_document(
-                session,
-                authorized.org_context,
-                document=document,
-                to_state=DocumentState.QUEUED,
-                actor_id="system:malware-scan",
-            )
-            # Registration is atomic (ING-007): the processing job and the
-            # outbox event commit with the document/artifact/audit rows or
-            # not at all, and dedupe keys make both exactly-once even
-            # under concurrent completes.
-            await enqueue_job(
-                session,
-                job_type="document.preprocess",
-                payload={
-                    "document_id": str(document.id),
-                    "stream_id": str(record.stream_id),
-                    "organization_id": str(authorized.org_context.organization_id),
-                },
-                organization_id=authorized.org_context.organization_id,
-                dedupe_key=f"document.preprocess:{document.id}",
-                priority=document.priority,
-            )
-            await enqueue_event(
-                session,
-                event_type="document.registered",
-                payload={
-                    "document_id": str(document.id),
-                    "stream_id": str(record.stream_id),
-                    "source_channel": document.source_channel,
-                    "content_sha256": document.content_sha256,
-                },
-                organization_id=authorized.org_context.organization_id,
-                dedupe_key=f"document.registered:{document.id}",
-            )
     return CompleteResponse.from_document(document)
 
 

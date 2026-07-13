@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-import soa_api.routers.uploads as uploads_module
+import soa_api.services.ingestion as ingestion_module
 from soa_api.app import create_app
 from soa_api.domain.uploads import UploadSession
 from soa_api.settings import ApiSettings, Environment
@@ -119,7 +119,7 @@ async def test_failure_rolls_back_registration_and_leaves_session_explainable(
     async def explode(*args: object, **kwargs: object) -> None:
         raise RuntimeError("outbox wiring failure (simulated)")
 
-    monkeypatch.setattr(uploads_module, "enqueue_event", explode)
+    monkeypatch.setattr(ingestion_module, "enqueue_event", explode)
     failed = client.post(f"/orgs/northstar/uploads/{payload['session_id']}/complete", headers=ADMIN)
     assert failed.status_code == 500
 
