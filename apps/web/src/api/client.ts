@@ -857,3 +857,91 @@ export function fetchDocumentPages(
 ): Promise<DocumentPages> {
   return apiFetch<DocumentPages>(`/orgs/${organizationSlug}/documents/${documentId}/pages`);
 }
+
+// --- Review workspace (REV-006/007/009) ---
+
+export interface WorkspaceEvidence {
+  page_number: number;
+  certainty: "region" | "page";
+  polygon: [number, number][] | null;
+  quote: string | null;
+}
+
+export interface WorkspaceField {
+  field_key: string;
+  row_index: number | null;
+  raw_value: string | null;
+  normalized_value: unknown;
+  normalization_error: string | null;
+  confidence: number;
+  validation_status: string;
+  provider: string;
+  provider_model: string | null;
+  evidence: WorkspaceEvidence[];
+  candidates: { raw_value: string; confidence: number }[];
+}
+
+export interface ReviewWorkspace {
+  task: ReviewTaskEntry;
+  document: {
+    id: string;
+    state: string;
+    state_reason: string | null;
+    original_filename: string;
+    priority: number;
+    received_at: string;
+  };
+  run: {
+    id: string;
+    run_number: number | null;
+    state: string | null;
+    decision: { route: string; reasons: Record<string, unknown>[] } | null;
+  };
+  fields: WorkspaceField[];
+  line_items: Record<string, WorkspaceField[][]>;
+  pages: DocumentPageEntry[];
+  history: Record<string, unknown>[];
+  context: Record<string, unknown>;
+}
+
+export function fetchReviewWorkspace(
+  organizationSlug: string,
+  taskId: string,
+): Promise<ReviewWorkspace> {
+  return apiFetch<ReviewWorkspace>(`/orgs/${organizationSlug}/review-tasks/${taskId}/workspace`);
+}
+
+export interface CorrectionResult {
+  correction: {
+    id: string;
+    field_key: string;
+    row_index: number | null;
+    previous_raw_value: string | null;
+    corrected_raw_value: string | null;
+    corrected_normalized_value: unknown;
+    normalization_error: string | null;
+    corrected_by: string;
+  };
+  task_version: number;
+  revalidation: {
+    evaluation: Record<string, unknown>;
+    decision: { route: string; reasons: Record<string, unknown>[] };
+  } | null;
+}
+
+export function correctField(
+  organizationSlug: string,
+  taskId: string,
+  body: {
+    field_key: string;
+    row_index?: number | null;
+    value: string | null;
+    reason?: string;
+    expected_version: number;
+  },
+): Promise<CorrectionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/corrections`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

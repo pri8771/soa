@@ -19,6 +19,7 @@ import { Streams } from "../screens/Streams";
 import { DocumentDetail } from "../screens/DocumentDetail";
 import { DocumentsQueue } from "../screens/DocumentsQueue";
 import { ReviewQueue } from "../screens/ReviewQueue";
+import { ReviewStudio } from "../screens/ReviewStudio";
 import { UploadDocuments } from "../screens/UploadDocuments";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
@@ -118,6 +119,12 @@ const reviewRoute = createRoute({
   component: ReviewQueue,
 });
 
+const reviewStudioRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "review/$taskId",
+  component: ReviewStudio,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams",
@@ -146,6 +153,7 @@ const routeTree = rootRoute.addChildren([
     uploadDocumentsRoute,
     documentDetailRoute,
     reviewRoute,
+    reviewStudioRoute,
     processesRoute,
     schemaBuilderRoute,
     ruleBuilderRoute,

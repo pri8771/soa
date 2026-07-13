@@ -102,10 +102,10 @@ export function ReviewQueue() {
     onSettled: invalidate,
   });
 
-  const openDocument = (task: ReviewTaskEntry) =>
+  const openTask = (task: ReviewTaskEntry) =>
     void navigate({
-      to: "/app/$organizationSlug/documents/$documentId",
-      params: { organizationSlug: slug, documentId: task.document_id },
+      to: "/app/$organizationSlug/review/$taskId",
+      params: { organizationSlug: slug, taskId: task.id },
     });
 
   const columns: ColumnDef<ReviewTaskEntry>[] = [
@@ -191,9 +191,9 @@ export function ReviewQueue() {
             <Button
               size="sm"
               variant="subtle"
-              onPress={() => startNext.data.task && openDocument(startNext.data.task)}
+              onPress={() => startNext.data.task && openTask(startNext.data.task)}
             >
-              Open document
+              Open in Review Studio
             </Button>
           </Banner>
         ) : null}
@@ -247,7 +247,7 @@ export function ReviewQueue() {
           emptyBody="Nothing in this view needs a human right now."
           hasMore={tasks.hasNextPage}
           onLoadMore={() => void tasks.fetchNextPage()}
-          onRowActivate={openDocument}
+          onRowActivate={openTask}
         />
       </div>
     </AppShell>

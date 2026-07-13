@@ -465,7 +465,131 @@ export const DEFAULT_REVIEW_TASKS = [
   },
 ];
 
+export const DEFAULT_WORKSPACE = {
+  task: {
+    ...DEFAULT_REVIEW_TASKS[1],
+    id: "b2222222-2222-4222-8222-222222222222",
+    state: "in_progress",
+    assigned_to: "user:u-1",
+    version: 3,
+    reasons: [
+      {
+        code: "low_confidence",
+        message: "confidence 0.60 is below the critical gate of 0.98",
+        field_key: "po_number",
+        row_index: null,
+        rule_key: null,
+      },
+    ],
+  },
+  document: {
+    id: "84444444-4444-4444-8444-444444444444",
+    state: "review_required",
+    state_reason: null,
+    original_filename: "po-4713.pdf",
+    priority: 10,
+    received_at: "2026-07-12T09:20:00+00:00",
+  },
+  run: {
+    id: "a1111111-1111-4111-8111-111111111111",
+    run_number: 1,
+    state: "succeeded",
+    decision: {
+      route: "review_required",
+      reasons: [{ code: "low_confidence", field_key: "po_number" }],
+    },
+  },
+  fields: [
+    {
+      field_key: "po_number",
+      row_index: null,
+      raw_value: "PO-1000A2",
+      normalized_value: "PO-1000A2",
+      normalization_error: null,
+      confidence: 0.6,
+      validation_status: "review",
+      provider: "mock",
+      provider_model: "mock-v1",
+      evidence: [
+        {
+          page_number: 1,
+          certainty: "region",
+          polygon: [
+            [170, 220],
+            [340, 220],
+            [340, 440],
+            [170, 440],
+          ],
+          quote: "PO-1000A2",
+        },
+      ],
+      candidates: [{ raw_value: "PO-100042", confidence: 0.55 }],
+    },
+    {
+      field_key: "total_amount",
+      row_index: null,
+      raw_value: "1,234.50",
+      normalized_value: { amount: "1234.50", currency: "USD" },
+      normalization_error: null,
+      confidence: 0.96,
+      validation_status: "passed",
+      provider: "mock",
+      provider_model: "mock-v1",
+      evidence: [{ page_number: 2, certainty: "page", polygon: null, quote: null }],
+      candidates: [],
+    },
+  ],
+  line_items: {},
+  pages: [
+    {
+      page_number: 1,
+      width_px: 1700,
+      height_px: 2200,
+      dpi: 200,
+      rotation_degrees: 0,
+      content_type: "image/png",
+      image_artifact_id: "c1111111-1111-4111-8111-111111111111",
+      text_artifact_id: null,
+    },
+    {
+      page_number: 2,
+      width_px: 1700,
+      height_px: 2200,
+      dpi: 200,
+      rotation_degrees: 0,
+      content_type: "image/png",
+      image_artifact_id: "c2222222-2222-4222-8222-222222222222",
+      text_artifact_id: null,
+    },
+  ],
+  history: [],
+  context: { stream_slug: "email", config_fingerprint: "f".repeat(64) },
+};
+
 export const handlers = [
+  http.get("/api/orgs/:slug/review-tasks/:taskId/workspace", () =>
+    HttpResponse.json(DEFAULT_WORKSPACE),
+  ),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/corrections", async ({ request }) => {
+    const body = (await request.json()) as { field_key: string; value: string | null };
+    return HttpResponse.json({
+      correction: {
+        id: "cor-1",
+        field_key: body.field_key,
+        row_index: null,
+        previous_raw_value: "PO-1000A2",
+        corrected_raw_value: body.value,
+        corrected_normalized_value: body.value,
+        normalization_error: null,
+        corrected_by: "user:u-1",
+      },
+      task_version: 4,
+      revalidation: {
+        evaluation: { blocking: false },
+        decision: { route: "approved", reasons: [] },
+      },
+    });
+  }),
   http.get("/api/orgs/:slug/review-tasks", ({ request }) => {
     const url = new URL(request.url);
     const view = url.searchParams.get("view") ?? "all";

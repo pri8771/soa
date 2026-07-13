@@ -48,7 +48,7 @@ describe("Review queue (REV-003)", () => {
     expect(
       screen.getByText(/Highest-priority open task, oldest first within the same priority/),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open document" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open in Review Studio" })).toBeInTheDocument();
   });
 
   it("says so when the queue is clear", async () => {
@@ -82,7 +82,7 @@ describe("Review queue (REV-003)", () => {
     expect(screen.getByText(/assigned to user:u-2/)).toBeInTheDocument();
   });
 
-  it("rows are keyboard-activatable deep links into the document", async () => {
+  it("rows are keyboard-activatable deep links into the Review Studio", async () => {
     const user = userEvent.setup();
     const { router } = await renderApp(PATH);
     const table = await screen.findByRole("table", { name: "Review tasks" });
@@ -91,9 +91,7 @@ describe("Review queue (REV-003)", () => {
     (row as HTMLElement).focus();
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(router.state.location.pathname).toBe(
-        `/app/northstar/documents/${OPEN_TASK.document_id}`,
-      ),
+      expect(router.state.location.pathname).toBe(`/app/northstar/review/${OPEN_TASK.id}`),
     );
   });
 
