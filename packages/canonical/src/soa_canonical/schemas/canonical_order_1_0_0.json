@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.soa.dev/canonical-order/1.0.0.json",
+  "title": "Canonical sales order",
+  "description": "The ERP-neutral order every export starts from. Decimals are exact strings (never floats), dates are ISO 8601 strings, money always carries its currency, and every object is closed (additionalProperties: false) except the namespaced extensions block. Nullability is explicit: a field that may be unknown says so with a null branch; absence is not used to mean unknown.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "identifiers",
+    "dates",
+    "terms",
+    "totals",
+    "line_items",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The canonical schema version this payload conforms to.",
+      "const": "1.0.0"
+    },
+    "identifiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["po_number"],
+      "properties": {
+        "po_number": {
+          "description": "The buyer's purchase-order number, as printed.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "sales_order_reference": {
+          "description": "The seller-side reference when one already exists; null when unknown.",
+          "type": ["string", "null"],
+          "maxLength": 200
+        },
+        "external_references": {
+          "description": "Other identifiers found on the document, tagged with a GENERIC scheme (e.g. 'quote', 'contract', 'customer-account') — never a vendor system name.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/external_reference" }
+        }
+      }
+    },
+    "parties": {
+      "description": "Who is buying, selling, receiving, and paying. Null parties are unknown, not absent-by-accident.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "buyer": { "$ref": "#/$defs/nullable_party" },
+        "seller": { "$ref": "#/$defs/nullable_party" },
+        "ship_to": { "$ref": "#/$defs/nullable_party" },
+        "bill_to": { "$ref": "#/$defs/nullable_party" }
+      }
+    },
+    "dates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order_date"],
+      "properties": {
+        "order_date": { "$ref": "#/$defs/iso_date" },
+        "requested_delivery_date": { "$ref": "#/$defs/nullable_iso_date" },
+        "promised_delivery_date": { "$ref": "#/$defs/nullable_iso_date" }
+      }
+    },
+    "terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currency"],
+      "properties": {
+        "currency": { "$ref": "#/$defs/currency_code" },
+        "payment_terms": {
+          "description": "Payment terms as stated on the document (e.g. 'Net 30'); null when not stated.",
+          "type": ["string", "null"],
+          "maxLength": 500
+        },
+        "incoterms": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code"],
+              "properties": {
+                "code": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                "location": { "type": ["string", "null"], "maxLength": 200 }
+              }
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grand_total"],
+      "properties": {
+        "subtotal": { "$ref": "#/$defs/nullable_money" },
+        "discount_total": { "$ref": "#/$defs/nullable_money" },
+        "tax_total": { "$ref": "#/$defs/nullable_money" },
+        "shipping_total": { "$ref": "#/$defs/nullable_money" },
+        "grand_total": { "$ref": "#/$defs/money" }
+      }
+    },
+    "line_items": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/line_item" }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/note" }
+    },
+    "source": {
+      "description": "Where this payload came from: the reviewed document and processing run. These are SOA's own identifiers, not a downstream system's.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document_id", "run_id"],
+      "properties": {
+        "document_id": { "$ref": "#/$defs/uuid" },
+        "run_id": { "$ref": "#/$defs/uuid" },
+        "document_sha256": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            { "type": "null" }
+          ]
+        },
+        "received_at": {
+          "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+        }
+      }
+    },
+    "provenance": {
+      "description": "Per-field provenance references (CAN-003 fills these): how each canonical field was obtained. Keys are canonical field paths like 'identifiers.po_number' or 'line_items[0].quantity'.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/provenance_entry" }
+    },
+    "extensions": {
+      "description": "The ONLY open block. Tenant- or integration-specific additions live here under x_ namespaced keys so the core schema never grows vendor fields.",
+      "type": "object",
+      "patternProperties": { "^x_[a-z0-9_]+$": {} },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "description": "An exact decimal as a string — never a float. No thousands separators, '.' as the decimal mark.",
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "nullable_decimal": {
+      "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }]
+    },
+    "currency_code": {
+      "description": "ISO 4217 alphabetic code.",
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "iso_date": {
+      "description": "ISO 8601 calendar date (YYYY-MM-DD).",
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "nullable_iso_date": {
+      "anyOf": [{ "$ref": "#/$defs/iso_date" }, { "type": "null" }]
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "currency"],
+      "properties": {
+        "amount": { "$ref": "#/$defs/decimal" },
+        "currency": { "$ref": "#/$defs/currency_code" }
+      }
+    },
+    "nullable_money": {
+      "anyOf": [{ "$ref": "#/$defs/money" }, { "type": "null" }]
+    },
+    "external_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "value"],
+      "properties": {
+        "scheme": {
+          "description": "A generic scheme name ('duns', 'vat', 'customer-account', 'quote') — never a downstream system's name.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "value": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "line1": { "type": ["string", "null"], "maxLength": 500 },
+        "line2": { "type": ["string", "null"], "maxLength": 500 },
+        "city": { "type": ["string", "null"], "maxLength": 200 },
+        "region": { "type": ["string", "null"], "maxLength": 200 },
+        "postal_code": { "type": ["string", "null"], "maxLength": 50 },
+        "country": {
+          "description": "ISO 3166-1 alpha-2; null when the document does not say.",
+          "anyOf": [{ "type": "string", "pattern": "^[A-Z]{2}$" }, { "type": "null" }]
+        }
+      }
+    },
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "address": {
+          "anyOf": [{ "$ref": "#/$defs/address" }, { "type": "null" }]
+        },
+        "contact": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "email": { "type": ["string", "null"], "maxLength": 320 },
+                "phone": { "type": ["string", "null"], "maxLength": 50 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "identifiers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/external_reference" }
+        }
+      }
+    },
+    "nullable_party": {
+      "anyOf": [{ "$ref": "#/$defs/party" }, { "type": "null" }]
+    },
+    "line_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line_number", "quantity", "line_total"],
+      "properties": {
+        "line_number": {
+          "description": "1-based position in the canonical order (stable across exports).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "sku": { "type": ["string", "null"], "maxLength": 200 },
+        "description": { "type": ["string", "null"], "maxLength": 2000 },
+        "quantity": { "$ref": "#/$defs/decimal" },
+        "unit_of_measure": {
+          "description": "Canonical unit token (e.g. 'each', 'case', 'kg'); null when not stated.",
+          "type": ["string", "null"],
+          "maxLength": 50
+        },
+        "unit_price": { "$ref": "#/$defs/nullable_money" },
+        "line_total": { "$ref": "#/$defs/money" },
+        "requested_delivery_date": { "$ref": "#/$defs/nullable_iso_date" },
+        "notes": { "type": "array", "items": { "$ref": "#/$defs/note" } }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "visibility"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "author": { "type": ["string", "null"], "maxLength": 200 },
+        "visibility": {
+          "description": "internal notes never leave SOA; external notes may travel with the export.",
+          "enum": ["internal", "external"]
+        }
+      }
+    },
+    "provenance_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin"],
+      "properties": {
+        "origin": {
+          "description": "How the value was obtained: extracted from the document, corrected by a reviewer, or derived by a rule.",
+          "enum": ["extracted", "corrected", "derived"]
+        },
+        "page_number": {
+          "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        },
+        "quote": { "type": ["string", "null"], "maxLength": 2000 },
+        "actor": {
+          "description": "Who corrected the value, for origin=corrected.",
+          "type": ["string", "null"],
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}
