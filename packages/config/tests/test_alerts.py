@@ -7,6 +7,8 @@ classes must be present; keys are unique; and live signals name a real
 ``soa.*`` observable while pending ones name the blocking task.
 """
 
+from pathlib import Path
+
 from soa_config.alerts import (
     CATALOG,
     AlertCategory,
@@ -15,6 +17,8 @@ from soa_config.alerts import (
     Owner,
     runbook_slugs,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_every_required_category_is_covered() -> None:
@@ -65,3 +69,11 @@ def test_runbook_slugs_are_the_referenced_set() -> None:
 def test_security_owns_the_auth_anomaly_alert() -> None:
     auth = next(a for a in CATALOG if a.category is AlertCategory.AUTH_ANOMALY)
     assert auth.owner is Owner.SECURITY_ONCALL
+
+
+def test_every_alert_runbook_has_a_document() -> None:
+    # Closes the REL-007 <-> REL-008 loop: no alert may reference a
+    # runbook that does not exist on disk.
+    runbooks_dir = _REPO_ROOT / "docs" / "runbooks"
+    for slug in runbook_slugs():
+        assert (runbooks_dir / f"{slug}.md").is_file(), f"missing runbook doc for {slug}"

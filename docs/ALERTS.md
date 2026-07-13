@@ -7,9 +7,9 @@ defined independently of the monitoring backend — REL-002 infrastructure
 wires these definitions into whatever provider the deployment uses.
 
 Every alert carries a **severity**, an **owner** rotation, a
-**threshold with a rationale**, a **runbook** (REL-008 provides one per
-slug under `docs/runbooks/`), and a **test signal** describing how a
-firing is exercised. On-call rotations map to concrete people and pagers
+**threshold with a rationale**, a **runbook** (one per slug under
+[`runbooks/`](runbooks/README.md), REL-008), and a **test signal**
+describing how a firing is exercised. On-call rotations map to concrete people and pagers
 in the deployment, not in code.
 
 ## Severity
