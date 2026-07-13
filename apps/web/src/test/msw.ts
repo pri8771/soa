@@ -282,7 +282,72 @@ export const DEFAULT_RULES_LISTING = {
   field_types: { po_number: "text", total: "money" },
 };
 
+export const DEFAULT_DOCUMENTS = [
+  {
+    id: "81111111-1111-4111-8111-111111111111",
+    stream_id: "41111111-1111-4111-8111-111111111111",
+    state: "queued",
+    state_reason: null,
+    source_channel: "upload",
+    original_filename: "po-4711.pdf",
+    content_sha256: "a".repeat(64),
+    size_bytes: 204800,
+    content_type: "application/pdf",
+    client_reference: "batch-1",
+    priority: 100,
+    sla_due_at: null,
+    received_at: "2026-07-12T09:00:00+00:00",
+    duplicate_of: null,
+  },
+  {
+    id: "82222222-2222-4222-8222-222222222222",
+    stream_id: "41111111-1111-4111-8111-111111111111",
+    state: "queued",
+    state_reason: null,
+    source_channel: "api",
+    original_filename: "po-4712.pdf",
+    content_sha256: "b".repeat(64),
+    size_bytes: 105000,
+    content_type: "application/pdf",
+    client_reference: null,
+    priority: 100,
+    sla_due_at: null,
+    received_at: "2026-07-12T09:05:00+00:00",
+    duplicate_of: "81111111-1111-4111-8111-111111111111",
+  },
+  {
+    id: "83333333-3333-4333-8333-333333333333",
+    stream_id: "41111111-1111-4111-8111-111111111111",
+    state: "quarantined",
+    state_reason: "malware detected: Win.Test.EICAR_HDB-1",
+    source_channel: "upload",
+    original_filename: "invoice-evil.pdf",
+    content_sha256: "c".repeat(64),
+    size_bytes: 1024,
+    content_type: "application/pdf",
+    client_reference: null,
+    priority: 100,
+    sla_due_at: null,
+    received_at: "2026-07-12T09:10:00+00:00",
+    duplicate_of: null,
+  },
+];
+
 export const handlers = [
+  http.get("/api/orgs/:slug/documents", ({ request }) => {
+    const url = new URL(request.url);
+    const state = url.searchParams.get("document_state");
+    const channel = url.searchParams.get("source_channel");
+    const search = url.searchParams.get("search");
+    let items = DEFAULT_DOCUMENTS;
+    if (state) items = items.filter((d) => d.state === state);
+    if (channel) items = items.filter((d) => d.source_channel === channel);
+    if (search) items = items.filter((d) => d.original_filename.includes(search));
+    return HttpResponse.json({ items, has_more: false, next_cursor: null });
+  }),
+  http.post("/api/orgs/:slug/documents/:documentId/cancel", ({ params }) =>
+    HttpResponse.json({ id: String(params["documentId"]), state: "cancelled" }),
+  ),
   http.get("/api/orgs/:slug/processes/:processSlug/schema", () =>
     HttpResponse.json(DEFAULT_SCHEMA_LISTING),
   ),

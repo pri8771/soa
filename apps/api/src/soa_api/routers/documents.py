@@ -16,13 +16,21 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_api.domain.streams import StreamRepository
-from soa_db.documents import Document, DocumentState
+from soa_db.audit import ActorType
+from soa_db.documents import (
+    Document,
+    DocumentRepository,
+    DocumentState,
+    InvalidDocumentTransitionError,
+    transition_document,
+)
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
 router = APIRouter(tags=["documents"])
@@ -196,3 +204,34 @@ async def list_documents(
         "has_more": has_more,
         "next_cursor": next_cursor,
     }
+
+
+class CancelRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/orgs/{organization_slug}/documents/{document_id}/cancel")
+async def cancel_document(
+    document_id: uuid.UUID,
+    body: CancelRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Cancel an active document. The state machine decides validity: a
+    settled document (completed/rejected/archived/…) answers 409."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    try:
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=DocumentState.CANCELLED,
+            reason=body.reason,
+            actor_id=f"user:{authorized.membership.user_id}",
+            actor_type=ActorType.USER,
+        )
+    except InvalidDocumentTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return {"id": str(document.id), "state": document.state}

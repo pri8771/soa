@@ -591,3 +591,59 @@ export async function sha256OfFile(file: Blob): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", await readBlobBytes(file));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+// --- Documents queue (ING-009/010) ---
+
+export interface DocumentSummary {
+  id: string;
+  stream_id: string;
+  state: string;
+  state_reason: string | null;
+  source_channel: string;
+  original_filename: string;
+  content_sha256: string;
+  size_bytes: number;
+  content_type: string;
+  client_reference: string | null;
+  priority: number;
+  sla_due_at: string | null;
+  received_at: string;
+  duplicate_of: string | null;
+}
+
+export interface DocumentsPage {
+  items: DocumentSummary[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export function fetchDocuments(
+  organizationSlug: string,
+  options: {
+    state?: string;
+    stream?: string;
+    channel?: string;
+    search?: string;
+    cursor?: string;
+  } = {},
+): Promise<DocumentsPage> {
+  const params = new URLSearchParams();
+  if (options.state) params.set("document_state", options.state);
+  if (options.stream) params.set("stream", options.stream);
+  if (options.channel) params.set("source_channel", options.channel);
+  if (options.search) params.set("search", options.search);
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return apiFetch<DocumentsPage>(`/orgs/${organizationSlug}/documents${query}`);
+}
+
+export function cancelDocument(
+  organizationSlug: string,
+  documentId: string,
+  reason: string,
+): Promise<{ id: string; state: string }> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}

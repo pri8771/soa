@@ -171,3 +171,65 @@ async def test_cursors_cannot_cross_tenants_or_filters(
     assert client.get("/orgs/northstar/documents", headers=OUTSIDER).status_code == 404
     empty = client.get("/orgs/other-org/documents", headers=OUTSIDER).json()
     assert empty["items"] == []
+
+
+async def test_cancel_respects_the_state_machine(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    ids = await seed(client, db, count=3)  # ids[-1] ends up queued
+    # ids[0] is still "received" (active): cancellable.
+    cancelled = client.post(
+        f"/orgs/northstar/documents/{ids[0]}/cancel",
+        json={"reason": "uploaded to the wrong stream"},
+        headers=ADMIN,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["state"] == "cancelled"
+
+    # Re-cancelling is idempotent (same state, no new transition).
+    again = client.post(
+        f"/orgs/northstar/documents/{ids[0]}/cancel",
+        json={"reason": "twice"},
+        headers=ADMIN,
+    )
+    assert again.status_code == 200
+    assert again.json()["state"] == "cancelled"
+
+    # A settled (rejected) document refuses to cancel.
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        from soa_db.documents import DocumentRepository
+
+        settled = await DocumentRepository(session, context).get(uuid.UUID(ids[1]))
+        assert settled is not None
+        await transition_document(
+            session,
+            context,
+            document=settled,
+            to_state=DocumentState.VALIDATING_FILE,
+            actor_id="worker",
+        )
+        await transition_document(
+            session,
+            context,
+            document=settled,
+            to_state=DocumentState.REJECTED,
+            reason="unsupported",
+            actor_id="worker",
+        )
+    refused = client.post(
+        f"/orgs/northstar/documents/{ids[1]}/cancel",
+        json={"reason": "too late"},
+        headers=ADMIN,
+    )
+    assert refused.status_code == 409
+
+    # Cross-tenant invisibility.
+    denied = client.post(
+        f"/orgs/northstar/documents/{ids[1]}/cancel",
+        json={"reason": "outsider"},
+        headers=OUTSIDER,
+    )
+    assert denied.status_code == 404
