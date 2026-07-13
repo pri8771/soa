@@ -217,6 +217,10 @@ async def ingest_document(
             client_reference=client_reference,
             source_metadata={"api_client": actor_id},
             document_id=document_id,
+            stream_version_id=stream.active_version_id,
+            config_fingerprint=(
+                str(stream_config["fingerprint"]) if "fingerprint" in stream_config else None
+            ),
         ),
         data=data,
         scanner=scanner,

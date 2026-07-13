@@ -51,6 +51,10 @@ class IntakeDeclaration:
     source_metadata: dict[str, Any] | None = None
     document_id: uuid.UUID | None = None
     priority: int = 100
+    #: Configuration snapshot for the run (PRC-003): pinned at enqueue
+    #: time so the orchestrator never re-resolves configuration mid-run.
+    stream_version_id: uuid.UUID | None = None
+    config_fingerprint: str | None = None
 
 
 async def finalize_document_intake(
@@ -183,6 +187,10 @@ async def finalize_document_intake(
             "document_id": str(document.id),
             "stream_id": str(declaration.stream_id),
             "organization_id": str(context.organization_id),
+            "stream_version_id": (
+                str(declaration.stream_version_id) if declaration.stream_version_id else None
+            ),
+            "config_fingerprint": declaration.config_fingerprint,
         },
         organization_id=context.organization_id,
         dedupe_key=f"document.preprocess:{document.id}",

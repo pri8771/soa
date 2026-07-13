@@ -305,6 +305,7 @@ async def complete_upload(
 
     data = await store.get(record.object_key)
     stream_config = await _stream_config_by_id(session, authorized, record.stream_id)
+    parent_stream = await StreamRepository(session, authorized.org_context).get(record.stream_id)
     # The shared intake pipeline (ING-003/004/006/007): document + artifact
     # creation, inspection, scan, duplicate policy, and — when queued —
     # the exactly-once preprocess job and outbox event, all in this
@@ -324,6 +325,10 @@ async def complete_upload(
             client_reference=record.client_reference,
             source_metadata={"uploader": _actor(authorized)},
             document_id=record.document_id,
+            stream_version_id=parent_stream.active_version_id if parent_stream else None,
+            config_fingerprint=(
+                str(stream_config["fingerprint"]) if "fingerprint" in stream_config else None
+            ),
         ),
         data=data,
         scanner=scanner,

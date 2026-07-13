@@ -218,6 +218,7 @@ async def process_inbound_email(
                     "message_id": email.message_id or "",
                 },
                 document_id=document_id,
+                stream_version_id=stream.active_version_id,
             ),
             data=attachment.data,
             scanner=scanner,
