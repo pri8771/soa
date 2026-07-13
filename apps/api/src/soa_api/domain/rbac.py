@@ -46,6 +46,10 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "integrations.read",
         "integrations.manage",
         "integrations.replay",
+        # Extraction-instruction (prompt) content is sensitive config —
+        # its own grants, deliberately separate from streams.* (AIO-010).
+        "instructions.read",
+        "instructions.manage",
         "organization.read",
         "organization.manage",
         "members.read",
@@ -105,6 +109,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "documents.reprocess",
             "processes.read",
             "streams.read",
+            "instructions.read",
             "catalogs.read",
             "analytics.read",
             "audit.read",

@@ -16,6 +16,7 @@ from soa_api.routers import (
     email_intake,
     exports,
     health,
+    instructions,
     integrations,
     jobs,
     me,
@@ -159,6 +160,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(documents.router)
     app.include_router(review.router)
+    app.include_router(instructions.router)
     app.include_router(integrations.router)
     app.include_router(exports.router)
     app.include_router(public_ingest.router)

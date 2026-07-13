@@ -56,6 +56,7 @@ RLS_PROTECTED_TABLES = (
     "mapping_profile_versions",  # 0029
     "export_jobs",  # 0030
     "delivery_attempts",  # 0030
+    "instruction_versions",  # 0031
 )
 
 
