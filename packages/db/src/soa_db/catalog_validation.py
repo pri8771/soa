@@ -148,6 +148,8 @@ class ValidationFinding:
     severity: str  # error | warning
     message: str
     field_key: str | None = None
+    #: The line the finding belongs to (CAT-012); None = header-level.
+    row_index: int | None = None
 
     def to_reason(self) -> dict[str, Any]:
         """The PRC-011 route-reason shape, so findings surface through
@@ -156,7 +158,7 @@ class ValidationFinding:
             "code": self.code,
             "message": self.message,
             "field_key": self.field_key,
-            "row_index": None,
+            "row_index": self.row_index,
             "rule_key": f"catalog.{self.code}",
         }
 
