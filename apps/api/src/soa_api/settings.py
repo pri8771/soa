@@ -44,6 +44,11 @@ class ApiSettings(WebServiceSettings):
     # Signed download URLs are short-lived by design.
     download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 
+    # Malware scanning (ING-004): a real scanner is mandatory outside
+    # development/test — the no-op scanner cannot reach production.
+    clamav_host: str | None = None
+    clamav_port: int = Field(default=3310, ge=1, le=65535)
+
     # Upload intake policy (ING-002). Plan/stream-level configurability
     # arrives with ING-005; these are the platform maxima.
     upload_session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
@@ -64,6 +69,11 @@ class ApiSettings(WebServiceSettings):
                 problems.append(
                     "production requires storage_endpoint_url, storage_access_key, "
                     "and storage_secret_key"
+                )
+            if not self.clamav_host:
+                problems.append(
+                    "production requires clamav_host — unscanned files cannot proceed, "
+                    "and the no-op scanner is development-only"
                 )
             if problems:
                 raise ValueError("; ".join(problems))

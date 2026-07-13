@@ -11,6 +11,7 @@ from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import artifacts, health, jobs, me, organizations, processes, uploads
+from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
@@ -27,6 +28,7 @@ def create_app(
     oidc_validator: "OidcTokenValidator | None" = None,
     db: DatabaseSessions | None = None,
     object_store: ObjectStore | None = None,
+    malware_scanner: MalwareScanner | None = None,
 ) -> FastAPI:
     """Create the API application.
 
@@ -84,12 +86,22 @@ def create_app(
             # unset so storage endpoints fail loudly with 503.
             resolved_store = MemoryObjectStore()
 
+    resolved_scanner = malware_scanner
+    if resolved_scanner is None:
+        if resolved.clamav_host:
+            resolved_scanner = ClamAvScanner(resolved.clamav_host, resolved.clamav_port)
+        elif not resolved.is_production:
+            # Settings validation guarantees production always configures
+            # a real scanner; the no-op never leaves development/test.
+            resolved_scanner = NoopScanner()
+
     deps = Dependencies(
         settings=resolved,
         telemetry=resolved_telemetry,
         oidc_validator=oidc_validator,
         db=resolved_db,
         object_store=resolved_store,
+        malware_scanner=resolved_scanner,
     )
     deps.register_readiness_check("database", resolved_db.ping)
     app.state.dependencies = deps

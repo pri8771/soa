@@ -20,7 +20,13 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
+from soa_api.dependencies import (
+    DbSession,
+    Dependencies,
+    MalwareScannerDep,
+    ObjectStoreDep,
+    get_dependencies,
+)
 from soa_api.domain.streams import StreamRepository, StreamStatus
 from soa_api.domain.uploads import (
     UploadPolicyError,
@@ -32,6 +38,7 @@ from soa_api.domain.uploads import (
     validate_upload_declaration,
 )
 from soa_api.services.file_inspection import InspectionVerdict, inspect_file
+from soa_api.services.malware import ScanVerdict
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import (
@@ -190,6 +197,7 @@ async def complete_upload(
     authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.upload"))],
     session: DbSession,
     store: ObjectStoreDep,
+    scanner: MalwareScannerDep,
 ) -> CompleteResponse:
     record = await _load_session(session, authorized, session_id)
     documents = DocumentRepository(session, authorized.org_context)
@@ -284,25 +292,57 @@ async def complete_upload(
         actor_id=_actor(authorized),
         actor_type=ActorType.USER,
     )
-    head = (await store.get(record.object_key))[:64]
+    data = await store.get(record.object_key)
     inspection = inspect_file(
-        head=head,
+        head=data[:64],
         declared_type=record.declared_content_type,
         filename=record.declared_filename,
     )
-    outcome = {
-        InspectionVerdict.PASSED: DocumentState.QUEUED,
-        InspectionVerdict.REJECTED: DocumentState.REJECTED,
-        InspectionVerdict.QUARANTINED: DocumentState.QUARANTINED,
-    }[inspection.verdict]
-    await transition_document(
-        session,
-        authorized.org_context,
-        document=document,
-        to_state=outcome,
-        reason=inspection.reason,
-        actor_id="system:file-inspection",
-    )
+    if inspection.verdict is not InspectionVerdict.PASSED:
+        outcome = {
+            InspectionVerdict.REJECTED: DocumentState.REJECTED,
+            InspectionVerdict.QUARANTINED: DocumentState.QUARANTINED,
+        }[inspection.verdict]
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=outcome,
+            reason=inspection.reason,
+            actor_id="system:file-inspection",
+        )
+        return CompleteResponse(document_id=str(record.document_id), state=document.state)
+
+    # Malware scan (ING-004): unscanned files never proceed. A scanner
+    # outage parks the document as failed_retryable — fail closed, retry
+    # later; it does NOT pass unscanned.
+    scan = await scanner.scan(data)
+    if scan.verdict is ScanVerdict.INFECTED:
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=DocumentState.QUARANTINED,
+            reason=f"malware detected: {scan.detail}",
+            actor_id="system:malware-scan",
+        )
+    elif scan.verdict is ScanVerdict.ERROR:
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=DocumentState.FAILED_RETRYABLE,
+            reason=f"malware scan unavailable: {scan.detail}",
+            actor_id="system:malware-scan",
+        )
+    else:
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=DocumentState.QUEUED,
+            actor_id="system:malware-scan",
+        )
     return CompleteResponse(document_id=str(record.document_id), state=document.state)
 
 

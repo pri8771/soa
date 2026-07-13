@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_api.services.malware import MalwareScanner
 from soa_api.settings import ApiSettings
 from soa_config.telemetry import Telemetry
 from soa_db import DatabaseSessions
@@ -37,6 +38,7 @@ class Dependencies:
     oidc_validator: "OidcTokenValidator | None" = None
     db: DatabaseSessions | None = None
     object_store: ObjectStore | None = None
+    malware_scanner: MalwareScanner | None = None
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:
@@ -90,3 +92,17 @@ def get_object_store(
 
 
 ObjectStoreDep = Annotated[ObjectStore, Depends(get_object_store)]
+
+
+def get_malware_scanner(
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> MalwareScanner:
+    if deps.malware_scanner is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Malware scanning is not configured.",
+        )
+    return deps.malware_scanner
+
+
+MalwareScannerDep = Annotated[MalwareScanner, Depends(get_malware_scanner)]

@@ -21,6 +21,7 @@ from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
 from soa_db.artifacts import Artifact, ArtifactRepository
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.documents import DocumentRepository, DocumentState
 from soa_storage import ObjectNotFoundError
 
 router = APIRouter(tags=["artifacts"])
@@ -86,6 +87,15 @@ async def issue_download_url(
     artifact = await ArtifactRepository(session, authorized.org_context).get(artifact_id)
     if artifact is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found.")
+    # Quarantined documents' files are unavailable for normal download
+    # (ING-004) — dedicated, separately-audited incident tooling is the
+    # only path to infected content, and it does not exist yet.
+    document = await DocumentRepository(session, authorized.org_context).get(artifact.document_id)
+    if document is not None and document.state == DocumentState.QUARANTINED.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This document is quarantined; its files cannot be downloaded.",
+        )
     ttl = deps.settings.download_url_ttl_seconds
     try:
         signed = await store.signed_download_url(artifact.object_key, expires_in_seconds=ttl)

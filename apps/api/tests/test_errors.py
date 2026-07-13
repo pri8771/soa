@@ -23,6 +23,7 @@ def make_settings(environment: Environment) -> ApiSettings:
             storage_endpoint_url="https://s3.internal.example.com",
             storage_access_key="svc-storage",
             storage_secret_key="managed-storage-secret",
+            clamav_host="clamav.internal",
         )
     return ApiSettings(environment=environment)
 
