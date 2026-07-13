@@ -296,9 +296,12 @@ async def transition_document(
     reason: str | None = None,
     actor_type: ActorType = ActorType.SYSTEM,
     actor_id: str,
+    correlation_id: str | None = None,
 ) -> Document:
     """The audited way to move a document. The flush guard enforces the
-    same transition map for anyone assigning ``state`` directly."""
+    same transition map for anyone assigning ``state`` directly. The
+    correlation id defaults to the ambient request/job correlation and can
+    be pinned explicitly by orchestration code (PRC-002)."""
     from_state = document.state
     document.state = to_state.value
     document.state_reason = reason
@@ -311,6 +314,7 @@ async def transition_document(
         target_type="document",
         target_id=str(document.id),
         organization_id=context.organization_id,
+        correlation_id=correlation_id,
         summary={"from": from_state, "to": to_state.value, "reason": reason},
     )
     return document
