@@ -161,5 +161,5 @@ async def test_projection_detects_drift_and_gaps(db: DatabaseSessions) -> None:
 
     # A document with no received event has no coherent history.
     async with db.session_scope() as session:
-        with pytest.raises(ProjectionError, match="document.received"):
+        with pytest.raises(ProjectionError, match="history must begin"):
             await project_document_state(session, CONTEXT, uuid.uuid4())
