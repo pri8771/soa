@@ -66,6 +66,7 @@ RLS_PROTECTED_TABLES = (
     "catalog_bindings",  # 0033
     "usage_ledger_entries",  # 0034
     "feature_flags",  # 0035
+    "deletion_tombstones",  # 0037
 )
 
 
