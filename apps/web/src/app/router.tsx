@@ -12,6 +12,7 @@ import { JobsQueue } from "../screens/JobsQueue";
 import { Processes } from "../screens/Processes";
 import { RuleBuilder } from "../screens/RuleBuilder";
 import { SchemaBuilder } from "../screens/SchemaBuilder";
+import { StreamConfigure } from "../screens/StreamConfigure";
 import { StreamDetail } from "../screens/StreamDetail";
 import { Streams } from "../screens/Streams";
 import { NotFound } from "../screens/NotFound";
@@ -94,6 +95,12 @@ const streamDetailRoute = createRoute({
   component: StreamDetail,
 });
 
+const streamConfigureRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug/configure",
+  component: StreamConfigure,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -107,6 +114,7 @@ const routeTree = rootRoute.addChildren([
     ruleBuilderRoute,
     streamsRoute,
     streamDetailRoute,
+    streamConfigureRoute,
     areaRoute("catalogs", "Catalogs", "CAT"),
     areaRoute("integrations", "Integrations", "EXP"),
     jobsRoute,

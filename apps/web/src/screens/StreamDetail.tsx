@@ -18,7 +18,7 @@ import {
   TextField,
 } from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
@@ -174,12 +174,20 @@ export function StreamDetail() {
         { label: stream.name },
       ]}
       actions={
-        canManage && stream.status !== "archived" ? (
-          <DialogTrigger>
-            <Button variant="destructive">Archive stream</Button>
-            <ArchiveDialog onConfirm={(impact) => archive.mutate(impact)} />
-          </DialogTrigger>
-        ) : undefined
+        <div style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "center" }}>
+          <Link
+            to="/app/$organizationSlug/streams/$streamSlug/configure"
+            params={{ organizationSlug: session.organization.slug, streamSlug }}
+          >
+            Edit configuration
+          </Link>
+          {canManage && stream.status !== "archived" ? (
+            <DialogTrigger>
+              <Button variant="destructive">Archive stream</Button>
+              <ArchiveDialog onConfirm={(impact) => archive.mutate(impact)} />
+            </DialogTrigger>
+          ) : undefined}
+        </div>
       }
     >
       <div style={{ display: "grid", gap: "var(--soa-space-5)", maxWidth: "56rem" }}>

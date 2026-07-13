@@ -84,6 +84,16 @@ export const DEFAULT_STREAMS = [
   },
 ];
 
+export const DEFAULT_STREAM_DRAFT = {
+  id: "43333333-3333-4333-8333-333333333333",
+  version_number: 3,
+  state: "draft",
+  overrides: { confidence_floor: 0.9 },
+  resolved_snapshot: null,
+  pinned_process_version_id: null,
+  version: 1,
+};
+
 export const DEFAULT_STREAM_DETAIL = {
   stream: {
     id: "41111111-1111-4111-8111-111111111111",
@@ -105,6 +115,7 @@ export const DEFAULT_STREAM_DETAIL = {
         config: { language: "en" },
       },
       pinned_process_version_id: "32222222-2222-4222-8222-222222222222",
+      version: 2,
     },
     {
       id: "42222222-2222-4222-8222-222222222222",
@@ -117,9 +128,39 @@ export const DEFAULT_STREAM_DETAIL = {
         config: { language: "en", confidence_floor: 0.95 },
       },
       pinned_process_version_id: "32222222-2222-4222-8222-222222222222",
+      version: 3,
     },
+    DEFAULT_STREAM_DRAFT,
   ],
 };
+
+export const RESOLVE_ENVIRONMENT = { language: "en", confidence_floor: 0.85, max_pages: 50 };
+export const RESOLVE_PROCESS = { language: "de" };
+
+/** Mirrors the server's resolver shape: layers + provenance-tagged values,
+ * recomputed from the overrides the client actually sent. */
+export function buildResolvePreview(overrides: Record<string, unknown>) {
+  const values: Record<string, { value: unknown; source: string }> = {};
+  for (const [key, value] of Object.entries(RESOLVE_ENVIRONMENT)) {
+    values[key] = { value, source: "environment" };
+  }
+  for (const [key, value] of Object.entries(RESOLVE_PROCESS)) {
+    values[key] = { value, source: "process" };
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    values[key] = { value, source: "stream" };
+  }
+  return {
+    layers: { environment: RESOLVE_ENVIRONMENT, process: RESOLVE_PROCESS, stream: overrides },
+    resolved: {
+      process_version_id: "32222222-2222-4222-8222-222222222222",
+      process_version_number: 3,
+      policies: [],
+      values,
+      fingerprint: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    },
+  };
+}
 
 export const DEFAULT_SCHEMA_DRAFT = {
   id: "51111111-1111-4111-8111-111111111111",
@@ -195,6 +236,10 @@ export const handlers = [
     HttpResponse.json({ valid: true, message: null }),
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
+  http.post("/api/orgs/:slug/streams/:streamSlug/resolve", async ({ request }) => {
+    const body = (await request.json()) as { overrides: Record<string, unknown> };
+    return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));
+  }),
   http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),
   http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),

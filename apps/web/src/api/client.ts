@@ -189,6 +189,7 @@ export interface StreamVersionSummary {
     config: Record<string, unknown>;
   } | null;
   pinned_process_version_id: string | null;
+  version: number;
 }
 
 export interface StreamDetail {
@@ -385,6 +386,81 @@ export function publishRuleSetVersion(
 ): Promise<RuleSetVersionRecord> {
   return apiFetch<RuleSetVersionRecord>(
     `/orgs/${organizationSlug}/processes/${processSlug}/rules/versions/${versionId}/publish`,
+    { method: "POST" },
+  );
+}
+
+// --- Stream configuration inheritance (CFG-006/013) ---
+
+export interface ResolvedValueEntry {
+  value: unknown;
+  source: "environment" | "process" | "stream";
+}
+
+export interface ResolvePreview {
+  layers: {
+    environment: Record<string, unknown>;
+    process: Record<string, unknown>;
+    stream: Record<string, unknown>;
+  };
+  resolved: {
+    process_version_id: string;
+    process_version_number: number;
+    policies: Record<string, unknown>[];
+    values: Record<string, ResolvedValueEntry>;
+    fingerprint: string;
+  };
+}
+
+export function resolveStreamPreview(
+  organizationSlug: string,
+  streamSlug: string,
+  overrides: Record<string, unknown>,
+): Promise<ResolvePreview> {
+  return apiFetch<ResolvePreview>(`/orgs/${organizationSlug}/streams/${streamSlug}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ overrides }),
+  });
+}
+
+export function createStreamVersion(
+  organizationSlug: string,
+  streamSlug: string,
+  overrides: Record<string, unknown>,
+): Promise<StreamVersionSummary> {
+  return apiFetch<StreamVersionSummary>(
+    `/orgs/${organizationSlug}/streams/${streamSlug}/versions`,
+    {
+      method: "POST",
+      body: JSON.stringify({ overrides }),
+    },
+  );
+}
+
+export function updateStreamVersion(
+  organizationSlug: string,
+  streamSlug: string,
+  versionId: string,
+  recordVersion: number,
+  overrides: Record<string, unknown>,
+): Promise<StreamVersionSummary> {
+  return apiFetch<StreamVersionSummary>(
+    `/orgs/${organizationSlug}/streams/${streamSlug}/versions/${versionId}`,
+    {
+      method: "PATCH",
+      headers: { "If-Match": String(recordVersion) },
+      body: JSON.stringify({ overrides }),
+    },
+  );
+}
+
+export function publishStreamVersion(
+  organizationSlug: string,
+  streamSlug: string,
+  versionId: string,
+): Promise<StreamVersionSummary> {
+  return apiFetch<StreamVersionSummary>(
+    `/orgs/${organizationSlug}/streams/${streamSlug}/versions/${versionId}/publish`,
     { method: "POST" },
   );
 }

@@ -26,6 +26,7 @@ from soa_api.domain.processes import (
     create_draft,
     create_process,
 )
+from soa_api.domain.resolver import ENVIRONMENT_DEFAULTS, resolve_configuration
 from soa_api.domain.rules import (
     RuleExpressionError,
     RuleSetVersion,
@@ -205,6 +206,7 @@ class StreamVersionResponse(BaseModel):
     overrides: dict[str, Any]
     resolved_snapshot: dict[str, Any] | None
     pinned_process_version_id: str | None
+    version: int
 
     @classmethod
     def from_model(cls, record: StreamVersion) -> "StreamVersionResponse":
@@ -217,6 +219,7 @@ class StreamVersionResponse(BaseModel):
             pinned_process_version_id=str(record.pinned_process_version_id)
             if record.pinned_process_version_id
             else None,
+            version=record.version,
         )
 
 
@@ -623,6 +626,77 @@ async def create_stream_version(
         actor_id=_actor(authorized),
     )
     return StreamVersionResponse.from_model(draft)
+
+
+@router.patch("/orgs/{organization_slug}/streams/{stream_slug}/versions/{version_id}")
+async def update_stream_version(
+    stream_slug: str,
+    version_id: uuid.UUID,
+    body: StreamDraftRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.manage"))],
+    session: DbSession,
+    if_match: Annotated[int | None, Header(alias="If-Match")] = None,
+) -> StreamVersionResponse:
+    stream = await _load_stream(session, authorized, stream_slug)
+    record = await StreamVersionRepository(session, authorized.org_context).get(version_id)
+    if record is None or record.stream_id != stream.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    if record.state != VersionState.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Published stream versions are immutable; create a new draft.",
+        )
+    try:
+        if if_match is not None:
+            record.expect_version(if_match)
+        record.overrides = dict(body.overrides)
+        if body.change_summary is not None:
+            record.change_summary = body.change_summary
+        await session.flush()
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return StreamVersionResponse.from_model(record)
+
+
+class ResolvePreviewRequest(BaseModel):
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/orgs/{organization_slug}/streams/{stream_slug}/resolve")
+async def resolve_stream_preview(
+    stream_slug: str,
+    body: ResolvePreviewRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Dry-run resolution for the inheritance editor (CFG-013): merge the
+    proposed overrides against the parent process's active version and
+    return every layer plus the provenance-tagged result. Persists nothing."""
+    stream = await _load_stream(session, authorized, stream_slug)
+    process = await ProcessRepository(session, authorized.org_context).get(stream.process_id)
+    if process is None or process.active_version_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The parent process has no published version to resolve against.",
+        )
+    process_version = await ProcessVersionRepository(session, authorized.org_context).get(
+        process.active_version_id
+    )
+    if process_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The parent process's active version could not be loaded.",
+        )
+    return {
+        "layers": {
+            "environment": dict(ENVIRONMENT_DEFAULTS),
+            "process": dict(process_version.definition),
+            "stream": dict(body.overrides),
+        },
+        "resolved": resolve_configuration(
+            process_version=process_version, stream_overrides=body.overrides
+        ),
+    }
 
 
 @router.post("/orgs/{organization_slug}/streams/{stream_slug}/versions/{version_id}/publish")

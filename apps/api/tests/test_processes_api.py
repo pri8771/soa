@@ -513,3 +513,89 @@ def test_rules_draft_edit_publish_flow_over_http(client: TestClient) -> None:
     assert listing.status_code == 200
     assert listing.json()["field_types"]["total"] == "money"
     assert [v["state"] for v in listing.json()["versions"]] == ["published"]
+
+
+async def test_stream_draft_edit_and_resolve_preview_over_http(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    make_org(client)
+    make_process(client)
+    await seed_publish_prereqs(client, db)
+    assert (
+        client.post(
+            "/orgs/northstar/processes/purchase-orders/streams",
+            json={"name": "Email intake", "slug": "email"},
+            headers=ADMIN,
+        ).status_code
+        == 201
+    )
+
+    # Resolving before the process has a published version is a clear 409.
+    blocked = client.post(
+        "/orgs/northstar/streams/email/resolve", json={"overrides": {}}, headers=ADMIN
+    )
+    assert blocked.status_code == 409
+    assert "no published version" in blocked.json()["error"]["message"]
+
+    process_draft = client.post(
+        "/orgs/northstar/processes/purchase-orders/versions",
+        json={"definition": {"language": "de"}},
+        headers=ADMIN,
+    ).json()
+    assert (
+        client.post(
+            f"/orgs/northstar/processes/purchase-orders/versions/{process_draft['id']}/publish",
+            headers=ADMIN,
+        ).status_code
+        == 200
+    )
+
+    # Provenance: environment default, process value, stream override.
+    preview = client.post(
+        "/orgs/northstar/streams/email/resolve",
+        json={"overrides": {"confidence_floor": 0.95}},
+        headers=ADMIN,
+    )
+    assert preview.status_code == 200, preview.text
+    values = preview.json()["resolved"]["values"]
+    assert values["max_pages"]["source"] == "environment"
+    assert values["language"] == {"value": "de", "source": "process"}
+    assert values["confidence_floor"] == {"value": 0.95, "source": "stream"}
+    assert preview.json()["layers"]["stream"] == {"confidence_floor": 0.95}
+    assert preview.json()["resolved"]["fingerprint"]
+
+    # Draft edits persist with If-Match; published versions are immutable.
+    draft = client.post(
+        "/orgs/northstar/streams/email/versions",
+        json={"overrides": {"confidence_floor": 0.9}},
+        headers=ADMIN,
+    ).json()
+    stale = client.patch(
+        f"/orgs/northstar/streams/email/versions/{draft['id']}",
+        json={"overrides": {"confidence_floor": 0.95}},
+        headers={**ADMIN, "If-Match": "41"},
+    )
+    assert stale.status_code == 409
+    version_row = client.get("/orgs/northstar/streams/email", headers=ADMIN).json()["versions"][0]
+    edited = client.patch(
+        f"/orgs/northstar/streams/email/versions/{draft['id']}",
+        json={"overrides": {"confidence_floor": 0.95}},
+        headers=ADMIN,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["overrides"] == {"confidence_floor": 0.95}
+    assert version_row["state"] == "draft"
+
+    assert (
+        client.post(
+            f"/orgs/northstar/streams/email/versions/{draft['id']}/publish", headers=ADMIN
+        ).status_code
+        == 200
+    )
+    frozen = client.patch(
+        f"/orgs/northstar/streams/email/versions/{draft['id']}",
+        json={"overrides": {}},
+        headers=ADMIN,
+    )
+    assert frozen.status_code == 409
