@@ -315,7 +315,9 @@ jobs:
           echo "runtime uid=$uid"
           test "$uid" != "0"
       - name: Scan ${{ matrix.image.name }} with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        # @master is the action's documented reference and always
+        # resolves; REL-002 pins it to a digest alongside the base images.
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ matrix.image.name }}:ci
           format: table
