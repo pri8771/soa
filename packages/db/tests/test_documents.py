@@ -161,10 +161,19 @@ async def test_illegal_jumps_are_refused_even_via_raw_assignment(db: DatabaseSes
 def test_retryable_failure_reenters_the_queue() -> None:
     assert DocumentState.QUEUED in ALLOWED_TRANSITIONS[DocumentState.FAILED_RETRYABLE]
     assert DocumentState.FAILED_TERMINAL in ALLOWED_TRANSITIONS[DocumentState.FAILED_RETRYABLE]
-    # Terminal states never resume processing.
-    assert DocumentState.QUEUED not in ALLOWED_TRANSITIONS.get(
-        DocumentState.FAILED_TERMINAL, frozenset()
-    )
+    # Authorized reprocessing (PRC-013) may re-queue a terminal failure
+    # (the configuration that made it terminal may have been fixed) and a
+    # document sent back from review.
+    assert DocumentState.QUEUED in ALLOWED_TRANSITIONS[DocumentState.FAILED_TERMINAL]
+    assert DocumentState.QUEUED in ALLOWED_TRANSITIONS[DocumentState.REVIEW_REQUIRED]
+    # Business commitments and the true terminal state never resume.
+    for settled in (
+        DocumentState.COMPLETED,
+        DocumentState.REJECTED,
+        DocumentState.CANCELLED,
+        DocumentState.QUARANTINED,
+    ):
+        assert DocumentState.QUEUED not in ALLOWED_TRANSITIONS.get(settled, frozenset())
     assert ALLOWED_TRANSITIONS.get(DocumentState.ARCHIVED, frozenset()) == frozenset()
 
 

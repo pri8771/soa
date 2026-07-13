@@ -13,7 +13,7 @@ import base64
 import binascii
 import hashlib
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
 from soa_db.artifacts import ArtifactRepository
-from soa_db.audit import ActorType, AuditEvent
+from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.documents import (
     Document,
     DocumentRepository,
@@ -32,7 +32,9 @@ from soa_db.documents import (
     InvalidDocumentTransitionError,
     transition_document,
 )
+from soa_db.jobs import enqueue_job
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from soa_db.runs import ProcessingRunRepository
 
 router = APIRouter(tags=["documents"])
 
@@ -236,6 +238,169 @@ async def cancel_document(
     except InvalidDocumentTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return {"id": str(document.id), "state": document.state}
+
+
+#: States where the record is (or is becoming) a business commitment —
+#: reprocessing them is refused by POLICY, not just by the state machine,
+#: and the response says so explicitly.
+_REPROCESS_PROTECTED = {
+    DocumentState.APPROVED.value: "the document is approved",
+    DocumentState.EXPORTING.value: "the document is being exported",
+    DocumentState.COMPLETED.value: "the document has been exported",
+    DocumentState.ARCHIVED.value: "the document is archived",
+}
+
+
+class ReprocessRequest(BaseModel):
+    #: retry = same configuration as the last run; current_config = the
+    #: stream's currently published configuration; historical_config = the
+    #: configuration a specific earlier run used (extra authority required).
+    mode: Literal["retry", "current_config", "historical_config"] = "current_config"
+    run_id: uuid.UUID | None = None  # historical_config only
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/orgs/{organization_slug}/documents/{document_id}/reprocess")
+async def reprocess_document(
+    document_id: uuid.UUID,
+    body: ReprocessRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.reprocess"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Start a NEW processing run for the document (PRC-013).
+
+    The previous runs and their artifacts stay immutable evidence; the
+    document re-enters the queue and the full pipeline re-executes under
+    the pinned configuration the chosen mode selects. Approved, exporting,
+    completed, and archived documents are protected by policy."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    if document.state in _REPROCESS_PROTECTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Reprocessing is not allowed: {_REPROCESS_PROTECTED[document.state]}. "
+                "Approved and exported records are protected by policy."
+            ),
+        )
+
+    runs = await ProcessingRunRepository(session, authorized.org_context).list_for_document(
+        document.id
+    )
+    if body.mode == "retry":
+        if not runs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The document has never run; there is no configuration to retry under.",
+            )
+        source = runs[-1]
+        stream_version_id = source.stream_version_id
+        config_fingerprint = source.config_fingerprint
+        consequence = (
+            f"A new run will re-execute the full pipeline under the same configuration "
+            f"as run {source.run_number}."
+        )
+    elif body.mode == "historical_config":
+        # Re-running under an OLD configuration is a config-authority
+        # decision, not a routine operator action.
+        if "streams.manage" not in authorized.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Historical-configuration runs require the streams.manage permission.",
+            )
+        if body.run_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="historical_config mode requires run_id.",
+            )
+        historical = next((run for run in runs if run.id == body.run_id), None)
+        if historical is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That run does not exist for this document.",
+            )
+        stream_version_id = historical.stream_version_id
+        config_fingerprint = historical.config_fingerprint
+        consequence = (
+            f"A new run will re-execute the full pipeline under the HISTORICAL "
+            f"configuration of run {historical.run_number}, not the stream's current one."
+        )
+    else:  # current_config
+        stream = await StreamRepository(session, authorized.org_context).get(document.stream_id)
+        stream_version_id = stream.active_version_id if stream else None
+        config_fingerprint = None
+        if stream is not None and stream.active_version_id is not None:
+            active = await StreamVersionRepository(session, authorized.org_context).get(
+                stream.active_version_id
+            )
+            if active is not None and active.resolved_snapshot:
+                config = active.resolved_snapshot.get("config")
+                fingerprint = config.get("fingerprint") if isinstance(config, dict) else None
+                config_fingerprint = str(fingerprint) if fingerprint else None
+        consequence = (
+            "A new run will re-execute the full pipeline under the stream's currently "
+            "published configuration."
+        )
+
+    try:
+        await transition_document(
+            session,
+            authorized.org_context,
+            document=document,
+            to_state=DocumentState.QUEUED,
+            reason=body.reason,
+            actor_id=f"user:{authorized.membership.user_id}",
+            actor_type=ActorType.USER,
+        )
+    except InvalidDocumentTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+    next_run_number = len(runs) + 1
+    await enqueue_job(
+        session,
+        job_type="document.preprocess",
+        payload={
+            "document_id": str(document.id),
+            "stream_id": str(document.stream_id),
+            "organization_id": str(authorized.org_context.organization_id),
+            "stream_version_id": str(stream_version_id) if stream_version_id else None,
+            "config_fingerprint": config_fingerprint,
+        },
+        organization_id=authorized.org_context.organization_id,
+        # The intake enqueue used the bare document key; each reprocess is
+        # its own idempotent intent.
+        dedupe_key=f"document.preprocess:{document.id}:run:{next_run_number}",
+        priority=document.priority,
+    )
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=f"user:{authorized.membership.user_id}",
+        action="document.reprocess_requested",
+        target_type="document",
+        target_id=str(document.id),
+        organization_id=authorized.org_context.organization_id,
+        summary={
+            "mode": body.mode,
+            "reason": body.reason,
+            "run_number": next_run_number,
+            "stream_version_id": str(stream_version_id) if stream_version_id else None,
+            "config_fingerprint": config_fingerprint,
+        },
+    )
+    return {
+        "id": str(document.id),
+        "state": document.state,
+        "mode": body.mode,
+        "run_number": next_run_number,
+        "pinned": {
+            "stream_version_id": str(stream_version_id) if stream_version_id else None,
+            "config_fingerprint": config_fingerprint,
+        },
+        "consequence": consequence
+        + " Previous runs and their artifacts remain unchanged as evidence.",
+    }
 
 
 #: Timeline summaries may reference stored objects only by hash, never by

@@ -106,6 +106,14 @@ for _state in (*_HAPPY_CHAIN, DocumentState.REVIEW_REQUIRED, DocumentState.EXPOR
 # terminal.
 _allow(DocumentState.FAILED_RETRYABLE, DocumentState.QUEUED, DocumentState.FAILED_TERMINAL)
 
+# Authorized reprocessing (PRC-013) re-queues a document for a NEW run:
+# from review (send back under a corrected configuration) and from a
+# terminal failure (the config that made it terminal may have been fixed).
+# Approved/exporting/completed documents are protected by policy at the
+# API layer and are deliberately NOT re-queueable here either.
+_allow(DocumentState.REVIEW_REQUIRED, DocumentState.QUEUED)
+_allow(DocumentState.FAILED_TERMINAL, DocumentState.QUEUED)
+
 # Settled documents can be archived; archived is the single terminal state.
 for _state in (
     DocumentState.COMPLETED,
