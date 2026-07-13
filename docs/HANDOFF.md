@@ -4,7 +4,7 @@
 
 ## 1. Current state
 
-- **Progress (updated as epics complete):** FND (12), DB (5), TEN (12), DSN (9), JOB (8), and CFG (14) are DONE — implemented, tested, committed to `dev`, CI green. Next action: `STO-001` in `docs/BUILD_BACKLOG.md`, then the rest of STO in order.
+- **Progress (updated as epics complete):** FND (12), DB (5), TEN (12), DSN (9), JOB (8), CFG (14), and STO (6) are DONE — implemented, tested, committed to `dev`, CI green. Next action: `ING-001` in `docs/BUILD_BACKLOG.md`, then the rest of ING in order.
 - **CI conventions learned the hard way:**
   - The migrations job runs all `-m postgres` tests as the non-superuser `soa_app` role (superusers bypass RLS; the bootstrap image user is a superuser).
   - RLS policies must use `NULLIF(current_setting(...), '')::uuid` — a reverted `SET LOCAL` GUC reads as `''` on pooled connections.
