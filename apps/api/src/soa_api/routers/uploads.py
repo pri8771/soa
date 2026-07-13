@@ -37,6 +37,12 @@ from soa_api.domain.uploads import (
     is_expired,
     validate_upload_declaration,
 )
+from soa_api.services.duplicates import (
+    DuplicatePolicy,
+    find_exact_duplicate,
+    get_duplicate_policy,
+    mark_duplicate,
+)
 from soa_api.services.file_inspection import InspectionVerdict, inspect_file
 from soa_api.services.file_limits import (
     FileLimits,
@@ -101,6 +107,22 @@ def _actor(authorized: AuthorizedContext) -> str:
     return f"user:{authorized.membership.user_id}"
 
 
+async def _stream_config_by_id(
+    session: DbSession, authorized: AuthorizedContext, stream_id: uuid.UUID
+) -> dict[str, object]:
+    """The stream's published resolved configuration, or {}."""
+    stream = await StreamRepository(session, authorized.org_context).get(stream_id)
+    if stream is None or stream.active_version_id is None:
+        return {}
+    active = await StreamVersionRepository(session, authorized.org_context).get(
+        stream.active_version_id
+    )
+    if active is None or not active.resolved_snapshot:
+        return {}
+    config = active.resolved_snapshot.get("config")
+    return dict(config) if isinstance(config, dict) else {}
+
+
 @router.post(
     "/orgs/{organization_slug}/streams/{stream_slug}/uploads",
     status_code=status.HTTP_201_CREATED,
@@ -131,15 +153,7 @@ async def create_upload(
         max_decompressed_bytes=deps.settings.max_decompressed_bytes,
         max_conversion_seconds=deps.settings.max_conversion_seconds,
     )
-    stream_config: dict[str, object] = {}
-    if stream.active_version_id is not None:
-        active = await StreamVersionRepository(session, authorized.org_context).get(
-            stream.active_version_id
-        )
-        if active is not None and active.resolved_snapshot:
-            config = active.resolved_snapshot.get("config")
-            if isinstance(config, dict):
-                stream_config = config
+    stream_config = await _stream_config_by_id(session, authorized, stream.id)
     limits = resolve_limits(platform_limits, stream_config)
 
     repo = UploadSessionRepository(session, authorized.org_context)
@@ -381,13 +395,43 @@ async def complete_upload(
             actor_id="system:malware-scan",
         )
     else:
-        await transition_document(
+        # Exact-duplicate policy (ING-006): duplicates are never silent.
+        duplicate = await find_exact_duplicate(
             session,
             authorized.org_context,
-            document=document,
-            to_state=DocumentState.QUEUED,
-            actor_id="system:malware-scan",
+            stream_id=record.stream_id,
+            content_sha256=record.declared_sha256,
+            exclude_document_id=document.id,
         )
+        policy = get_duplicate_policy(
+            await _stream_config_by_id(session, authorized, record.stream_id)
+        )
+        if duplicate is not None:
+            await mark_duplicate(
+                session,
+                authorized.org_context,
+                document=document,
+                original=duplicate,
+                policy=policy,
+                actor_id="system:duplicate-detection",
+            )
+        if duplicate is not None and policy is DuplicatePolicy.REJECT:
+            await transition_document(
+                session,
+                authorized.org_context,
+                document=document,
+                to_state=DocumentState.REJECTED,
+                reason=f"exact duplicate of document {duplicate.id}",
+                actor_id="system:duplicate-detection",
+            )
+        else:
+            await transition_document(
+                session,
+                authorized.org_context,
+                document=document,
+                to_state=DocumentState.QUEUED,
+                actor_id="system:malware-scan",
+            )
     return CompleteResponse(document_id=str(record.document_id), state=document.state)
 
 

@@ -169,6 +169,10 @@ class Document(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, Ver
     )
     # Why the document sits in an exceptional state, if it does.
     state_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Exact-content duplicate marker (ING-006): the earliest document in
+    # the same stream with identical bytes. Set whatever the policy is —
+    # duplicates are never silent, even when allowed to proceed.
+    duplicate_of: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
 
     __table_args__ = (
         Index(
