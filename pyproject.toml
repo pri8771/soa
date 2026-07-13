@@ -3,13 +3,13 @@ name = "soa-workspace"
 version = "0.0.0"
 description = "SOA monorepo workspace root (not an installable package)"
 requires-python = ">=3.11"
-dependencies = ["soa-api", "soa-worker", "soa-config", "soa-fixtures", "soa-db", "soa-storage", "soa-normalize"]
+dependencies = ["soa-api", "soa-worker", "soa-config", "soa-fixtures", "soa-db", "soa-storage", "soa-normalize", "soa-rules"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker", "packages/config", "packages/test-fixtures", "packages/db", "packages/storage", "packages/normalize"]
+members = ["apps/api", "apps/worker", "packages/config", "packages/test-fixtures", "packages/db", "packages/storage", "packages/normalize", "packages/rules"]
 
 [tool.uv.sources]
 soa-api = { workspace = true }
@@ -19,6 +19,7 @@ soa-fixtures = { workspace = true }
 soa-db = { workspace = true }
 soa-storage = { workspace = true }
 soa-normalize = { workspace = true }
+soa-rules = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -36,7 +37,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src"]
+src = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src", "packages/rules/src"]
 
 [tool.ruff.lint]
 select = [
@@ -52,8 +53,8 @@ select = [
 [tool.mypy]
 strict = true
 warn_unreachable = true
-files = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src"]
-mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src"]
+files = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src", "packages/rules/src"]
+mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages/test-fixtures/src", "packages/db/src", "packages/storage/src", "packages/normalize/src", "packages/rules/src"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
@@ -61,7 +62,7 @@ module = ["aiobotocore.*", "botocore.*", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests", "packages/test-fixtures/tests", "packages/db/tests", "packages/storage/tests", "packages/normalize/tests", "tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/config/tests", "packages/test-fixtures/tests", "packages/db/tests", "packages/storage/tests", "packages/normalize/tests", "packages/rules/tests", "tests"]
 markers = [
     "postgres: requires a real PostgreSQL database (SOA_TEST_POSTGRES_URL)",
     "minio: requires a live MinIO/S3 endpoint (SOA_TEST_MINIO_URL)",
