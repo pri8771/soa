@@ -233,3 +233,50 @@ async def test_cancel_respects_the_state_machine(
         headers=OUTSIDER,
     )
     assert denied.status_code == 404
+
+
+async def test_detail_carries_artifacts_context_and_redacted_timeline(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    ids = await seed(client, db, count=1)
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    # Attach an original artifact so the timeline has artifact events too.
+    from soa_db.artifacts import ArtifactKind, create_artifact
+
+    async with db.session_scope() as session:
+        await create_artifact(
+            session,
+            context,
+            document_id=uuid.UUID(ids[0]),
+            kind=ArtifactKind.ORIGINAL,
+            object_key=f"orgs/{org_id}/documents/{ids[0]}/original/secret-key.pdf",
+            sha256="0" * 64,
+            size_bytes=100,
+            content_type="application/pdf",
+        )
+
+    detail = client.get(f"/orgs/northstar/documents/{ids[0]}", headers=ADMIN)
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["document"]["id"] == ids[0]
+    assert body["context"]["stream_slug"] == "email"
+
+    (artifact,) = body["artifacts"]
+    assert artifact["kind"] == "original"
+    # Sensitive internals never appear anywhere in the response.
+    assert "object_key" not in detail.text
+    assert "secret-key" not in detail.text
+
+    actions = [entry["action"] for entry in body["timeline"]]
+    assert actions == [
+        "document.received",
+        "document.state_changed",  # received -> validating_file
+        "document.state_changed",  # validating_file -> queued
+        "artifact.created",
+    ], "occurrence order with stable tiebreak"
+    assert all(entry["occurred_at"] for entry in body["timeline"])
+
+    # Cross-tenant invisibility.
+    assert client.get(f"/orgs/northstar/documents/{ids[0]}", headers=OUTSIDER).status_code == 404

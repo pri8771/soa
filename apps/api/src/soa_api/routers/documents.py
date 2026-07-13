@@ -22,8 +22,9 @@ from sqlalchemy import or_, select
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
-from soa_api.domain.streams import StreamRepository
-from soa_db.audit import ActorType
+from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_db.artifacts import ArtifactRepository
+from soa_db.audit import ActorType, AuditEvent
 from soa_db.documents import (
     Document,
     DocumentRepository,
@@ -235,3 +236,99 @@ async def cancel_document(
     except InvalidDocumentTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return {"id": str(document.id), "state": document.state}
+
+
+#: Timeline summaries may reference stored objects only by hash, never by
+#: key — object keys are server-side secrets (STO-004). This is defense in
+#: depth for audit summaries written by future stages.
+_REDACTED_SUMMARY_KEYS = frozenset({"object_key", "upload_url", "signed_url"})
+
+
+def _redact_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary:
+        return {}
+    return {key: value for key, value in summary.items() if key not in _REDACTED_SUMMARY_KEYS}
+
+
+@router.get("/orgs/{organization_slug}/documents/{document_id}")
+async def get_document_detail(
+    document_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Summary, artifacts, configuration context, and the audit timeline
+    (ING-011). Object keys and other server-side internals never appear;
+    the timeline is sorted by occurrence with id as the stable tiebreak."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    artifacts = await ArtifactRepository(session, authorized.org_context).list_for_document(
+        document.id
+    )
+    artifact_rows = [
+        {
+            "id": str(artifact.id),
+            "kind": artifact.kind,
+            "sha256": artifact.sha256,
+            "size_bytes": artifact.size_bytes,
+            "content_type": artifact.content_type,
+            "produced_by_stage": artifact.produced_by_stage,
+            "retention_class": artifact.retention_class,
+            "created_at": artifact.created_at.isoformat(),
+        }
+        for artifact in artifacts
+    ]
+
+    # Configuration context: the parent stream and what it currently pins.
+    stream = await StreamRepository(session, authorized.org_context).get(document.stream_id)
+    context: dict[str, Any] = {"stream_id": str(document.stream_id)}
+    if stream is not None:
+        context["stream_slug"] = stream.slug
+        context["stream_name"] = stream.name
+        if stream.active_version_id is not None:
+            active = await StreamVersionRepository(session, authorized.org_context).get(
+                stream.active_version_id
+            )
+            if active is not None:
+                context["stream_version_number"] = active.version_number
+                context["pinned_process_version_id"] = (
+                    str(active.pinned_process_version_id)
+                    if active.pinned_process_version_id
+                    else None
+                )
+
+    target_ids = [str(document.id), *(str(artifact.id) for artifact in artifacts)]
+    events = (
+        (
+            await session.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.organization_id == authorized.org_context.organization_id,
+                    AuditEvent.target_id.in_(target_ids),
+                )
+                .order_by(AuditEvent.occurred_at.asc(), AuditEvent.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    timeline = [
+        {
+            "occurred_at": event.occurred_at.isoformat(),
+            "action": event.action,
+            "actor_type": event.actor_type,
+            "actor_id": event.actor_id,
+            "target_type": event.target_type,
+            "summary": _redact_summary(event.summary),
+            "correlation_id": event.correlation_id,
+        }
+        for event in events
+    ]
+
+    return {
+        "document": _project(document, DOCUMENT_FIELDS),
+        "artifacts": artifact_rows,
+        "context": context,
+        "timeline": timeline,
+    }
