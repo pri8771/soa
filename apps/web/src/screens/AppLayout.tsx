@@ -98,6 +98,7 @@ export function AppLayout() {
     permissions: new Set(membership.permissions),
     devSession: data.dev_session,
     userLabel: data.email,
+    userId: data.user_id,
     availableOrganizations: data.memberships
       .filter((m) => m.status === "active" && m.organization_status === "active")
       .map((m) => ({ slug: m.organization_slug, name: m.organization_name })),

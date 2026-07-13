@@ -18,6 +18,7 @@ function makeSession(permissions: string[]): ShellSession {
     permissions: new Set(permissions),
     devSession: true,
     userLabel: "reviewer@northstar.example",
+    userId: "u-1",
   };
 }
 

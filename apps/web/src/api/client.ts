@@ -761,3 +761,72 @@ export function reprocessDocument(
     body: JSON.stringify(options),
   });
 }
+
+// --- Review queue (REV-002/003) ---
+
+export interface ReviewReason {
+  code: string;
+  message: string;
+  field_key: string | null;
+  row_index: number | null;
+  rule_key: string | null;
+}
+
+export interface ReviewTaskEntry {
+  id: string;
+  document_id: string;
+  run_id: string;
+  state: string;
+  priority: number;
+  blocking: boolean;
+  sla_due_at: string | null;
+  assigned_to: string | null;
+  assigned_at: string | null;
+  reasons: ReviewReason[];
+  outcome: string | null;
+  version: number;
+  created_at: string;
+  document_filename: string | null;
+  document_state: string | null;
+}
+
+export interface ReviewTasksPage {
+  items: ReviewTaskEntry[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export function fetchReviewTasks(
+  organizationSlug: string,
+  options: { view?: string; sort?: string; cursor?: string } = {},
+): Promise<ReviewTasksPage> {
+  const params = new URLSearchParams();
+  if (options.view && options.view !== "all") params.set("view", options.view);
+  if (options.sort) params.set("sort", options.sort);
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return apiFetch<ReviewTasksPage>(`/orgs/${organizationSlug}/review-tasks${query}`);
+}
+
+export function claimReviewTask(
+  organizationSlug: string,
+  taskId: string,
+): Promise<ReviewTaskEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/claim`, { method: "POST" });
+}
+
+export function claimNextReviewTask(
+  organizationSlug: string,
+): Promise<{ task: ReviewTaskEntry | null; explanation: string }> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/claim-next`, { method: "POST" });
+}
+
+export function releaseReviewTask(
+  organizationSlug: string,
+  taskId: string,
+): Promise<ReviewTaskEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/release`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}

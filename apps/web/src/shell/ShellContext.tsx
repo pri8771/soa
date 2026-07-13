@@ -17,6 +17,8 @@ export interface ShellSession {
   permissions: ReadonlySet<string>;
   devSession: boolean;
   userLabel: string;
+  /** The principal's user id — actor strings are `user:{userId}`. */
+  userId: string;
   /** Other organizations the user can switch to (active memberships only). */
   availableOrganizations?: ShellOrganization[];
 }

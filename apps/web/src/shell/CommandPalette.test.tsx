@@ -73,6 +73,7 @@ describe("CommandPalette permissions", () => {
       permissions: new Set(["documents.read", "organization.read"]),
       devSession: true,
       userLabel: "test",
+      userId: "u-1",
     };
     const commands = buildNavigationCommands(session, () => {});
     expect(commands.map((command) => command.label)).toEqual(["Go to Overview", "Go to Documents"]);

@@ -405,7 +405,97 @@ export const DEFAULT_RUNS = [
   },
 ];
 
+export const DEFAULT_REVIEW_TASKS = [
+  {
+    id: "b1111111-1111-4111-8111-111111111111",
+    document_id: "84444444-4444-4444-8444-444444444444",
+    run_id: "a1111111-1111-4111-8111-111111111111",
+    state: "open",
+    priority: 10,
+    blocking: true,
+    sla_due_at: "2026-07-12T08:00:00+00:00", // in the past: overdue
+    assigned_to: null,
+    assigned_at: null,
+    reasons: [
+      {
+        code: "rule_triggered",
+        message: "Order total disagrees with the sum of line totals",
+        field_key: null,
+        row_index: null,
+        rule_key: "totals.header_matches_lines",
+      },
+      {
+        code: "low_confidence",
+        message: "confidence 0.60 is below the critical gate of 0.98",
+        field_key: "po_number",
+        row_index: null,
+        rule_key: null,
+      },
+    ],
+    outcome: null,
+    version: 1,
+    created_at: "2026-07-12T09:25:00+00:00",
+    document_filename: "po-4713.pdf",
+    document_state: "review_required",
+  },
+  {
+    id: "b2222222-2222-4222-8222-222222222222",
+    document_id: "81111111-1111-4111-8111-111111111111",
+    run_id: "a2222222-2222-4222-8222-222222222222",
+    state: "in_progress",
+    priority: 100,
+    blocking: false,
+    sla_due_at: null,
+    assigned_to: "user:u-1",
+    assigned_at: "2026-07-12T10:00:00+00:00",
+    reasons: [
+      {
+        code: "ambiguous_reading",
+        message: "a rival reading is within the margin",
+        field_key: "currency",
+        row_index: null,
+        rule_key: null,
+      },
+    ],
+    outcome: null,
+    version: 2,
+    created_at: "2026-07-12T09:30:00+00:00",
+    document_filename: "po-4711.pdf",
+    document_state: "review_required",
+  },
+];
+
 export const handlers = [
+  http.get("/api/orgs/:slug/review-tasks", ({ request }) => {
+    const url = new URL(request.url);
+    const view = url.searchParams.get("view") ?? "all";
+    let items = DEFAULT_REVIEW_TASKS;
+    if (view === "mine") items = items.filter((t) => t.assigned_to === "user:u-1");
+    if (view === "unassigned") items = items.filter((t) => t.state === "open");
+    if (view === "overdue") items = items.filter((t) => t.sla_due_at !== null);
+    if (view === "blocked") items = items.filter((t) => t.blocking);
+    return HttpResponse.json({ items, has_more: false, next_cursor: null });
+  }),
+  http.post("/api/orgs/:slug/review-tasks/claim-next", () =>
+    HttpResponse.json({
+      task: { ...DEFAULT_REVIEW_TASKS[0], state: "in_progress", assigned_to: "user:u-1" },
+      explanation: "Highest-priority open task, oldest first within the same priority.",
+    }),
+  ),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/claim", ({ params }) => {
+    const found = DEFAULT_REVIEW_TASKS.find((t) => t.id === String(params["taskId"]));
+    if (!found) {
+      return HttpResponse.json({ error: { message: "Task not found." } }, { status: 404 });
+    }
+    return HttpResponse.json({ ...found, state: "in_progress", assigned_to: "user:u-1" });
+  }),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/release", ({ params }) => {
+    const found = DEFAULT_REVIEW_TASKS.find((t) => t.id === String(params["taskId"]));
+    if (!found) {
+      return HttpResponse.json({ error: { message: "Task not found." } }, { status: 404 });
+    }
+    return HttpResponse.json({ ...found, state: "open", assigned_to: null });
+  }),
   http.get("/api/orgs/:slug/documents", ({ request }) => {
     const url = new URL(request.url);
     const state = url.searchParams.get("document_state");
