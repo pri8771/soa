@@ -24,6 +24,8 @@ def make_settings(environment: Environment) -> ApiSettings:
             storage_access_key="svc-storage",
             storage_secret_key="managed-storage-secret",
             clamav_host="clamav.internal",
+            secrets_backend="aws-secrets-manager",
+            secrets_aws_region="eu-central-1",
         )
     return ApiSettings(environment=environment)
 

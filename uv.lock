@@ -2927,10 +2927,14 @@ version = "0.1.0"
 source = { editable = "packages/storage" }
 dependencies = [
     { name = "aiobotocore" },
+    { name = "soa-config" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "aiobotocore", specifier = ">=2.15" }]
+requires-dist = [
+    { name = "aiobotocore", specifier = ">=2.15" },
+    { name = "soa-config", editable = "packages/config" },
+]
 
 [[package]]
 name = "soa-worker"

@@ -5,10 +5,11 @@ Its configuration splits three ways, deliberately:
 
 - the integration ROOT: type, state, and a credential REFERENCE — never
   a secret value;
-- the credential itself in a SEPARATE table, written through one helper
-  and read through one helper, absent from every API serialization and
-  redacted from repr — configuration payloads and credentials never
-  travel together;
+- the credential row in a SEPARATE table holding a SECRET-STORE
+  REFERENCE (SEC-005) — the value itself lives behind the
+  ``soa_config.SecretStore`` interface and never touches the tenant
+  database; the reference is written through one helper and resolved
+  through one helper, absent from every API serialization;
 - versioned MAPPING PROFILES (draft -> published -> superseded, the
   CFG version discipline): the mapping definition plus the TARGET
   schema the mapped payload must satisfy. Published versions are
@@ -25,11 +26,12 @@ from sqlalchemy import Index, String, Text, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from soa_config import SecretNotFoundError, SecretReference, SecretStore
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.outbox import PORTABLE_JSON
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
-from soa_db.types import GUID, UTCDateTime, utcnow
+from soa_db.types import GUID, UTCDateTime, utcnow, uuid7
 from soa_db.versioning import (
     ImmutablePublishedVersionMixin,
     InvalidVersionStateError,
@@ -77,24 +79,21 @@ class Integration(
 
 
 class IntegrationCredential(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, Base):
-    """The credential itself, SEPARATED from configuration. The secret
-    column is written by ``store_integration_credential`` and read by
-    ``credential_secret_for_delivery`` only; it never appears in audit
-    summaries, API responses, or repr."""
+    """Credential metadata plus a SECRET-STORE REFERENCE (SEC-005) —
+    never the value. ``secret_reference`` is written by
+    ``store_integration_credential`` and resolved by
+    ``credential_secret_for_delivery`` only; neither the reference nor
+    the value appears in audit summaries or API responses."""
 
     __tablename__ = "integration_credentials"
 
     integration_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g. webhook_hmac_secret
-    secret: Mapped[str] = mapped_column(Text(), nullable=False)
+    #: ``secretref://<provider>/<name>`` — resolvable only through the
+    #: configured secret store.
+    secret_reference: Mapped[str] = mapped_column(Text(), nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-
-    def __repr__(self) -> str:  # pragma: no cover - safety net, not behavior
-        return (
-            f"<IntegrationCredential id={self.id} integration_id={self.integration_id} "
-            f"kind={self.kind} secret=[redacted]>"
-        )
 
 
 class MappingProfileVersion(
@@ -201,23 +200,40 @@ async def store_integration_credential(
     kind: str,
     secret: str,
     actor_id: str,
+    secret_store: SecretStore,
 ) -> IntegrationCredential:
-    """Store (or rotate) the integration's credential. Any previous
-    credential is revoked, the integration keeps only the REFERENCE, and
-    the audit event records THAT a credential changed — never its value."""
+    """Store (or rotate) the integration's credential. The VALUE goes
+    into the secret store under a fresh name; the database keeps only
+    the reference. Any previous credential row is revoked and its
+    stored value revoked with it, and the audit event records THAT a
+    credential changed — never its value or reference.
+
+    Ordering keeps the database reference always resolvable: the new
+    value is stored FIRST, then the rows change, then the OLD value is
+    revoked last — a failure part-way never leaves a live row pointing
+    at a dead secret (at worst an unreferenced value awaits cleanup)."""
     if not secret.strip():
         raise ValueError("a credential needs a non-empty secret")
     repo = IntegrationCredentialRepository(session, context)
     now = utcnow()
+    reference = await secret_store.put(
+        f"orgs/{context.organization_id}/integrations/{integration.id}/credentials/{uuid7()}",
+        secret,
+    )
     previous_id: uuid.UUID | None = None
+    previous_reference: str | None = None
     if integration.credential_id is not None:
         previous = await repo.get(integration.credential_id)
         if previous is not None and previous.revoked_at is None:
             previous.revoked_at = now
             previous_id = previous.id
+            previous_reference = previous.secret_reference
     credential = repo.add(
         IntegrationCredential(
-            integration_id=integration.id, kind=kind, secret=secret, created_by=actor_id
+            integration_id=integration.id,
+            kind=kind,
+            secret_reference=str(reference),
+            created_by=actor_id,
         )
     )
     await session.flush()
@@ -234,13 +250,22 @@ async def store_integration_credential(
         # THAT it changed, never WHAT it is.
         summary={"kind": kind, "revoked_credential_id": str(previous_id) if previous_id else None},
     )
+    if previous_reference is not None:
+        await secret_store.revoke(SecretReference.parse(previous_reference))
     return credential
 
 
 async def credential_secret_for_delivery(
-    session: AsyncSession, context: OrganizationContext, *, integration: Integration
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    integration: Integration,
+    secret_store: SecretStore,
 ) -> str | None:
-    """The ONE sanctioned read path for the secret (delivery signing)."""
+    """The ONE sanctioned read path for the secret value (delivery
+    signing). ``None`` means no live credential is CONFIGURED; a
+    configured credential whose stored value is unexpectedly gone
+    raises — that is an inconsistency to surface, not an absence."""
     if integration.credential_id is None:
         return None
     credential = await IntegrationCredentialRepository(session, context).get(
@@ -248,7 +273,14 @@ async def credential_secret_for_delivery(
     )
     if credential is None or credential.revoked_at is not None:
         return None
-    return credential.secret
+    try:
+        return await secret_store.resolve(SecretReference.parse(credential.secret_reference))
+    except SecretNotFoundError:
+        raise SecretNotFoundError(
+            f"integration {integration.id} references credential {credential.id} "
+            "but the secret store has no live value behind it — "
+            "the credential must be re-set"
+        ) from None
 
 
 async def create_mapping_draft(

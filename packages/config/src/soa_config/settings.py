@@ -42,6 +42,13 @@ class BaseServiceSettings(BaseSettings):
     telemetry_profile: Literal["none", "console", "otlp"] = "none"
     otlp_endpoint: str | None = None
 
+    # Secret store (SEC-005): where tenant-provided secret VALUES live.
+    # The database stores only ``secretref://`` references. memory/file
+    # are development backends; production must use a real manager.
+    secrets_backend: Literal["memory", "file", "aws-secrets-manager"] = "memory"
+    secrets_directory: str | None = None  # required by the file backend
+    secrets_aws_region: str | None = None  # required by the AWS backend
+
     @property
     def is_production(self) -> bool:
         return self.environment is Environment.PRODUCTION
@@ -64,8 +71,21 @@ class BaseServiceSettings(BaseSettings):
         raw_db = self.database_url.get_secret_value()
         if any(credential in raw_db for credential in _DEV_DB_CREDENTIALS):
             problems.append("database_url must not use development credentials in production")
+        if self.secrets_backend != "aws-secrets-manager":
+            problems.append(
+                "production requires the aws-secrets-manager secrets backend — "
+                "memory/file stores are development-only"
+            )
         if problems:
             raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
+    def _validate_secrets_backend(self) -> Self:
+        if self.secrets_backend == "file" and not self.secrets_directory:
+            raise ValueError("secrets_backend 'file' requires secrets_directory")
+        if self.secrets_backend == "aws-secrets-manager" and not self.secrets_aws_region:
+            raise ValueError("secrets_backend 'aws-secrets-manager' requires secrets_aws_region")
         return self
 
     @model_validator(mode="after")

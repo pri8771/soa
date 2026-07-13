@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from soa_config import MemorySecretStore
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactRepository
 from soa_db.canonical_payloads import record_canonical_payload
@@ -77,6 +78,11 @@ async def db(tmp_path: Path) -> DatabaseSessions:
     return DatabaseSessions(engine)
 
 
+#: Shared across seed() and run_export(): the worker resolves the
+#: reference the seeding wrote (names are unique per credential).
+SECRETS = MemorySecretStore()
+
+
 async def seed(db: DatabaseSessions, *, with_credential: bool = True) -> uuid.UUID:
     """An APPROVED document with a canonical payload, a deliverable
     integration with a published mapping, and the export job."""
@@ -134,6 +140,7 @@ async def seed(db: DatabaseSessions, *, with_credential: bool = True) -> uuid.UU
                 kind="webhook_hmac_secret",
                 secret=SECRET,
                 actor_id="user:test",
+                secret_store=SECRETS,
             )
         draft = await create_mapping_draft(
             session,
@@ -175,6 +182,7 @@ async def run_export(
             client=client,
             allowlist=ALLOWLIST,
             timestamp=NOW,
+            secret_store=SECRETS,
             resolve=public_resolver,
         )
 

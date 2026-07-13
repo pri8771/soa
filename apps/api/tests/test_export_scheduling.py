@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from soa_api.services.export_orchestration import schedule_exports_on_approval
+from soa_config import MemorySecretStore
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import SourceChannel, create_document
 from soa_db.exports import ExportJobRepository
@@ -62,6 +63,7 @@ async def test_duplicate_approval_schedules_exactly_one_export(db: DatabaseSessi
             kind="webhook_hmac_secret",
             secret="whsec_scheduling",
             actor_id="user:test",
+            secret_store=MemorySecretStore(),
         )
         draft = await create_mapping_draft(
             session,

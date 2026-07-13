@@ -33,11 +33,13 @@ from soa_api.routers import (
 )
 from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
 from soa_api.settings import ApiSettings, load_settings
+from soa_config import SecretStore
 from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
 from soa_db import DatabaseSessions, create_database_engine
 from soa_storage import MemoryObjectStore, ObjectStore
 from soa_storage.s3 import S3ObjectStore, S3Settings
+from soa_storage.secrets_aws import build_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ def create_app(
     db: DatabaseSessions | None = None,
     object_store: ObjectStore | None = None,
     malware_scanner: MalwareScanner | None = None,
+    secret_store: SecretStore | None = None,
 ) -> FastAPI:
     """Create the API application.
 
@@ -140,6 +143,16 @@ def create_app(
             # a real scanner; the no-op never leaves development/test.
             resolved_scanner = NoopScanner()
 
+    resolved_secret_store = secret_store
+    if resolved_secret_store is None:
+        # Settings validation already forced aws-secrets-manager in
+        # production and required each backend's parameters (SEC-005).
+        resolved_secret_store = build_secret_store(
+            backend=resolved.secrets_backend,
+            directory=resolved.secrets_directory,
+            aws_region=resolved.secrets_aws_region,
+        )
+
     deps = Dependencies(
         settings=resolved,
         telemetry=resolved_telemetry,
@@ -147,6 +160,7 @@ def create_app(
         db=resolved_db,
         object_store=resolved_store,
         malware_scanner=resolved_scanner,
+        secret_store=resolved_secret_store,
     )
     deps.register_readiness_check("database", resolved_db.ping)
     app.state.dependencies = deps

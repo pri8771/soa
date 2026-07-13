@@ -30,6 +30,7 @@ from soa_canonical.mapping_engine import (
     MappingExecutionError,
     execute_mapping,
 )
+from soa_config import SecretNotFoundError, SecretStore
 from soa_db.canonical_payloads import CanonicalPayloadRepository
 from soa_db.documents import Document, DocumentRepository, DocumentState, transition_document
 from soa_db.exports import (
@@ -107,6 +108,7 @@ async def execute_export(
     client: httpx.AsyncClient,
     allowlist: Sequence[str],
     timestamp: int,
+    secret_store: SecretStore,
     resolve: Callable[[str], list[str]] | None = None,
 ) -> ExportExecutionResult:
     """One delivery pass over an export job. ``timestamp`` is the unix
@@ -144,7 +146,17 @@ async def execute_export(
             document=document,
             reason="export prerequisites are gone (integration, mapping, or payload)",
         )
-    secret = await credential_secret_for_delivery(session, context, integration=integration)
+    try:
+        secret = await credential_secret_for_delivery(
+            session, context, integration=integration, secret_store=secret_store
+        )
+    except SecretNotFoundError as error:
+        # The row references a value the store no longer has — an
+        # inconsistency an operator must fix by re-setting the
+        # credential; retrying cannot repair it.
+        return await _fail_terminal(
+            session, context, job=job, document=document, reason=str(error)[:500]
+        )
     if not integration.endpoint_url or secret is None:
         return await _fail_terminal(
             session,

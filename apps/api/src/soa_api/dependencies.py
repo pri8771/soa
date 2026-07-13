@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_api.services.malware import MalwareScanner
 from soa_api.services.rate_limit import SlidingWindowRateLimiter
 from soa_api.settings import ApiSettings
+from soa_config import SecretStore
 from soa_config.telemetry import Telemetry
 from soa_db import DatabaseSessions
 from soa_storage import ObjectStore
@@ -40,6 +41,7 @@ class Dependencies:
     db: DatabaseSessions | None = None
     object_store: ObjectStore | None = None
     malware_scanner: MalwareScanner | None = None
+    secret_store: SecretStore | None = None
     rate_limiter: SlidingWindowRateLimiter = field(default_factory=SlidingWindowRateLimiter)
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
@@ -108,3 +110,17 @@ def get_malware_scanner(
 
 
 MalwareScannerDep = Annotated[MalwareScanner, Depends(get_malware_scanner)]
+
+
+def get_secret_store(
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> SecretStore:
+    if deps.secret_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The secret store is not configured.",
+        )
+    return deps.secret_store
+
+
+SecretStoreDep = Annotated[SecretStore, Depends(get_secret_store)]

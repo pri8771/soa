@@ -1,6 +1,7 @@
 """Integration and mapping-profile model tests (EXP-001): fail-closed
-types, separated credentials (rotation, redaction, audit hygiene), and
-the published-mapping immutability discipline."""
+types, reference-based credentials (SEC-005 — values live in the secret
+store, rotation, audit hygiene), and the published-mapping immutability
+discipline."""
 
 import uuid
 from pathlib import Path
@@ -20,6 +21,7 @@ from soa_api.domain.integrations import (
     store_integration_credential,
 )
 from soa_api.domain.versioning import ImmutableVersionError, InvalidVersionStateError
+from soa_config import MemorySecretStore, SecretNotFoundError, SecretReference
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
 from soa_db.repository import OrganizationContext
@@ -67,10 +69,11 @@ async def test_unknown_integration_types_fail_closed(db: DatabaseSessions) -> No
             )
 
 
-async def test_credentials_are_separated_rotated_and_never_audited(
+async def test_credentials_are_references_rotated_and_never_audited(
     db: DatabaseSessions,
 ) -> None:
     integration_id = await make_integration(db)
+    secrets = MemorySecretStore()
     async with db.session_scope() as session:
         integration = await IntegrationRepository(session, CONTEXT).get(integration_id)
         assert integration is not None
@@ -81,12 +84,18 @@ async def test_credentials_are_separated_rotated_and_never_audited(
             kind="webhook_hmac_secret",
             secret="whsec_original_value",
             actor_id="user:x",
+            secret_store=secrets,
         )
-        # The integration row carries only the REFERENCE.
+        # The database row carries a REFERENCE — the value lives only in
+        # the secret store (SEC-005).
         assert integration.credential_id == first.id
-        assert "whsec_original_value" not in repr(first)
+        assert first.secret_reference.startswith("secretref://memory/orgs/")
+        assert "whsec_original_value" not in repr(vars(first))
+        first_reference = first.secret_reference
         assert (
-            await credential_secret_for_delivery(session, CONTEXT, integration=integration)
+            await credential_secret_for_delivery(
+                session, CONTEXT, integration=integration, secret_store=secrets
+            )
             == "whsec_original_value"
         )
 
@@ -97,12 +106,19 @@ async def test_credentials_are_separated_rotated_and_never_audited(
             kind="webhook_hmac_secret",
             secret="whsec_rotated_value",
             actor_id="user:x",
+            secret_store=secrets,
         )
         assert integration.credential_id == rotated.id
+        assert rotated.secret_reference != first_reference, "rotation issues a fresh reference"
         stale = await IntegrationCredentialRepository(session, CONTEXT).get(first.id)
         assert stale is not None and stale.revoked_at is not None
+        # The rotated-out VALUE is revoked in the store too.
+        with pytest.raises(SecretNotFoundError):
+            await secrets.resolve(SecretReference.parse(first_reference))
         assert (
-            await credential_secret_for_delivery(session, CONTEXT, integration=integration)
+            await credential_secret_for_delivery(
+                session, CONTEXT, integration=integration, secret_store=secrets
+            )
             == "whsec_rotated_value"
         )
 
@@ -114,6 +130,15 @@ async def test_credentials_are_separated_rotated_and_never_audited(
                 kind="webhook_hmac_secret",
                 secret="   ",
                 actor_id="user:x",
+                secret_store=secrets,
+            )
+
+        # A configured credential whose stored value vanished is an
+        # inconsistency that raises — never a silent "no credential".
+        await secrets.revoke(SecretReference.parse(rotated.secret_reference))
+        with pytest.raises(SecretNotFoundError, match="must be re-set"):
+            await credential_secret_for_delivery(
+                session, CONTEXT, integration=integration, secret_store=secrets
             )
 
         # Audit records THAT credentials changed — never their values.

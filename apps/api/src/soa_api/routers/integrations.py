@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, SecretStoreDep
 from soa_api.domain.integrations import (
     Integration,
     IntegrationRepository,
@@ -222,9 +222,12 @@ async def set_credential(
     body: CredentialRequest,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("credentials.manage"))],
     session: DbSession,
+    secret_store: SecretStoreDep,
 ) -> dict[str, Any]:
-    """Store or rotate the credential. The response acknowledges — it
-    NEVER echoes the secret, and neither does any other endpoint."""
+    """Store or rotate the credential. The VALUE goes to the secret
+    store (SEC-005); the database keeps a reference. The response
+    acknowledges — it NEVER echoes the secret, and neither does any
+    other endpoint."""
     integration = await _load_integration(session, authorized, integration_slug)
     rotated = integration.credential_id is not None
     await store_integration_credential(
@@ -234,6 +237,7 @@ async def set_credential(
         kind=body.kind,
         secret=body.secret,
         actor_id=_actor(authorized),
+        secret_store=secret_store,
     )
     return {"credential_configured": True, "kind": body.kind, "rotated": rotated}
 

@@ -20,6 +20,8 @@ def test_production_with_explicit_values_is_valid() -> None:
         environment=Environment.PRODUCTION,
         secret_key=SecretStr(PROD_SECRET),
         database_url=SecretStr(PROD_DB),
+        secrets_backend="aws-secrets-manager",
+        secrets_aws_region="eu-central-1",
     )
     assert settings.is_production
 
@@ -44,6 +46,10 @@ def test_production_with_explicit_values_is_valid() -> None:
             },
             "development credentials",
         ),
+        (
+            {"secrets_backend": "memory", "secrets_aws_region": None},
+            "requires the aws-secrets-manager secrets backend",
+        ),
     ],
 )
 def test_production_rejects_unsafe_configuration(
@@ -53,6 +59,8 @@ def test_production_rejects_unsafe_configuration(
         "environment": Environment.PRODUCTION,
         "secret_key": SecretStr(PROD_SECRET),
         "database_url": SecretStr(PROD_DB),
+        "secrets_backend": "aws-secrets-manager",
+        "secrets_aws_region": "eu-central-1",
     }
     base.update(overrides)
     with pytest.raises(ValidationError, match=expected_message):

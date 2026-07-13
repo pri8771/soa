@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
+from soa_config import MemorySecretStore
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.exports import (
     ExportJobRepository,
@@ -95,6 +96,7 @@ async def seed_export(
             kind="webhook_hmac_secret",
             secret=SECRET,
             actor_id="user:test",
+            secret_store=MemorySecretStore(),
         )
         draft = await create_mapping_draft(
             session,
