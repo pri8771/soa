@@ -9,6 +9,7 @@ dependencies = [
     "soa-storage",
     "soa-normalize",
     "soa-rules",
+    "soa-canonical",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "pypdfium2>=4.30",
@@ -24,6 +25,7 @@ soa-db = { workspace = true }
 soa-storage = { workspace = true }
 soa-normalize = { workspace = true }
 soa-rules = { workspace = true }
+soa-canonical = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
