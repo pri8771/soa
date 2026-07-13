@@ -26,6 +26,7 @@ import {
   type WorkspaceField,
 } from "../api/client";
 import { ApprovalPanel } from "../components/review/ApprovalPanel";
+import { ConflictResolver, type ConflictEntry } from "../components/review/ConflictResolver";
 import { HeaderFieldEditor, type SaveState } from "../components/review/HeaderFieldEditor";
 import { LineItemGrid, type GridRow } from "../components/review/LineItemGrid";
 import { DocumentViewer, type EvidenceHighlight } from "../components/viewer/DocumentViewer";
@@ -113,6 +114,11 @@ export function ReviewStudio() {
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
 
   const [conflict, setConflict] = useState<string | null>(null);
+  //: Edits refused by a version conflict — HELD (not lost) until the
+  //: reviewer chooses per field: keep mine (merge) or take the server's.
+  const [conflictEdits, setConflictEdits] = useState<
+    { fieldKey: string; rowIndex: number | null; value: string }[]
+  >([]);
   const [decision, setDecision] = useState<{
     route: string;
     reasons: Record<string, unknown>[];
@@ -133,6 +139,11 @@ export function ReviewStudio() {
   //: posts from one client would trip their own optimistic lock.
   const queue = useRef(Promise.resolve());
   const versionRef = useRef<number | null>(null);
+  //: Fields with a held conflict belong to the RESOLVER: the editor's
+  //: blur/Enter autosaves are suppressed for them so a failed value can
+  //: never sneak back in behind the reviewer's choice. A ref (not
+  //: state) so the guard is correct in the same tick as the 409.
+  const conflictKeysRef = useRef(new Set<string>());
 
   const stateKey = (fieldKey: string, rowIndex: number | null) =>
     rowIndex === null ? fieldKey : `${fieldKey}#${rowIndex}`;
@@ -164,10 +175,19 @@ export function ReviewStudio() {
       }
       void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
     },
-    onError: (error: unknown, { fieldKey, rowIndex }) => {
+    onError: (error: unknown, { fieldKey, rowIndex, value }) => {
       const message = error instanceof Error ? error.message : "The change was not saved.";
       if (error instanceof ApiError && error.status === 409) {
         setConflict(message);
+        // Hold the refused edit and refresh so the resolver can show
+        // the server's value, its editor, and the fresh task version.
+        setConflictEdits((prev) => [
+          ...prev.filter((entry) => !(entry.fieldKey === fieldKey && entry.rowIndex === rowIndex)),
+          { fieldKey, rowIndex, value },
+        ]);
+        conflictKeysRef.current.add(stateKey(fieldKey, rowIndex));
+        versionRef.current = null;
+        void workspace.refetch();
       }
       setSaveStates((prev) => ({
         ...prev,
@@ -177,6 +197,9 @@ export function ReviewStudio() {
   });
 
   const enqueueSave = (fieldKey: string, rowIndex: number | null, value: string) => {
+    // A conflicted field saves only through the resolver's explicit
+    // choice — autosaves (blur/Enter) must not race the decision.
+    if (conflictKeysRef.current.has(stateKey(fieldKey, rowIndex))) return queue.current;
     queue.current = queue.current.then(() =>
       save.mutateAsync({ fieldKey, rowIndex, value }).then(
         () => undefined,
@@ -290,6 +313,61 @@ export function ReviewStudio() {
       ? `This task is assigned to ${data.task.assigned_to}; claim it from the queue to edit.`
       : `This task is ${data.task.state}; claim it from the queue to edit.`;
 
+  //: REV-014: the server's current value (and its editor, when a
+  //: correction authored it) for a conflicted field.
+  const serverValueFor = (
+    fieldKey: string,
+    rowIndex: number | null,
+  ): { value: string | null; editor: string | null } => {
+    const correction = data.corrections.find(
+      (entry) => entry.field_key === fieldKey && entry.row_index === rowIndex,
+    );
+    if (correction) {
+      return { value: correction.corrected_raw_value, editor: correction.corrected_by };
+    }
+    if (rowIndex === null) {
+      const field = data.fields.find((entry) => entry.field_key === fieldKey);
+      return { value: field?.raw_value ?? null, editor: null };
+    }
+    const table = fieldKey.split(".")[0] ?? fieldKey;
+    for (const rowCells of data.line_items[table] ?? []) {
+      for (const cell of rowCells) {
+        if (cell.field_key === fieldKey && cell.row_index === rowIndex) {
+          return { value: cell.raw_value, editor: null };
+        }
+      }
+    }
+    return { value: null, editor: null };
+  };
+  const conflictEntries: ConflictEntry[] = conflictEdits.map((edit) => {
+    const server = serverValueFor(edit.fieldKey, edit.rowIndex);
+    return {
+      fieldKey: edit.fieldKey,
+      rowIndex: edit.rowIndex,
+      yourValue: edit.value,
+      serverValue: server.value,
+      serverEditor: server.editor,
+    };
+  });
+  const dropConflictEdit = (entry: ConflictEntry) => {
+    conflictKeysRef.current.delete(stateKey(entry.fieldKey, entry.rowIndex));
+    setConflictEdits((prev) => {
+      const next = prev.filter(
+        (edit) => !(edit.fieldKey === entry.fieldKey && edit.rowIndex === entry.rowIndex),
+      );
+      if (next.length === 0) setConflict(null);
+      return next;
+    });
+  };
+  const taskStatus =
+    `${data.task.state.replace(/_/g, " ")}` +
+    (data.task.assigned_to === me
+      ? " — assigned to you"
+      : data.task.assigned_to
+        ? ` — assigned to ${data.task.assigned_to}`
+        : "") +
+    ` (version ${data.task.version})`;
+
   return (
     <AppShell
       title={`Review: ${data.document.original_filename}`}
@@ -301,26 +379,36 @@ export function ReviewStudio() {
     >
       <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
         {conflict ? (
-          <Banner
-            tone="critical"
-            title="Someone else changed this task"
-            action={
-              <Button
-                size="sm"
-                onPress={() => {
-                  setConflict(null);
-                  setDrafts({});
-                  setSaveStates({});
-                  versionRef.current = null;
-                  void workspace.refetch();
-                }}
-              >
-                Reload the workspace
-              </Button>
-            }
-          >
-            {conflict}
-          </Banner>
+          <ConflictResolver
+            message={conflict}
+            conflicts={conflictEntries}
+            taskStatus={taskStatus}
+            onKeepMine={(entry) => {
+              // Merge: re-save my value against the FRESH task version.
+              dropConflictEdit(entry);
+              void enqueueSave(entry.fieldKey, entry.rowIndex, entry.yourValue);
+            }}
+            onTakeServer={(entry) => {
+              dropConflictEdit(entry);
+              if (entry.rowIndex === null) {
+                setDrafts((prev) => ({ ...prev, [entry.fieldKey]: entry.serverValue ?? "" }));
+              }
+              setSaveStates((prev) => {
+                const next = { ...prev };
+                delete next[stateKey(entry.fieldKey, entry.rowIndex)];
+                return next;
+              });
+            }}
+            onReloadDiscardingAll={() => {
+              conflictKeysRef.current.clear();
+              setConflict(null);
+              setConflictEdits([]);
+              setDrafts({});
+              setSaveStates({});
+              versionRef.current = null;
+              void workspace.refetch();
+            }}
+          />
         ) : null}
         {!editable && data.task.state !== "completed" ? (
           <Banner tone="info" title="Read-only">

@@ -122,7 +122,7 @@ describe("Review Studio header field editor (REV-007)", () => {
     await user.type(input, "PO-X{Enter}");
     expect(await screen.findByText("Someone else changed this task")).toBeInTheDocument();
     expect(screen.getAllByText(/nothing was saved/).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Reload the workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reload the workspace/ })).toBeInTheDocument();
     // The field-level state says it too, for screen readers.
     expect(screen.getByText(/Not saved:/)).toBeInTheDocument();
   });
@@ -174,6 +174,124 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(screen.getAllByText(/assigned to user:u-2/).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("po number")).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
+  });
+});
+
+describe("Review Studio conflict resolver (REV-014)", () => {
+  /** First save is refused (409); the refreshed workspace carries the
+   * rival editor's correction and the fresh task version 9. */
+  function conflictScenario() {
+    const posted: Record<string, unknown>[] = [];
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", () =>
+        HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          task: { ...DEFAULT_WORKSPACE.task, version: 9 },
+          corrections: [
+            {
+              field_key: "po_number",
+              row_index: null,
+              corrected_raw_value: "PO-9",
+              corrected_normalized_value: "PO-9",
+              normalization_error: null,
+              corrected_by: "user:u-9",
+            },
+          ],
+        }),
+      ),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/corrections", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        posted.push(body);
+        if (posted.length === 1) {
+          return HttpResponse.json(
+            {
+              error: {
+                message:
+                  "The task changed since you loaded it (server version 9, yours 3). " +
+                  "Reload before editing — nothing was saved.",
+              },
+            },
+            { status: 409 },
+          );
+        }
+        return HttpResponse.json({
+          correction: {
+            id: "cor-2",
+            field_key: body["field_key"],
+            row_index: null,
+            previous_raw_value: "PO-9",
+            corrected_raw_value: body["value"],
+            corrected_normalized_value: body["value"],
+            normalization_error: null,
+            corrected_by: "user:u-1",
+          },
+          task_version: 10,
+          revalidation: null,
+        });
+      }),
+    );
+    return posted;
+  }
+
+  it("shows both values with editor metadata and the task state; keep-mine merges", async () => {
+    const user = userEvent.setup();
+    const posted = conflictScenario();
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "PO-X{Enter}");
+
+    // Both values side by side, with who authored the server's.
+    expect(await screen.findByText(/yours: “PO-X”/)).toBeInTheDocument();
+    expect(screen.getByText(/server: “PO-9”/)).toBeInTheDocument();
+    expect(screen.getByText(/corrected by user:u-9/)).toBeInTheDocument();
+    // The task state stays unambiguous.
+    expect(screen.getByText(/in progress — assigned to you \(version 9\)/)).toBeInTheDocument();
+
+    // Keep mine: the held value is re-saved against the FRESH version.
+    await user.click(screen.getByRole("button", { name: "Keep mine: po_number" }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1]).toMatchObject({
+      field_key: "po_number",
+      value: "PO-X",
+      expected_version: 9,
+    });
+    // The conflict is resolved and the banner is gone.
+    await waitFor(() =>
+      expect(screen.queryByText("Someone else changed this task")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("take-server adopts the rival value without posting anything", async () => {
+    const user = userEvent.setup();
+    const posted = conflictScenario();
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "PO-X{Enter}");
+    await screen.findByText(/yours: “PO-X”/);
+
+    await user.click(screen.getByRole("button", { name: "Use server value: po_number" }));
+    // No second save happened; the editor now shows the server's value.
+    expect(posted).toHaveLength(1);
+    expect(screen.getByLabelText("po number")).toHaveValue("PO-9");
+    expect(screen.queryByText("Someone else changed this task")).not.toBeInTheDocument();
+  });
+
+  it("reload-all is explicit about discarding the held edits", async () => {
+    const user = userEvent.setup();
+    conflictScenario();
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "PO-X{Enter}");
+    await screen.findByText(/yours: “PO-X”/);
+    const reload = screen.getByRole("button", { name: /Reload the workspace/ });
+    expect(reload).toHaveAccessibleName(/discards the edits above/);
+    await user.click(reload);
+    await waitFor(() =>
+      expect(screen.queryByText("Someone else changed this task")).not.toBeInTheDocument(),
+    );
   });
 });
 
