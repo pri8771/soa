@@ -34,6 +34,7 @@ from soa_db.documents import (
 )
 from soa_db.jobs import enqueue_job
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from soa_db.review_tasks import cancel_active_task_for_document
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 
 router = APIRouter(tags=["documents"])
@@ -237,6 +238,14 @@ async def cancel_document(
         )
     except InvalidDocumentTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    # A cancelled document has no reviewable work left (REV-001).
+    await cancel_active_task_for_document(
+        session,
+        authorized.org_context,
+        document_id=document.id,
+        reason="document cancelled",
+        actor_id=f"user:{authorized.membership.user_id}",
+    )
     return {"id": str(document.id), "state": document.state}
 
 
@@ -412,6 +421,16 @@ async def reprocess_document(
         )
     except InvalidDocumentTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+    # The old run's review task (if any) is stale the moment a new run is
+    # requested; the new run routes to review again if it needs to.
+    await cancel_active_task_for_document(
+        session,
+        authorized.org_context,
+        document_id=document.id,
+        reason="document sent back for reprocessing",
+        actor_id=f"user:{authorized.membership.user_id}",
+    )
 
     next_run_number = len(runs) + 1
     await enqueue_job(

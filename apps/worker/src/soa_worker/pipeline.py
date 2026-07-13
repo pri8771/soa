@@ -37,6 +37,7 @@ from soa_db.extracted_fields import (
 )
 from soa_db.pages import DocumentPageRepository, create_page
 from soa_db.repository import OrganizationContext
+from soa_db.review_tasks import route_document_to_review
 from soa_db.runs import ProcessingRun, StageRun
 from soa_normalize import NormalizationContext, NormalizationError, normalize
 from soa_rules import (
@@ -384,6 +385,19 @@ class _Pipeline:
                 row.validation_status = ValidationStatus.REVIEW.value
             elif row.raw_value is not None:
                 row.validation_status = ValidationStatus.PASSED.value
+        if decision.route == "review_required":
+            # REV-001 routing: the review task carries the decision's own
+            # reasons, so the reviewer sees exactly why it landed there.
+            await route_document_to_review(
+                session,
+                context,
+                document_id=document.id,
+                run_id=run.id,
+                reasons=[reason.to_json() for reason in decision.reasons],
+                priority=document.priority,
+                sla_due_at=document.sla_due_at,
+                actor_id=ACTOR,
+            )
         return StageOutcome(
             output_summary={
                 "rules_version": self._config.rules_version,

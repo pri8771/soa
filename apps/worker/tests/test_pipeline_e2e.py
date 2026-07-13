@@ -231,6 +231,16 @@ async def test_low_confidence_extraction_routes_to_review(db: DatabaseSessions) 
         # Flagged fields carry review status for the REV epic to pick up.
         fields = await ExtractedFieldRepository(session, CONTEXT).list_for_run(run.id)
         assert any(f.validation_status == "review" for f in fields)
+        # REV-001 routing: the review task exists, linked to this run,
+        # carrying the decision's own reasons.
+        from soa_db.review_tasks import ReviewTaskRepository
+
+        task = await ReviewTaskRepository(session, CONTEXT).get_active_for_document(document_id)
+        assert task is not None
+        assert task.run_id == run.id
+        assert task.state == "open"
+        assert any(r["code"] == "low_confidence" for r in task.reasons)
+        assert all(r.get("field_key") or r.get("rule_key") for r in task.reasons)
 
 
 async def test_terminal_extraction_failure_parks_the_document(db: DatabaseSessions) -> None:
