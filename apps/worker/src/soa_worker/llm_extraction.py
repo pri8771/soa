@@ -65,6 +65,22 @@ CAPABILITY_WARNING = (
 _DETERMINISM_SEED = 7
 
 
+class ModelOutputInvalidError(ExtractionProviderError):
+    """The model answered, but not in the documented shape. Retryable —
+    and specifically REPAIRABLE: the AIO-012 policy re-asks with the
+    reason, bounded by attempt and cost ceilings. ``reason`` is safe to
+    send back to the model and to log; ``cost_cents`` is what the
+    failed call cost (failed calls still burn tokens)."""
+
+    def __init__(self, reason: str, *, cost_cents: int = 0) -> None:
+        self.reason = reason
+        self.cost_cents = cost_cents
+        super().__init__(
+            f"the model returned output that does not match the expected shape ({reason})",
+            retryable=True,
+        )
+
+
 class OpenAiCompatibleExtractionProvider:
     """See module docstring. ``client`` is injectable for tests; when
     omitted, a client with the configured timeout is created per call.
@@ -120,8 +136,24 @@ class OpenAiCompatibleExtractionProvider:
         }
         return payload, built
 
-    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+    async def extract(
+        self, request: ExtractionRequest, *, repair_hint: str | None = None
+    ) -> ExtractionResult:
+        """``repair_hint`` is the AIO-012 repair channel: a safe
+        description of why the PREVIOUS response was invalid, appended
+        as one extra user turn so the model can correct itself."""
         payload, built = self.build_payload(request)
+        if repair_hint is not None:
+            payload["messages"] = [
+                *payload["messages"],
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your previous response was invalid: {repair_hint}. Respond again "
+                        "with ONLY the JSON object in the documented shape — no prose."
+                    ),
+                },
+            ]
         assert "tools" not in payload  # the model reads; it never acts
         content = await self._complete(payload)
         return self._to_result(request, content, built)
@@ -171,18 +203,18 @@ class OpenAiCompatibleExtractionProvider:
     def _to_result(
         self, request: ExtractionRequest, content: str, built: BuiltModelRequest
     ) -> ExtractionResult:
+        # The reasons stay generic on purpose: they go back to the model
+        # as the repair hint and into logs — model output over customer
+        # data never travels with them.
         try:
             parsed = json.loads(content)
-            entries = parsed["fields"]
-            assert isinstance(entries, list)
-        except (ValueError, KeyError, AssertionError, TypeError):
-            # The content itself never goes into the error: it is model
-            # output over customer data.
-            raise ExtractionProviderError(
-                "the local model returned JSON that does not match the "
-                "expected shape; a bounded repair policy (AIO-012) may retry",
-                retryable=True,
-            ) from None
+        except ValueError:
+            raise ModelOutputInvalidError("the response was not valid JSON") from None
+        if not isinstance(parsed, dict) or "fields" not in parsed:
+            raise ModelOutputInvalidError('the JSON object is missing the "fields" key')
+        entries = parsed["fields"]
+        if not isinstance(entries, list):
+            raise ModelOutputInvalidError('"fields" must be a JSON array')
 
         requested = {spec.key for spec in request.fields}
         pages = {page.page_number: page for page in request.pages}
@@ -268,6 +300,7 @@ def register_local_llm_extraction(endpoint: str, model: str) -> None:
 __all__ = [
     "CAPABILITY_WARNING",
     "PROVIDER_NAME",
+    "ModelOutputInvalidError",
     "OpenAiCompatibleExtractionProvider",
     "register_local_llm_extraction",
 ]
