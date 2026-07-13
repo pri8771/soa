@@ -94,3 +94,13 @@ build: ## Build all apps
 .PHONY: check-docs
 check-docs: ## Validate documentation links and documented commands
 	python3 scripts/check_docs.py
+
+.PHONY: security-scan
+security-scan: ## Dependency + secret scans and the supply-chain policy gate (SEC-011)
+	@set -euo pipefail; \
+	uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/soa-requirements.txt; \
+	uvx pip-audit -r /tmp/soa-requirements.txt --format json --output /tmp/soa-pip-audit.json || true; \
+	pnpm audit --json > /tmp/soa-pnpm-audit.json || true; \
+	python3 scripts/supply_chain.py check-exceptions; \
+	python3 scripts/supply_chain.py evaluate \
+		--pip-audit /tmp/soa-pip-audit.json --pnpm-audit /tmp/soa-pnpm-audit.json

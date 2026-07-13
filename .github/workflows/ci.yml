@@ -238,7 +238,7 @@ jobs:
         run: python3 scripts/check_docs.py
 
   security:
-    name: Dependency and secret scans
+    name: Supply-chain scans, SBOM, and policy gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -247,10 +247,52 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Python dependency audit
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+      # Exceptions are checked FIRST: an expired accepted-risk entry is a
+      # failure on its own, before any scan runs.
+      - name: Validate vulnerability exceptions
+        run: python3 scripts/supply_chain.py check-exceptions
+      - name: Resolve Python dependency closure
+        run: uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/requirements.txt
+      # Scans capture JSON and never fail the step themselves — the
+      # policy gate below makes the single release decision.
+      - name: Python dependency audit (pip-audit)
+        run: uvx pip-audit -r /tmp/requirements.txt --format json --output /tmp/pip-audit.json || true
+      - name: JavaScript dependency audit (pnpm audit)
+        run: pnpm audit --json > /tmp/pnpm-audit.json || true
+      - name: Supply-chain policy gate
         run: |
-          uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/requirements.txt
-          uvx pip-audit --strict -r /tmp/requirements.txt
+          python3 scripts/supply_chain.py evaluate \
+            --pip-audit /tmp/pip-audit.json --pnpm-audit /tmp/pnpm-audit.json
+      - name: Generate SBOMs (CycloneDX)
+        run: |
+          mkdir -p sbom
+          uvx --from cyclonedx-bom cyclonedx-py requirements /tmp/requirements.txt \
+            --output-format JSON --outfile sbom/python-sbom.cdx.json
+          pnpm dlx @cyclonedx/cyclonedx-npm --output-format JSON \
+            --output-file sbom/web-sbom.cdx.json
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
+          retention-days: 90
+      # Container image scanning activates with REL-001 (no Dockerfiles
+      # exist yet). The step is present and honest: it reports the
+      # pending state rather than silently passing a scan of nothing.
+      - name: Container image scan (Trivy)
+        run: |
+          if ls **/Dockerfile Dockerfile 2>/dev/null | grep -q .; then
+            echo "Dockerfiles present but Trivy wiring is REL-001 — failing to prompt it."
+            exit 1
+          fi
+          echo "No container images yet (REL-001). Skipping image scan — see docs/SUPPLY_CHAIN_SECURITY.md."
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
