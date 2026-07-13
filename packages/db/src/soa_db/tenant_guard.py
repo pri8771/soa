@@ -43,6 +43,8 @@ RLS_PROTECTED_TABLES = (
     "artifacts",  # 0017
     "documents",  # 0018
     "upload_sessions",  # 0019
+    "processing_runs",  # 0021
+    "stage_runs",  # 0021
 )
 
 
