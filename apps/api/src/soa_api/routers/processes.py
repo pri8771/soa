@@ -26,6 +26,14 @@ from soa_api.domain.processes import (
     create_draft,
     create_process,
 )
+from soa_api.domain.rules import (
+    RuleExpressionError,
+    RuleSetVersion,
+    RuleSetVersionRepository,
+    create_rule_set_draft,
+    publish_rule_set_draft,
+    validate_rule_set,
+)
 from soa_api.domain.schemas import (
     SchemaValidationError,
     SchemaVersion,
@@ -790,3 +798,181 @@ async def publish_schema_version(
     except InvalidVersionStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return SchemaVersionResponse.from_model(published)
+
+
+# --- validation rules (CFG-012 over the CFG-004 domain) ---------------------
+
+
+class RuleSetVersionResponse(BaseModel):
+    id: str
+    version_number: int
+    state: str
+    definition: dict[str, Any]
+    change_summary: str | None
+    version: int
+
+    @classmethod
+    def from_model(cls, record: RuleSetVersion) -> "RuleSetVersionResponse":
+        return cls(
+            id=str(record.id),
+            version_number=record.version_number,
+            state=record.state,
+            definition=dict(record.definition),
+            change_summary=record.change_summary,
+            version=record.version,
+        )
+
+
+class RuleSetDraftRequest(BaseModel):
+    definition: dict[str, Any]
+    change_summary: str | None = Field(default=None, max_length=500)
+
+
+class RuleSetValidateRequest(BaseModel):
+    definition: dict[str, Any]
+
+
+async def _schema_field_types(
+    session: DbSession, authorized: AuthorizedContext, process_id: uuid.UUID
+) -> dict[str, str]:
+    """Field types from the process's published schema — the type universe
+    rules must check against. Empty when no schema is published yet, so any
+    field reference fails validation with an honest 'unknown field'."""
+    versions = await SchemaVersionRepository(session, authorized.org_context).list_for_process(
+        process_id
+    )
+    published = next((v for v in versions if v.state == VersionState.PUBLISHED), None)
+    if published is None:
+        return {}
+    return validate_schema(published.definition).field_types()
+
+
+@router.get("/orgs/{organization_slug}/processes/{process_slug}/rules")
+async def get_rule_set_versions(
+    process_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    process = await _load_process(session, authorized, process_slug)
+    versions = await RuleSetVersionRepository(session, authorized.org_context).list_for_process(
+        process.id
+    )
+    return {
+        "versions": [RuleSetVersionResponse.from_model(v).model_dump() for v in versions],
+        "field_types": await _schema_field_types(session, authorized, process.id),
+    }
+
+
+@router.post("/orgs/{organization_slug}/processes/{process_slug}/rules/validate")
+async def validate_rule_set_endpoint(
+    process_slug: str,
+    body: RuleSetValidateRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Dry-run validation: type-check every condition and execute authored
+    test cases without persisting anything. The builder's 'run test cases'
+    button calls this."""
+    process = await _load_process(session, authorized, process_slug)
+    field_types = await _schema_field_types(session, authorized, process.id)
+    try:
+        validate_rule_set(body.definition, field_types)
+    except RuleExpressionError as exc:
+        return {"valid": False, "message": str(exc)}
+    return {"valid": True, "message": None}
+
+
+@router.post(
+    "/orgs/{organization_slug}/processes/{process_slug}/rules/versions",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_rule_set_version(
+    process_slug: str,
+    body: RuleSetDraftRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+) -> RuleSetVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    field_types = await _schema_field_types(session, authorized, process.id)
+    try:
+        draft = await create_rule_set_draft(
+            session,
+            authorized.org_context,
+            process_id=process.id,
+            definition=body.definition,
+            field_types=field_types,
+            change_summary=body.change_summary,
+            actor_id=_actor(authorized),
+        )
+    except RuleExpressionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    return RuleSetVersionResponse.from_model(draft)
+
+
+@router.patch("/orgs/{organization_slug}/processes/{process_slug}/rules/versions/{version_id}")
+async def update_rule_set_draft(
+    process_slug: str,
+    version_id: uuid.UUID,
+    body: RuleSetDraftRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+    if_match: Annotated[int | None, Header(alias="If-Match")] = None,
+) -> RuleSetVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    record = await RuleSetVersionRepository(session, authorized.org_context).get(version_id)
+    if record is None or record.process_id != process.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    if record.state != VersionState.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Published rule-set versions are immutable; create a new draft.",
+        )
+    field_types = await _schema_field_types(session, authorized, process.id)
+    try:
+        validate_rule_set(body.definition, field_types)  # no invalid rule set can be stored
+        if if_match is not None:
+            record.expect_version(if_match)
+        record.definition = dict(body.definition)
+        if body.change_summary is not None:
+            record.change_summary = body.change_summary
+        await session.flush()
+    except RuleExpressionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return RuleSetVersionResponse.from_model(record)
+
+
+@router.post(
+    "/orgs/{organization_slug}/processes/{process_slug}/rules/versions/{version_id}/publish"
+)
+async def publish_rule_set_version(
+    process_slug: str,
+    version_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+) -> RuleSetVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    record = await RuleSetVersionRepository(session, authorized.org_context).get(version_id)
+    if record is None or record.process_id != process.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    field_types = await _schema_field_types(session, authorized, process.id)
+    try:
+        published = await publish_rule_set_draft(
+            session,
+            authorized.org_context,
+            draft=record,
+            field_types=field_types,
+            actor_id=_actor(authorized),
+        )
+    except RuleExpressionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    except InvalidVersionStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return RuleSetVersionResponse.from_model(published)

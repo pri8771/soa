@@ -156,9 +156,43 @@ export const DEFAULT_SCHEMA_LISTING = {
   published_json_schema: { type: "object" },
 };
 
+export const DEFAULT_RULES_DRAFT = {
+  id: "61111111-1111-4111-8111-111111111111",
+  version_number: 1,
+  state: "draft",
+  definition: {
+    rules: [
+      {
+        key: "high-value",
+        severity: "warning",
+        action: "route_to_review",
+        condition: {
+          op: "gt",
+          left: { op: "field", key: "total" },
+          right: { op: "const", value: 5000 },
+        },
+        test_cases: [{ values: { total: 9000 }, expect_triggered: true }],
+      },
+    ],
+  },
+  change_summary: null,
+  version: 1,
+};
+
+export const DEFAULT_RULES_LISTING = {
+  versions: [DEFAULT_RULES_DRAFT],
+  field_types: { po_number: "text", total: "money" },
+};
+
 export const handlers = [
   http.get("/api/orgs/:slug/processes/:processSlug/schema", () =>
     HttpResponse.json(DEFAULT_SCHEMA_LISTING),
+  ),
+  http.get("/api/orgs/:slug/processes/:processSlug/rules", () =>
+    HttpResponse.json(DEFAULT_RULES_LISTING),
+  ),
+  http.post("/api/orgs/:slug/processes/:processSlug/rules/validate", () =>
+    HttpResponse.json({ valid: true, message: null }),
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
   http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),

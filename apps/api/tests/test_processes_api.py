@@ -398,3 +398,118 @@ def test_schema_draft_edit_publish_flow_over_http(client: TestClient) -> None:
     listing = client.get("/orgs/northstar/processes/purchase-orders/schema", headers=ADMIN)
     assert listing.status_code == 200
     assert listing.json()["published_json_schema"]["required"] == ["po_number"]
+
+
+def test_rules_draft_edit_publish_flow_over_http(client: TestClient) -> None:
+    make_org(client)
+    make_process(client)
+    # Rules type-check against the published schema, so publish one first.
+    schema = client.post(
+        "/orgs/northstar/processes/purchase-orders/schema/versions",
+        json={
+            "definition": {
+                "fields": SCHEMA["fields"] + [{"key": "total", "label": "Total", "type": "money"}]
+            }
+        },
+        headers=ADMIN,
+    ).json()
+    assert (
+        client.post(
+            f"/orgs/northstar/processes/purchase-orders/schema/versions/{schema['id']}/publish",
+            headers=ADMIN,
+        ).status_code
+        == 200
+    )
+
+    high_value = {
+        "key": "high-value",
+        "severity": "warning",
+        "action": "route_to_review",
+        "condition": {
+            "op": "gt",
+            "left": {"op": "field", "key": "total"},
+            "right": {"op": "const", "value": 5000},
+        },
+        "test_cases": [
+            {"values": {"total": 9000}, "expect_triggered": True},
+            {"values": {"total": 100}, "expect_triggered": False},
+        ],
+    }
+
+    # Dry-run validation: unknown field is caught without persisting.
+    bad = dict(high_value, condition={"op": "is_present", "key": "nonexistent"})
+    dry = client.post(
+        "/orgs/northstar/processes/purchase-orders/rules/validate",
+        json={"definition": {"rules": [bad]}},
+        headers=ADMIN,
+    )
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["valid"] is False
+    assert "unknown field" in dry.json()["message"]
+    ok = client.post(
+        "/orgs/northstar/processes/purchase-orders/rules/validate",
+        json={"definition": {"rules": [high_value]}},
+        headers=ADMIN,
+    )
+    assert ok.json() == {"valid": True, "message": None}
+
+    # Invalid rule sets cannot be stored, valid ones can.
+    refused = client.post(
+        "/orgs/northstar/processes/purchase-orders/rules/versions",
+        json={"definition": {"rules": [bad]}},
+        headers=ADMIN,
+    )
+    assert refused.status_code == 422
+    created = client.post(
+        "/orgs/northstar/processes/purchase-orders/rules/versions",
+        json={"definition": {"rules": [high_value]}, "change_summary": "first rules"},
+        headers=ADMIN,
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    assert draft["version_number"] == 1 and draft["state"] == "draft"
+
+    # A failing authored test case blocks the save (422) and the draft keeps
+    # its previous definition; a consistent edit persists with If-Match.
+    contradiction = dict(
+        high_value,
+        test_cases=[{"values": {"total": 100}, "expect_triggered": True}],
+    )
+    bad_edit = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/rules/versions/{draft['id']}",
+        json={"definition": {"rules": [contradiction]}},
+        headers={**ADMIN, "If-Match": str(draft["version"])},
+    )
+    assert bad_edit.status_code == 422
+    assert "expected triggered=True" in bad_edit.text
+    stale = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/rules/versions/{draft['id']}",
+        json={"definition": {"rules": [high_value]}},
+        headers={**ADMIN, "If-Match": "41"},
+    )
+    assert stale.status_code == 409
+    good_edit = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/rules/versions/{draft['id']}",
+        json={"definition": {"rules": [high_value]}},
+        headers={**ADMIN, "If-Match": str(draft["version"])},
+    )
+    assert good_edit.status_code == 200, good_edit.text
+
+    published = client.post(
+        f"/orgs/northstar/processes/purchase-orders/rules/versions/{draft['id']}/publish",
+        headers=ADMIN,
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["state"] == "published"
+    # Published versions are immutable.
+    frozen = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/rules/versions/{draft['id']}",
+        json={"definition": {"rules": []}},
+        headers=ADMIN,
+    )
+    assert frozen.status_code == 409
+
+    listing = client.get("/orgs/northstar/processes/purchase-orders/rules", headers=ADMIN)
+    assert listing.status_code == 200
+    assert listing.json()["field_types"]["total"] == "money"
+    assert [v["state"] for v in listing.json()["versions"]] == ["published"]

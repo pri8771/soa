@@ -54,20 +54,23 @@ const COLUMNS: ColumnDef<ProcessSummary>[] = [
   {
     id: "links",
     header: "Configure",
-    cell: ({ row }) => <SchemaLink processSlug={row.original.slug} />,
+    cell: ({ row }) => <ConfigureLinks processSlug={row.original.slug} />,
   },
   { header: "Health", cell: () => <Badge tone="neutral">not tracked yet</Badge> },
 ];
 
-function SchemaLink({ processSlug }: { processSlug: string }) {
+function ConfigureLinks({ processSlug }: { processSlug: string }) {
   const session = useShellSession();
+  const params = { organizationSlug: session.organization.slug, processSlug };
   return (
-    <Link
-      to="/app/$organizationSlug/processes/$processSlug/schema"
-      params={{ organizationSlug: session.organization.slug, processSlug }}
-    >
-      Schema
-    </Link>
+    <span style={{ display: "inline-flex", gap: "var(--soa-space-3)" }}>
+      <Link to="/app/$organizationSlug/processes/$processSlug/schema" params={params}>
+        Schema
+      </Link>
+      <Link to="/app/$organizationSlug/processes/$processSlug/rules" params={params}>
+        Rules
+      </Link>
+    </span>
   );
 }
 

@@ -290,3 +290,101 @@ export function publishSchemaVersion(
     { method: "POST" },
   );
 }
+
+// --- Validation rules (CFG-004/012) ---
+
+export type RuleCondition =
+  | { op: "field"; key: string }
+  | { op: "const"; value: string | number | boolean }
+  | { op: "eq" | "ne" | "gt" | "gte" | "lt" | "lte"; left: RuleCondition; right: RuleCondition }
+  | { op: "and" | "or"; args: RuleCondition[] }
+  | { op: "not"; arg: RuleCondition }
+  | { op: "is_present"; key: string };
+
+export interface RuleTestCase {
+  values: Record<string, unknown>;
+  expect_triggered: boolean;
+}
+
+export interface RuleRecord {
+  key: string;
+  severity: "error" | "warning" | "info";
+  action: "block" | "route_to_review" | "annotate";
+  condition: RuleCondition;
+  test_cases?: RuleTestCase[];
+}
+
+export interface RuleSetDefinition {
+  rules: RuleRecord[];
+}
+
+export interface RuleSetVersionRecord {
+  id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  definition: RuleSetDefinition;
+  change_summary: string | null;
+  version: number;
+}
+
+export interface RuleSetListing {
+  versions: RuleSetVersionRecord[];
+  field_types: Record<string, string>;
+}
+
+export function fetchRuleSet(
+  organizationSlug: string,
+  processSlug: string,
+): Promise<RuleSetListing> {
+  return apiFetch<RuleSetListing>(`/orgs/${organizationSlug}/processes/${processSlug}/rules`);
+}
+
+export function validateRuleSet(
+  organizationSlug: string,
+  processSlug: string,
+  definition: RuleSetDefinition,
+): Promise<{ valid: boolean; message: string | null }> {
+  return apiFetch(`/orgs/${organizationSlug}/processes/${processSlug}/rules/validate`, {
+    method: "POST",
+    body: JSON.stringify({ definition }),
+  });
+}
+
+export function createRuleSetDraft(
+  organizationSlug: string,
+  processSlug: string,
+  definition: RuleSetDefinition,
+): Promise<RuleSetVersionRecord> {
+  return apiFetch<RuleSetVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/rules/versions`,
+    { method: "POST", body: JSON.stringify({ definition }) },
+  );
+}
+
+export function updateRuleSetDraft(
+  organizationSlug: string,
+  processSlug: string,
+  versionId: string,
+  recordVersion: number,
+  definition: RuleSetDefinition,
+): Promise<RuleSetVersionRecord> {
+  return apiFetch<RuleSetVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/rules/versions/${versionId}`,
+    {
+      method: "PATCH",
+      headers: { "If-Match": String(recordVersion) },
+      body: JSON.stringify({ definition }),
+    },
+  );
+}
+
+export function publishRuleSetVersion(
+  organizationSlug: string,
+  processSlug: string,
+  versionId: string,
+): Promise<RuleSetVersionRecord> {
+  return apiFetch<RuleSetVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/rules/versions/${versionId}/publish`,
+    { method: "POST" },
+  );
+}
