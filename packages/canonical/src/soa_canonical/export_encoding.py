@@ -57,11 +57,31 @@ def encode_json_export(payload: dict[str, Any], metadata: ExportMetadata) -> byt
     )
 
 
+def _defuse_formula(text: str) -> str:
+    """Neutralize spreadsheet formula injection: a cell starting with
+    ``=``, ``@``, tab, or CR — or ``+``/``-`` that is not simply a
+    number — gets a leading apostrophe so Excel/Sheets render it as
+    text instead of executing it. Legitimate negative amounts stay
+    untouched."""
+    if not text:
+        return text
+    first = text[0]
+    if first in "=@\t\r":
+        return "'" + text
+    if first in "+-":
+        try:
+            float(text)
+            return text
+        except ValueError:
+            return "'" + text
+    return text
+
+
 def _cell(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value
+        return _defuse_formula(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
