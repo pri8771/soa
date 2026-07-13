@@ -283,17 +283,45 @@ jobs:
           name: sbom
           path: sbom/
           retention-days: 90
-      # Container image scanning activates with REL-001 (no Dockerfiles
-      # exist yet). The step is present and honest: it reports the
-      # pending state rather than silently passing a scan of nothing.
-      - name: Container image scan (Trivy)
-        run: |
-          if ls **/Dockerfile Dockerfile 2>/dev/null | grep -q .; then
-            echo "Dockerfiles present but Trivy wiring is REL-001 — failing to prompt it."
-            exit 1
-          fi
-          echo "No container images yet (REL-001). Skipping image scan — see docs/SUPPLY_CHAIN_SECURITY.md."
+      # Container image scanning lives in its own `container-images` job
+      # (build + Trivy per image), since REL-001 introduced the
+      # Dockerfiles. See docs/SUPPLY_CHAIN_SECURITY.md.
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  container-images:
+    name: Container image build and scan (Trivy)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: soa-api, dockerfile: apps/api/Dockerfile }
+          - { name: soa-worker, dockerfile: apps/worker/Dockerfile }
+          - { name: soa-web, dockerfile: apps/web/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.image.name }} image
+        run: docker build -f ${{ matrix.image.dockerfile }} -t ${{ matrix.image.name }}:ci .
+      # Assert the runtime image is unprivileged: the default user must
+      # not be root. (nginx-unprivileged and our `soa` user both satisfy
+      # this; a regression to root fails here.)
+      - name: Assert non-root runtime user
+        run: |
+          uid="$(docker run --rm --entrypoint sh ${{ matrix.image.name }}:ci -c 'id -u' 2>/dev/null \
+            || docker run --rm ${{ matrix.image.name }}:ci id -u)"
+          echo "runtime uid=$uid"
+          test "$uid" != "0"
+      - name: Scan ${{ matrix.image.name }} with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ matrix.image.name }}:ci
+          format: table
+          severity: CRITICAL,HIGH
+          # Unfixed OS-package CVEs cannot be remediated by us; the
+          # dependency gate (soa_config.supply_chain) fails closed on app
+          # deps we CAN pin. See docs/SUPPLY_CHAIN_SECURITY.md.
+          ignore-unfixed: true
+          exit-code: "1"

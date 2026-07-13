@@ -11,6 +11,7 @@ import signal
 import time
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import soa_worker
@@ -75,8 +76,22 @@ class Worker:
         # worker has nothing to execute and polls idle by design.
         while True:
             self.last_heartbeat_at = time.monotonic()
+            self._touch_liveness_file()
             logger.debug("worker heartbeat")
             await asyncio.sleep(self._settings.heartbeat_interval_seconds)
+
+    def _touch_liveness_file(self) -> None:
+        # Container liveness (REL-001): write the wall-clock beat so an
+        # out-of-process HEALTHCHECK can tell a running loop from a hung
+        # one. Best-effort — a transient write failure must not crash the
+        # worker; the file simply goes stale and the probe reacts.
+        path = self._settings.liveness_file
+        if not path:
+            return
+        try:
+            Path(path).write_text(f"{time.time():.3f}\n", encoding="utf-8")
+        except OSError:
+            logger.warning("could not write worker liveness file", extra={"path": path})
 
     async def _wait_for_stop_or_interval(self) -> None:
         try:

@@ -1,0 +1,27 @@
+# Keep the build context minimal and secret-free (REL-001). The Python
+# image builds install from pyproject/uv.lock + source; none of the
+# below is needed at build time, and several must never enter an image.
+.git
+.github
+**/node_modules
+**/.venv
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/dist
+**/build
+apps/web/test-results
+apps/web/playwright-report
+apps/web/e2e/__screenshots__
+# Secrets / local env — never bake into an image.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Local scratch and infra state.
+infrastructure/local
+prototype

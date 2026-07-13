@@ -95,6 +95,12 @@ build: ## Build all apps
 check-docs: ## Validate documentation links and documented commands
 	python3 scripts/check_docs.py
 
+.PHONY: docker-build
+docker-build: ## Build the API, worker, and web container images (REL-001)
+	docker build -f apps/api/Dockerfile -t soa-api .
+	docker build -f apps/worker/Dockerfile -t soa-worker .
+	docker build -f apps/web/Dockerfile -t soa-web .
+
 .PHONY: security-scan
 security-scan: ## Dependency + secret scans and the supply-chain policy gate (SEC-011)
 	@set -euo pipefail; \

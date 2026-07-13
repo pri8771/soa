@@ -19,7 +19,7 @@ tested in `tests/security/test_supply_chain.py`). CI runs it in the
 | JavaScript dependency closure | `pnpm audit --json` | every push / PR |
 | Committed secrets | `gitleaks` (full history) | every push / PR |
 | Software bill of materials | CycloneDX (`cyclonedx-py` for Python, `@cyclonedx/cyclonedx-npm` for JS) | every push / PR, uploaded as build artifacts |
-| Container images | Trivy (image + config) | once REL-001 introduces Dockerfiles — see [Container scanning](#container-scanning) |
+| Container images | Trivy (image scan) | every push / PR, in the `container-images` job — see [Container scanning](#container-scanning) |
 
 ## Severity policy
 
@@ -85,13 +85,19 @@ set behind any shipped version is recoverable and auditable.
 
 ## Container scanning
 
-The platform is not yet containerized — Dockerfiles arrive with REL-001.
-The `security` job's container step therefore **skips with an explicit
-notice** while no image build exists, rather than pretending to scan
-nothing. When REL-001 lands, the step builds each image and runs Trivy
-with the same block-on-`critical`/`high` policy; the sandbox runtime
-profile those images must satisfy (non-root, read-only root filesystem,
-dropped capabilities, no network for converters) is specified in
+The `container-images` CI job builds each runtime image
+(`apps/api/Dockerfile`, `apps/worker/Dockerfile`, `apps/web/Dockerfile`;
+see [`CONTAINER_IMAGES.md`](CONTAINER_IMAGES.md)), asserts the runtime
+user is **non-root**, and runs Trivy against each with a block-on-
+`critical`/`high` policy.
+
+Trivy runs with `ignore-unfixed: true`: an OS-package CVE with no
+released fix cannot be remediated by us, so failing on it would only
+force a noise exception. This differs deliberately from the dependency
+gate, which fails closed — application dependencies we *can* pin or
+upgrade get no such grace. The runtime sandbox profile those images must
+satisfy at deploy time (read-only root filesystem, dropped capabilities,
+no network for converters) is specified in
 [`SANDBOX_PROFILE.md`](SANDBOX_PROFILE.md).
 
 ## Running it locally
