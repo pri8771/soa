@@ -10,7 +10,16 @@ import soa_api
 from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
-from soa_api.routers import artifacts, health, jobs, me, organizations, processes, uploads
+from soa_api.routers import (
+    artifacts,
+    documents,
+    health,
+    jobs,
+    me,
+    organizations,
+    processes,
+    uploads,
+)
 from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
@@ -143,4 +152,5 @@ def create_app(
     app.include_router(processes.router)
     app.include_router(artifacts.router)
     app.include_router(uploads.router)
+    app.include_router(documents.router)
     return app
