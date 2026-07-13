@@ -1040,6 +1040,74 @@ export const handlers = [
     const body = (await request.json()) as { overrides: Record<string, unknown> };
     return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));
   }),
+  http.get("/api/orgs/:slug/providers", () =>
+    HttpResponse.json({
+      items: [
+        {
+          name: "pdfium-native-text",
+          capability: "native_text",
+          languages: ["*"],
+          region: "local",
+          local: true,
+          data_policy: {
+            sends_content_to_third_party: false,
+            retains_content: false,
+            uses_content_for_training: false,
+          },
+          warnings: ["Runs inside the deployment; content never leaves (local-only safe)."],
+          availability: "always",
+          description: "Sandboxed digital-PDF text extraction.",
+          health: "unknown",
+          approved: false,
+          credential_ref: null,
+        },
+        {
+          name: "hosted-ocr",
+          capability: "ocr",
+          languages: ["*"],
+          region: "eu",
+          local: false,
+          data_policy: {
+            sends_content_to_third_party: true,
+            retains_content: true,
+            uses_content_for_training: false,
+          },
+          warnings: [
+            "Customer content LEAVES the deployment to a third party.",
+            "The vendor RETAINS customer content after processing.",
+          ],
+          availability: "requires_endpoint_config",
+          description: "Example hosted OCR destination.",
+          health: "unknown",
+          approved: true,
+          credential_ref: "credential:hosted-ocr-main",
+        },
+      ],
+      health_note:
+        "Health is reported by the worker at runtime; a live health surface arrives with worker telemetry.",
+    }),
+  ),
+  http.post("/api/orgs/:slug/providers/routing-preview", async ({ request }) => {
+    const body = (await request.json()) as { capability: string; local_only: boolean };
+    return HttpResponse.json(
+      body.local_only
+        ? {
+            order: ["pdfium-native-text"],
+            explanation: [
+              "catalog providers for native_text: pdfium-native-text, hosted-ocr",
+              "eliminated hosted-ocr: the policy is local-only",
+              "preview order (static catalog; live health/quality/cost apply at runtime): pdfium-native-text",
+            ],
+          }
+        : {
+            order: ["hosted-ocr", "pdfium-native-text"],
+            explanation: [
+              "catalog providers for native_text: pdfium-native-text, hosted-ocr",
+              "preview order (static catalog; live health/quality/cost apply at runtime): hosted-ocr, pdfium-native-text",
+            ],
+          },
+    );
+  }),
   http.get("/api/orgs/:slug/streams/:streamSlug/simulation", () =>
     HttpResponse.json({
       available: false,

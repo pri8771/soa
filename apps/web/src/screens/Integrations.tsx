@@ -24,6 +24,11 @@ export function Integrations() {
       title="Integrations"
       breadcrumbs={[{ label: session.organization.name }, { label: "Integrations" }]}
     >
+      <p style={{ margin: "0 0 1rem" }}>
+        <Link to="/app/$organizationSlug/providers" params={{ organizationSlug: slug }}>
+          Provider catalog →
+        </Link>
+      </p>
       {integrations.status === "pending" ? <Skeleton height="10rem" /> : null}
       {integrations.status === "error" ? (
         <Banner

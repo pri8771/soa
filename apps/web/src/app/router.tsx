@@ -26,6 +26,7 @@ import { UploadDocuments } from "../screens/UploadDocuments";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
 import { SelectOrganization } from "../screens/SelectOrganization";
+import { Providers } from "../screens/Providers";
 import { Simulation } from "../screens/Simulation";
 import { Workbench } from "../screens/Workbench";
 
@@ -158,6 +159,12 @@ const streamConfigureRoute = createRoute({
   component: StreamConfigure,
 });
 
+const providersRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "providers",
+  component: Providers,
+});
+
 const simulationRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams/$streamSlug/simulation",
@@ -183,6 +190,7 @@ const routeTree = rootRoute.addChildren([
     streamDetailRoute,
     streamConfigureRoute,
     simulationRoute,
+    providersRoute,
     areaRoute("catalogs", "Catalogs", "CAT"),
     integrationsRoute,
     mappingStudioRoute,

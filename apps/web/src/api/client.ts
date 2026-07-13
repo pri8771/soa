@@ -1283,3 +1283,48 @@ export function fetchStreamSimulation(
 ): Promise<SimulationResponse> {
   return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/simulation`);
 }
+
+// --- Provider administration (AIO-019) ---
+
+export interface ProviderEntry {
+  name: string;
+  capability: string;
+  languages: string[];
+  region: string;
+  local: boolean;
+  data_policy: {
+    sends_content_to_third_party: boolean;
+    retains_content: boolean;
+    uses_content_for_training: boolean;
+  };
+  warnings: string[];
+  availability: string;
+  description: string;
+  health: string;
+  approved: boolean;
+  credential_ref: string | null;
+}
+
+export interface ProvidersResponse {
+  items: ProviderEntry[];
+  health_note: string;
+}
+
+export function fetchProviders(organizationSlug: string): Promise<ProvidersResponse> {
+  return apiFetch(`/orgs/${organizationSlug}/providers`);
+}
+
+export interface RoutingPreviewResult {
+  order: string[];
+  explanation: string[];
+}
+
+export function previewProviderRouting(
+  organizationSlug: string,
+  body: { capability: string; local_only: boolean; language?: string | null },
+): Promise<RoutingPreviewResult> {
+  return apiFetch(`/orgs/${organizationSlug}/providers/routing-preview`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
