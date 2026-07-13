@@ -29,6 +29,7 @@ from soa_api.domain.processes import (
 from soa_api.domain.streams import (
     Stream,
     StreamRepository,
+    StreamStatus,
     StreamVersion,
     StreamVersionRepository,
     create_stream,
@@ -47,6 +48,7 @@ from soa_api.services.config_service import (
     validate_process_draft,
 )
 from soa_db import CursorRequest
+from soa_db.audit import ActorType, record_audit_event
 from soa_db.mixins import VersionConflictError
 
 router = APIRouter(tags=["processes"])
@@ -159,6 +161,19 @@ class StreamResponse(BaseModel):
             status=stream.status,
             active_version_id=str(stream.active_version_id) if stream.active_version_id else None,
         )
+
+
+class StreamListItem(StreamResponse):
+    process_name: str
+    process_slug: str
+    active_version_number: int | None
+
+
+class ArchiveStreamRequest(BaseModel):
+    """Archiving stops intake for the stream; the operator must explain the
+    impact so the audit trail records why documents stopped flowing."""
+
+    impact: str = Field(min_length=10, max_length=500)
 
 
 class StreamDraftRequest(BaseModel):
@@ -483,6 +498,76 @@ async def _load_stream(
     if stream is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
     return stream
+
+
+@router.get("/orgs/{organization_slug}/streams")
+async def list_streams(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.read"))],
+    session: DbSession,
+) -> list[StreamListItem]:
+    org_id = authorized.org_context.organization_id
+    page = await StreamRepository(session, authorized.org_context).list_page(
+        CursorRequest(limit=200)
+    )
+    process_rows = (
+        await session.execute(
+            select(Process.id, Process.name, Process.slug).where(Process.organization_id == org_id)
+        )
+    ).all()
+    process_info = {row[0]: (str(row[1]), str(row[2])) for row in process_rows}
+    active_ids = [s.active_version_id for s in page.items if s.active_version_id is not None]
+    active_numbers: dict[uuid.UUID, int] = {}
+    if active_ids:
+        number_rows = (
+            await session.execute(
+                select(StreamVersion.id, StreamVersion.version_number).where(
+                    StreamVersion.organization_id == org_id,
+                    StreamVersion.id.in_(active_ids),
+                )
+            )
+        ).all()
+        active_numbers = {row[0]: int(row[1]) for row in number_rows}
+    items: list[StreamListItem] = []
+    for stream in page.items:
+        name, slug = process_info.get(stream.process_id, ("(unknown)", ""))
+        items.append(
+            StreamListItem(
+                **StreamResponse.from_model(stream).model_dump(),
+                process_name=name,
+                process_slug=slug,
+                active_version_number=active_numbers.get(stream.active_version_id)
+                if stream.active_version_id
+                else None,
+            )
+        )
+    return items
+
+
+@router.post("/orgs/{organization_slug}/streams/{stream_slug}/archive")
+async def archive_stream(
+    stream_slug: str,
+    body: ArchiveStreamRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.manage"))],
+    session: DbSession,
+) -> StreamResponse:
+    stream = await _load_stream(session, authorized, stream_slug)
+    if stream.status == StreamStatus.ARCHIVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Stream is already archived."
+        )
+    stream.status = StreamStatus.ARCHIVED
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=_actor(authorized),
+        action="stream.archived",
+        target_type="stream",
+        target_id=str(stream.id),
+        organization_id=authorized.org_context.organization_id,
+        summary={"slug": stream.slug, "impact": body.impact},
+    )
+    return StreamResponse.from_model(stream)
 
 
 @router.get("/orgs/{organization_slug}/streams/{stream_slug}")

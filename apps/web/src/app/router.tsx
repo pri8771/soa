@@ -10,6 +10,8 @@ import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
 import { JobsQueue } from "../screens/JobsQueue";
 import { Processes } from "../screens/Processes";
+import { StreamDetail } from "../screens/StreamDetail";
+import { Streams } from "../screens/Streams";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
 import { SelectOrganization } from "../screens/SelectOrganization";
@@ -66,6 +68,18 @@ const processesRoute = createRoute({
   component: Processes,
 });
 
+const streamsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams",
+  component: Streams,
+});
+
+const streamDetailRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug",
+  component: StreamDetail,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -75,7 +89,8 @@ const routeTree = rootRoute.addChildren([
     areaRoute("documents", "Documents", "ING"),
     areaRoute("review", "Review", "REV"),
     processesRoute,
-    areaRoute("streams", "Streams", "CFG"),
+    streamsRoute,
+    streamDetailRoute,
     areaRoute("catalogs", "Catalogs", "CAT"),
     areaRoute("integrations", "Integrations", "EXP"),
     jobsRoute,

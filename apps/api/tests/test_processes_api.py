@@ -288,3 +288,43 @@ def test_reads_require_read_permission_and_writes_require_manage(client: TestCli
         headers=OUTSIDER,
     )
     assert denied.status_code == 403
+
+
+def test_stream_list_and_archive_with_impact(client: TestClient) -> None:
+    make_org(client)
+    make_process(client)
+    assert (
+        client.post(
+            "/orgs/northstar/processes/purchase-orders/streams",
+            json={"name": "Email intake", "slug": "email"},
+            headers=ADMIN,
+        ).status_code
+        == 201
+    )
+
+    listed = client.get("/orgs/northstar/streams", headers=ADMIN)
+    assert listed.status_code == 200
+    (row,) = listed.json()
+    assert row["slug"] == "email"
+    assert row["process_slug"] == "purchase-orders"
+    assert row["process_name"] == "Purchase orders"
+    assert row["active_version_number"] is None
+
+    # Archive demands an impact explanation.
+    refused = client.post(
+        "/orgs/northstar/streams/email/archive", json={"impact": "short"}, headers=ADMIN
+    )
+    assert refused.status_code == 422
+    archived = client.post(
+        "/orgs/northstar/streams/email/archive",
+        json={"impact": "Supplier moved to the API stream; email intake retired."},
+        headers=ADMIN,
+    )
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "archived"
+    again = client.post(
+        "/orgs/northstar/streams/email/archive",
+        json={"impact": "Already archived, should conflict."},
+        headers=ADMIN,
+    )
+    assert again.status_code == 409

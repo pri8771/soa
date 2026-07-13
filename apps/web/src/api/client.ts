@@ -163,3 +163,57 @@ export interface ProcessSummary {
 export function fetchProcesses(organizationSlug: string): Promise<ProcessSummary[]> {
   return apiFetch<ProcessSummary[]>(`/orgs/${organizationSlug}/processes`);
 }
+
+// --- Streams (CFG-008/010) ---
+
+export interface StreamSummary {
+  id: string;
+  process_id: string;
+  name: string;
+  slug: string;
+  status: "active" | "paused" | "archived";
+  active_version_id: string | null;
+  process_name: string;
+  process_slug: string;
+  active_version_number: number | null;
+}
+
+export interface StreamVersionSummary {
+  id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  overrides: Record<string, unknown>;
+  resolved_snapshot: {
+    process_version_id: string;
+    process_version_number: number;
+    config: Record<string, unknown>;
+  } | null;
+  pinned_process_version_id: string | null;
+}
+
+export interface StreamDetail {
+  stream: Omit<StreamSummary, "process_name" | "process_slug" | "active_version_number">;
+  versions: StreamVersionSummary[];
+}
+
+export function fetchStreams(organizationSlug: string): Promise<StreamSummary[]> {
+  return apiFetch<StreamSummary[]>(`/orgs/${organizationSlug}/streams`);
+}
+
+export function fetchStreamDetail(
+  organizationSlug: string,
+  streamSlug: string,
+): Promise<StreamDetail> {
+  return apiFetch<StreamDetail>(`/orgs/${organizationSlug}/streams/${streamSlug}`);
+}
+
+export function archiveStream(
+  organizationSlug: string,
+  streamSlug: string,
+  impact: string,
+): Promise<unknown> {
+  return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ impact }),
+  });
+}

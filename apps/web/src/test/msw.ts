@@ -70,7 +70,60 @@ export const DEFAULT_PROCESSES = [
   },
 ];
 
+export const DEFAULT_STREAMS = [
+  {
+    id: "41111111-1111-4111-8111-111111111111",
+    process_id: "31111111-1111-4111-8111-111111111111",
+    name: "Email intake",
+    slug: "email",
+    status: "active",
+    active_version_id: "42222222-2222-4222-8222-222222222222",
+    process_name: "Purchase orders",
+    process_slug: "purchase-orders",
+    active_version_number: 2,
+  },
+];
+
+export const DEFAULT_STREAM_DETAIL = {
+  stream: {
+    id: "41111111-1111-4111-8111-111111111111",
+    process_id: "31111111-1111-4111-8111-111111111111",
+    name: "Email intake",
+    slug: "email",
+    status: "active",
+    active_version_id: "42222222-2222-4222-8222-222222222222",
+  },
+  versions: [
+    {
+      id: "40000000-0000-4000-8000-000000000001",
+      version_number: 1,
+      state: "superseded",
+      overrides: {},
+      resolved_snapshot: {
+        process_version_id: "32222222-2222-4222-8222-222222222222",
+        process_version_number: 3,
+        config: { language: "en" },
+      },
+      pinned_process_version_id: "32222222-2222-4222-8222-222222222222",
+    },
+    {
+      id: "42222222-2222-4222-8222-222222222222",
+      version_number: 2,
+      state: "published",
+      overrides: { confidence_floor: 0.95 },
+      resolved_snapshot: {
+        process_version_id: "32222222-2222-4222-8222-222222222222",
+        process_version_number: 3,
+        config: { language: "en", confidence_floor: 0.95 },
+      },
+      pinned_process_version_id: "32222222-2222-4222-8222-222222222222",
+    },
+  ],
+};
+
 export const handlers = [
+  http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
+  http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),
   http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),
   http.get("/api/orgs/:slug/jobs/stats", () => HttpResponse.json(DEFAULT_JOB_STATS)),
