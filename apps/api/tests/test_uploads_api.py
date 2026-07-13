@@ -142,7 +142,7 @@ async def test_happy_path_and_idempotent_complete(
 async def test_wrong_bytes_block_completion_until_fixed(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
-    client, db, store = harness
+    client, _db, store = harness
     seed_stream(client)
     payload = declare(client)  # declares PDF_BYTES
     await upload_bytes(store, payload, b"entirely different bytes")
@@ -168,7 +168,7 @@ async def test_wrong_bytes_block_completion_until_fixed(
 async def test_policy_gates_run_before_signing(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
-    client, db, store = harness
+    client, _db, _store = harness
     seed_stream(client)
 
     unsupported = client.post(
@@ -217,7 +217,7 @@ async def test_policy_gates_run_before_signing(
 async def test_unauthorized_stream_and_cross_tenant_sessions(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
-    client, db, store = harness
+    client, _db, _store = harness
     seed_stream(client)
     payload = declare(client)
 
@@ -278,7 +278,7 @@ async def test_expired_sessions_answer_410_and_stay_expired(
 async def test_abort_discards_uploaded_bytes(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
-    client, db, store = harness
+    client, _db, store = harness
     seed_stream(client)
     payload = declare(client)
     await upload_bytes(store, payload, PDF_BYTES)
