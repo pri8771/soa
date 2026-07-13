@@ -77,6 +77,15 @@ class CanonicalPayloadRepository(ScopedRepository[CanonicalPayload]):
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def latest_for_run(self, run_id: uuid.UUID) -> CanonicalPayload | None:
+        stmt = (
+            self._scoped_select()
+            .where(CanonicalPayload.run_id == run_id)
+            .order_by(CanonicalPayload.created_at.desc(), CanonicalPayload.id.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def latest_for_document(self, document_id: uuid.UUID) -> CanonicalPayload | None:
         stmt = (
             self._scoped_select()

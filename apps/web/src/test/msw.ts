@@ -717,6 +717,18 @@ export const handlers = [
       explanation: "Highest-priority open task, oldest first within the same priority.",
     }),
   ),
+  // No approved fixture document carries a canonical payload by default;
+  // tests seed one via server.use when they need it.
+  http.get("/api/orgs/:slug/documents/:documentId/canonical-payload", () =>
+    HttpResponse.json(
+      {
+        error: {
+          message: "No canonical payload exists yet — it is created when the document is approved.",
+        },
+      },
+      { status: 404 },
+    ),
+  ),
   http.post("/api/orgs/:slug/review-tasks/:taskId/approve", async ({ request }) => {
     const body = (await request.json()) as { override_reason?: string };
     return HttpResponse.json({

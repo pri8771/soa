@@ -36,6 +36,7 @@ from soa_storage import MemoryObjectStore
 ADMIN = {"X-Dev-User": "user:admin"}
 SUPERVISOR = {"X-Dev-User": "user:supervisor"}  # approve + override + reject
 REVIEWER = {"X-Dev-User": "user:reviewer"}  # approve, NO override, NO reject
+AUDITOR = {"X-Dev-User": "user:auditor"}  # documents.read only: redacted payload view
 
 
 @pytest.fixture
@@ -60,6 +61,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
     for headers, email, role in (
         (SUPERVISOR, "supervisor@northstar.example", "supervisor"),
         (REVIEWER, "reviewer@northstar.example", "reviewer"),
+        (AUDITOR, "auditor@northstar.example", "auditor"),
     ):
         client.post("/orgs/northstar/invitations", json={"email": email}, headers=ADMIN)
         accepted = client.post(
@@ -516,6 +518,95 @@ async def test_mapping_errors_block_approval_clearly(
     assert fixed > 0
     (payload_row,) = await canonical_payloads_for(db, client, task_id)
     assert payload_row.payload["identifiers"]["po_number"] == "PO-9"
+
+
+async def test_canonical_payload_endpoint_permissions_and_redaction(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """CAN-004: reviewers get the full payload and may copy/download;
+    read-only callers get a SERVER-redacted projection (internal notes
+    and reviewer identities never leave the server)."""
+    from soa_db.canonical_payloads import record_canonical_payload
+
+    client, db = harness
+    task_id = await seed_reviewable(client, db)
+    workspace = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()
+    document_id = workspace["document"]["id"]
+    payload_url = f"/orgs/northstar/documents/{document_id}/canonical-payload"
+
+    # Before approval there is nothing — an honest 404, not an empty shell.
+    missing = client.get(payload_url, headers=SUPERVISOR)
+    assert missing.status_code == 404
+    assert "created when the document is approved" in missing.json()["error"]["message"]
+
+    version = claim(client, task_id, SUPERVISOR)
+    version = correct(client, task_id, version, SUPERVISOR, field_key="po_number", value="PO-1")
+    correct(client, task_id, version, SUPERVISOR, field_key="total_amount", value="450.00")
+    assert (
+        client.post(
+            f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=SUPERVISOR
+        ).status_code
+        == 200
+    )
+
+    full = client.get(payload_url, headers=SUPERVISOR).json()
+    assert full["can_copy"] is True
+    assert full["redacted"] is False
+    assert full["created_by"].startswith("user:")
+    assert full["payload"]["provenance"]["identifiers.po_number"]["actor"].startswith("user:")
+
+    read_only = client.get(payload_url, headers=AUDITOR).json()
+    assert read_only["can_copy"] is False
+    assert read_only["redacted"] is True
+    assert read_only["created_by"] is None
+    assert read_only["sha256"] == full["sha256"]  # same payload, provably
+    for entry in read_only["payload"]["provenance"].values():
+        assert "actor" not in entry
+    # Business content is intact.
+    assert read_only["payload"]["identifiers"]["po_number"] == "PO-1"
+
+    # Internal notes are stripped server-side for read-only callers.
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    noted_run = uuid.uuid4()
+    async with db.session_scope() as session:
+        await record_canonical_payload(
+            session,
+            context,
+            document_id=uuid.UUID(document_id),
+            run_id=noted_run,
+            task_id=None,
+            schema_version="1.0.0",
+            payload={
+                "schema_version": "1.0.0",
+                "identifiers": {"po_number": "PO-1"},
+                "notes": [
+                    {
+                        "text": "internal margin talk",
+                        "author": "user:u-1",
+                        "visibility": "internal",
+                    },
+                    {"text": "liftgate requested", "author": None, "visibility": "external"},
+                ],
+                "line_items": [
+                    {
+                        "line_number": 1,
+                        "quantity": "1",
+                        "line_total": {"amount": "1", "currency": "USD"},
+                        "notes": [{"text": "swap to rev B", "visibility": "internal"}],
+                    }
+                ],
+            },
+            actor_id="user:test",
+        )
+    noted = client.get(f"{payload_url}?run_id={noted_run}", headers=AUDITOR).json()
+    assert [n["text"] for n in noted["payload"]["notes"]] == ["liftgate requested"]
+    assert noted["payload"]["line_items"][0]["notes"] == []
+    assert "internal margin talk" not in str(noted)
+    supervisor_noted = client.get(f"{payload_url}?run_id={noted_run}", headers=SUPERVISOR).json()
+    assert len(supervisor_noted["payload"]["notes"]) == 2
 
 
 async def test_second_approval_hook_demands_a_distinct_approver(

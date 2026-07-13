@@ -23,8 +23,11 @@ describe("Document detail (ING-012)", () => {
     expect(within(files).getByText("original")).toBeInTheDocument();
     expect(within(files).getByRole("button", { name: "Download original" })).toBeInTheDocument();
 
-    // Unbuilt panels are honest, never fake data.
-    expect(screen.getByText(/review workspace arrives with REV/)).toBeInTheDocument();
+    // Unbuilt/deferred panels are honest, never fake data.
+    expect(screen.getByText(/open the task from the Review queue/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/canonical order is created when the document is approved/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/exports arrive with EXP/)).toBeInTheDocument();
     // No runs yet: the processing panel says so instead of inventing one.
     const processing = screen.getByRole("region", { name: "Processing" });

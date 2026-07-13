@@ -29,6 +29,7 @@ import { useState } from "react";
 
 import {
   cancelDocument,
+  fetchCanonicalPayload,
   fetchDocumentDetail,
   fetchDocumentRuns,
   reprocessDocument,
@@ -37,6 +38,7 @@ import {
   type ProcessingRunEntry,
   type StageRunEntry,
 } from "../api/client";
+import { PayloadViewer } from "../components/canonical/PayloadViewer";
 import { DocumentViewer } from "../components/viewer/DocumentViewer";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -71,6 +73,9 @@ const LIVE_STATES = new Set([
 ]);
 
 const REPROCESSABLE_STATES = new Set(["review_required", "failed_retryable", "failed_terminal"]);
+
+//: The canonical payload exists once a document was approved (CAN-003).
+const CANONICAL_STATES = new Set(["approved", "exporting", "completed", "archived"]);
 
 const STATE_TONES: Record<
   string,
@@ -315,6 +320,13 @@ export function DocumentDetail() {
       query.state.data && LIVE_STATES.has(query.state.data.state) ? 4000 : false,
   });
 
+  const canonical = useQuery({
+    queryKey: ["canonical-payload", slug, documentId],
+    queryFn: () => fetchCanonicalPayload(slug, documentId),
+    enabled: detail.data !== undefined && CANONICAL_STATES.has(detail.data.document.state),
+    retry: false,
+  });
+
   const cancel = useMutation({
     mutationFn: (reason: string) => cancelDocument(slug, documentId, reason),
     onSettled: () => {
@@ -526,10 +538,20 @@ export function DocumentDetail() {
         </Panel>
 
         <Panel title="Extracted data">
-          <Badge tone="neutral">not available yet — the review workspace arrives with REV</Badge>
+          <Badge tone="neutral">
+            reviewed and corrected in the Review Studio — open the task from the Review queue
+          </Badge>
         </Panel>
-        <Panel title="Validation">
-          <Badge tone="neutral">not available yet — validation review arrives with REV</Badge>
+        <Panel title="Canonical order">
+          {canonical.data ? (
+            <PayloadViewer data={canonical.data} />
+          ) : CANONICAL_STATES.has(document.state) && canonical.status === "pending" ? (
+            <Skeleton height="6rem" />
+          ) : (
+            <Badge tone="neutral">
+              not available yet — the canonical order is created when the document is approved
+            </Badge>
+          )}
         </Panel>
         <Panel title="Delivery">
           <Badge tone="neutral">not available yet — exports arrive with EXP</Badge>

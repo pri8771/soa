@@ -11,6 +11,7 @@ filters, they can only continue the exact listing that produced them.
 
 import base64
 import binascii
+import copy
 import hashlib
 import uuid
 from typing import Annotated, Any, Literal
@@ -25,6 +26,7 @@ from soa_api.dependencies import DbSession
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
 from soa_db.artifacts import ArtifactRepository
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
+from soa_db.canonical_payloads import CanonicalPayloadRepository
 from soa_db.documents import (
     Document,
     DocumentRepository,
@@ -533,6 +535,70 @@ def _redact_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
     if not summary:
         return {}
     return {key: value for key, value in summary.items() if key not in _REDACTED_SUMMARY_KEYS}
+
+
+def _redact_canonical_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """The read-only projection (CAN-004): callers without
+    ``documents.review`` get the business payload with internal notes
+    and reviewer identities removed — redaction happens SERVER-side, so
+    withheld content never reaches the client at all."""
+    redacted = copy.deepcopy(payload)
+    redacted["notes"] = [
+        note
+        for note in redacted.get("notes", [])
+        if isinstance(note, dict) and note.get("visibility") == "external"
+    ]
+    for item in redacted.get("line_items", []):
+        if isinstance(item, dict) and "notes" in item:
+            item["notes"] = [
+                note
+                for note in item["notes"]
+                if isinstance(note, dict) and note.get("visibility") == "external"
+            ]
+    for entry in redacted.get("provenance", {}).values():
+        if isinstance(entry, dict):
+            entry.pop("actor", None)
+    return redacted
+
+
+@router.get("/orgs/{organization_slug}/documents/{document_id}/canonical-payload")
+async def get_canonical_payload(
+    document_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+    run_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> dict[str, Any]:
+    """The approved canonical order for a document (CAN-004): the latest
+    payload, or a specific run's via ``run_id``. Reviewers get the full
+    payload and may copy/download; read-only callers get the redacted
+    projection. The payload contains business data only — no object
+    keys, credentials, or other server-side secrets exist in it."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    repo = CanonicalPayloadRepository(session, authorized.org_context)
+    row = (
+        await repo.latest_for_run(run_id)
+        if run_id is not None
+        else await repo.latest_for_document(document.id)
+    )
+    if row is None or row.document_id != document.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No canonical payload exists yet — it is created when the document is approved.",
+        )
+    full_access = "documents.review" in authorized.permissions
+    return {
+        "document_id": str(document.id),
+        "run_id": str(row.run_id),
+        "schema_version": row.schema_version,
+        "sha256": row.sha256,
+        "created_at": row.created_at.isoformat(),
+        "created_by": row.created_by if full_access else None,
+        "can_copy": full_access,
+        "redacted": not full_access,
+        "payload": row.payload if full_access else _redact_canonical_payload(row.payload),
+    }
 
 
 @router.get("/orgs/{organization_slug}/documents/{document_id}")

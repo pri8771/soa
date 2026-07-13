@@ -7,6 +7,7 @@
  */
 
 import { env } from "../env";
+import type { CanonicalOrder } from "./canonical-order";
 
 export const DEV_USER_STORAGE_KEY = "soa.dev.user";
 
@@ -1002,6 +1003,27 @@ export function rejectReviewTask(
     method: "POST",
     body: JSON.stringify({ reason }),
   });
+}
+
+// --- Canonical payload (CAN-004) ---
+
+export interface CanonicalPayloadResponse {
+  document_id: string;
+  run_id: string;
+  schema_version: string;
+  sha256: string;
+  created_at: string;
+  created_by: string | null;
+  can_copy: boolean;
+  redacted: boolean;
+  payload: CanonicalOrder;
+}
+
+export function fetchCanonicalPayload(
+  organizationSlug: string,
+  documentId: string,
+): Promise<CanonicalPayloadResponse> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/canonical-payload`);
 }
 
 export function escalateReviewTask(
