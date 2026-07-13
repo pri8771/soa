@@ -331,6 +331,78 @@ export const DEFAULT_DOCUMENTS = [
     received_at: "2026-07-12T09:10:00+00:00",
     duplicate_of: null,
   },
+  {
+    id: "84444444-4444-4444-8444-444444444444",
+    stream_id: "41111111-1111-4111-8111-111111111111",
+    state: "failed_retryable",
+    state_reason: "stage extracting failed: provider timeout",
+    source_channel: "upload",
+    original_filename: "po-4713.pdf",
+    content_sha256: "d".repeat(64),
+    size_bytes: 88000,
+    content_type: "application/pdf",
+    client_reference: null,
+    priority: 100,
+    sla_due_at: null,
+    received_at: "2026-07-12T09:20:00+00:00",
+    duplicate_of: null,
+  },
+];
+
+export const DEFAULT_RUNS = [
+  {
+    id: "a1111111-1111-4111-8111-111111111111",
+    run_number: 1,
+    state: "failed",
+    triggered_by: "system:orchestrator",
+    stream_version_id: "51111111-1111-4111-8111-111111111111",
+    config_fingerprint: "f".repeat(64),
+    started_at: "2026-07-12T09:21:00+00:00",
+    finished_at: "2026-07-12T09:24:00+00:00",
+    total_latency_ms: 5340,
+    total_cost_cents: 4,
+    stages: [
+      {
+        stage: "preprocessing",
+        attempt: 1,
+        state: "succeeded",
+        provider: null,
+        latency_ms: 1200,
+        cost_cents: 0,
+        safe_error: null,
+        failure_class: null,
+        output_summary: { pages: 2 },
+        started_at: "2026-07-12T09:21:00+00:00",
+        finished_at: "2026-07-12T09:21:02+00:00",
+      },
+      {
+        stage: "extracting",
+        attempt: 1,
+        state: "failed",
+        provider: "mock",
+        latency_ms: 900,
+        cost_cents: 2,
+        safe_error: "mock provider configured to fail (retryable)",
+        failure_class: "retryable",
+        output_summary: {},
+        started_at: "2026-07-12T09:22:00+00:00",
+        finished_at: "2026-07-12T09:22:01+00:00",
+      },
+      {
+        stage: "extracting",
+        attempt: 2,
+        state: "failed",
+        provider: "mock",
+        latency_ms: 880,
+        cost_cents: 2,
+        safe_error: "mock provider configured to fail (retryable)",
+        failure_class: "retryable",
+        output_summary: { warnings: ["provider responded slowly before failing"] },
+        started_at: "2026-07-12T09:23:00+00:00",
+        finished_at: "2026-07-12T09:23:01+00:00",
+      },
+    ],
+  },
 ];
 
 export const handlers = [
@@ -347,6 +419,27 @@ export const handlers = [
   }),
   http.post("/api/orgs/:slug/documents/:documentId/cancel", ({ params }) =>
     HttpResponse.json({ id: String(params["documentId"]), state: "cancelled" }),
+  ),
+  http.get("/api/orgs/:slug/documents/:documentId/runs", ({ params }) => {
+    const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
+    if (!found) {
+      return HttpResponse.json({ error: { message: "Document not found." } }, { status: 404 });
+    }
+    return HttpResponse.json({
+      document_id: found.id,
+      state: found.state,
+      runs: found.state === "failed_retryable" ? DEFAULT_RUNS : [],
+    });
+  }),
+  http.post("/api/orgs/:slug/documents/:documentId/reprocess", ({ params }) =>
+    HttpResponse.json({
+      id: String(params["documentId"]),
+      state: "queued",
+      mode: "current_config",
+      run_number: 2,
+      consequence:
+        "A new run will re-execute the full pipeline under the stream's currently published configuration. Previous runs and their artifacts remain unchanged as evidence.",
+    }),
   ),
   http.get("/api/orgs/:slug/documents/:documentId", ({ params }) => {
     const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));

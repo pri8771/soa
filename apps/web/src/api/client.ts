@@ -699,3 +699,65 @@ export function requestArtifactDownload(
     method: "POST",
   });
 }
+
+// --- Processing runs (PRC-014) ---
+
+export interface StageRunEntry {
+  stage: string;
+  attempt: number;
+  state: string;
+  provider: string | null;
+  latency_ms: number | null;
+  cost_cents: number;
+  safe_error: string | null;
+  failure_class: string | null;
+  output_summary: Record<string, unknown>;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface ProcessingRunEntry {
+  id: string;
+  run_number: number;
+  state: string;
+  triggered_by: string;
+  stream_version_id: string | null;
+  config_fingerprint: string | null;
+  started_at: string;
+  finished_at: string | null;
+  total_latency_ms: number;
+  total_cost_cents: number;
+  stages: StageRunEntry[];
+}
+
+export interface DocumentRuns {
+  document_id: string;
+  state: string;
+  runs: ProcessingRunEntry[];
+}
+
+export function fetchDocumentRuns(
+  organizationSlug: string,
+  documentId: string,
+): Promise<DocumentRuns> {
+  return apiFetch<DocumentRuns>(`/orgs/${organizationSlug}/documents/${documentId}/runs`);
+}
+
+export interface ReprocessResult {
+  id: string;
+  state: string;
+  mode: string;
+  run_number: number;
+  consequence: string;
+}
+
+export function reprocessDocument(
+  organizationSlug: string,
+  documentId: string,
+  options: { mode: "retry" | "current_config" | "historical_config"; reason: string },
+): Promise<ReprocessResult> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/reprocess`, {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}

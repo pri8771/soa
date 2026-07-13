@@ -34,7 +34,7 @@ from soa_db.documents import (
 )
 from soa_db.jobs import enqueue_job
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-from soa_db.runs import ProcessingRunRepository
+from soa_db.runs import ProcessingRunRepository, StageRunRepository
 
 router = APIRouter(tags=["documents"])
 
@@ -238,6 +238,63 @@ async def cancel_document(
     except InvalidDocumentTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return {"id": str(document.id), "state": document.state}
+
+
+@router.get("/orgs/{organization_slug}/documents/{document_id}/runs")
+async def list_document_runs(
+    document_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Processing runs with their stage attempts (PRC-014). Errors are the
+    stored SAFE strings — raw provider responses are never persisted, so
+    they cannot appear here; stage output summaries pass the same
+    redaction as the audit timeline."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    runs = await ProcessingRunRepository(session, authorized.org_context).list_for_document(
+        document.id
+    )
+    stage_repo = StageRunRepository(session, authorized.org_context)
+    payload: list[dict[str, Any]] = []
+    for run in runs:
+        stages = await stage_repo.list_for_run(run.id)
+        payload.append(
+            {
+                "id": str(run.id),
+                "run_number": run.run_number,
+                "state": run.state,
+                "triggered_by": run.triggered_by,
+                "stream_version_id": (
+                    str(run.stream_version_id) if run.stream_version_id else None
+                ),
+                "config_fingerprint": run.config_fingerprint,
+                "started_at": run.started_at.isoformat(),
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "total_latency_ms": run.total_latency_ms,
+                "total_cost_cents": run.total_cost_cents,
+                "stages": [
+                    {
+                        "stage": stage.stage,
+                        "attempt": stage.attempt,
+                        "state": stage.state,
+                        "provider": stage.provider,
+                        "latency_ms": stage.latency_ms,
+                        "cost_cents": stage.cost_cents,
+                        "safe_error": stage.safe_error,
+                        "failure_class": stage.failure_class,
+                        "output_summary": _redact_summary(stage.output_summary),
+                        "started_at": stage.started_at.isoformat(),
+                        "finished_at": (
+                            stage.finished_at.isoformat() if stage.finished_at else None
+                        ),
+                    }
+                    for stage in stages
+                ],
+            }
+        )
+    return {"document_id": str(document.id), "state": document.state, "runs": payload}
 
 
 #: States where the record is (or is becoming) a business commitment —

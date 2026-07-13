@@ -288,3 +288,48 @@ async def test_audit_records_the_request_with_mode_and_pins(
     entry = next(e for e in detail["timeline"] if e["action"] == "document.reprocess_requested")
     assert entry["summary"]["mode"] == "current_config"
     assert entry["summary"]["run_number"] == 1
+
+
+async def test_runs_endpoint_returns_stage_attempts_with_redacted_summaries(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.runs import complete_stage, start_stage
+
+    client, db = harness
+    document_id, run_id = await seed_document(
+        client, db, to_state=DocumentState.REVIEW_REQUIRED, with_run=True
+    )
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        from soa_db.runs import ProcessingRunRepository
+
+        run = await ProcessingRunRepository(session, context).get(uuid.UUID(str(run_id)))
+        assert run is not None
+        stage = await start_stage(session, context, run=run, stage="preprocessing")
+        stage.provider = "mock"
+        await complete_stage(
+            session,
+            run=run,
+            stage_run=stage,
+            latency_ms=123,
+            cost_cents=1,
+            # object_key must never reach the client, even if a stage
+            # accidentally wrote one into its summary.
+            output_summary={"pages": 1, "object_key": "orgs/secret/key"},
+        )
+
+    response = client.get(f"/orgs/northstar/documents/{document_id}/runs", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    (run_row,) = payload["runs"]
+    assert run_row["config_fingerprint"] == "a" * 64
+    (stage_row,) = run_row["stages"]
+    assert stage_row["stage"] == "preprocessing"
+    assert stage_row["attempt"] == 1
+    assert stage_row["provider"] == "mock"
+    assert stage_row["latency_ms"] == 123
+    assert stage_row["output_summary"] == {"pages": 1}, "object keys are redacted"
+    # Reads only need documents.read: the reviewer can see the timeline.
+    readable = client.get(f"/orgs/northstar/documents/{document_id}/runs", headers=REVIEWER)
+    assert readable.status_code == 200

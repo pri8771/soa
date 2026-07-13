@@ -13,7 +13,7 @@ describe("Documents queue (ING-010)", () => {
     expect(await screen.findByText("po-4711.pdf")).toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Documents" });
     // Stream name resolved, not the raw id.
-    expect(within(table).getAllByText("Email intake").length).toBe(3);
+    expect(within(table).getAllByText("Email intake").length).toBe(4);
     // Distinct outcomes: queued, queued+duplicate flag, quarantined+reason.
     expect(within(table).getAllByText("queued").length).toBe(2);
     expect(within(table).getByText("duplicate")).toBeInTheDocument();

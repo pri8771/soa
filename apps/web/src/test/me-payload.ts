@@ -22,6 +22,7 @@ export const DEFAULT_ME = {
         "organization.manage",
         "documents.read",
         "documents.review",
+        "documents.reprocess",
         "documents.upload",
         "processes.read",
         "processes.manage",

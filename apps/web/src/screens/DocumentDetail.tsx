@@ -5,8 +5,12 @@
  * reason for exceptional states), files with authorized short-lived
  * downloads (blocked server-side for quarantined documents), the
  * configuration context the stream currently pins, and the full audit
- * timeline. Extracted data, validation, and delivery panels are honest
- * placeholders until PRC/REV/EXP land — never fake data. Actions are
+ * timeline. The processing panel (PRC-014) shows every run with its
+ * stage attempts — provider, latency, warnings, safe errors — refreshing
+ * itself in place while the pipeline moves (scroll and dialogs survive),
+ * and offers retry/reprocess with the consequence spelled out before and
+ * after. Extracted data, validation, and delivery panels are honest
+ * placeholders until REV/EXP land — never fake data. Actions are
  * state-specific: cancel appears only while the state machine allows it.
  */
 
@@ -26,8 +30,12 @@ import { useState } from "react";
 import {
   cancelDocument,
   fetchDocumentDetail,
+  fetchDocumentRuns,
+  reprocessDocument,
   requestArtifactDownload,
   type DocumentArtifact,
+  type ProcessingRunEntry,
+  type StageRunEntry,
 } from "../api/client";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -45,6 +53,23 @@ const CANCELLABLE_STATES = new Set([
   "review_required",
   "exporting",
 ]);
+
+//: While the pipeline is moving, the runs panel refreshes itself; the
+//: page never remounts, so scroll position and open dialogs survive.
+const LIVE_STATES = new Set([
+  "received",
+  "validating_file",
+  "queued",
+  "preprocessing",
+  "classifying",
+  "splitting",
+  "extracting",
+  "normalizing",
+  "validating_data",
+  "exporting",
+]);
+
+const REPROCESSABLE_STATES = new Set(["review_required", "failed_retryable", "failed_terminal"]);
 
 const STATE_TONES: Record<
   string,
@@ -112,6 +137,128 @@ function CancelDialog({ onConfirm }: { onConfirm: (reason: string) => void }) {
   );
 }
 
+function ReprocessDialog({
+  mode,
+  explanation,
+  onConfirm,
+}: {
+  mode: "retry" | "current_config";
+  explanation: string;
+  onConfirm: (mode: "retry" | "current_config", reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <Dialog title={mode === "retry" ? "Retry this document?" : "Reprocess this document?"}>
+      {({ close }) => (
+        <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+          <p style={{ margin: 0 }}>{explanation}</p>
+          <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+            Previous runs and their artifacts remain unchanged as evidence.
+          </p>
+          <TextField label="Reason (required)" value={reason} onChange={setReason} isRequired />
+          <div style={{ display: "flex", gap: "var(--soa-space-2)", justifyContent: "flex-end" }}>
+            <Button variant="subtle" onPress={close}>
+              Keep as is
+            </Button>
+            <Button
+              isDisabled={reason.trim().length < 3}
+              onPress={() => {
+                onConfirm(mode, reason.trim());
+                close();
+              }}
+            >
+              {mode === "retry" ? "Retry" : "Reprocess"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function StageRow({ stage }: { stage: StageRunEntry }) {
+  const warnings = Array.isArray(stage.output_summary["warnings"])
+    ? (stage.output_summary["warnings"] as unknown[]).map(String)
+    : [];
+  return (
+    <li
+      style={{
+        display: "flex",
+        gap: "var(--soa-space-3)",
+        alignItems: "baseline",
+        flexWrap: "wrap",
+        padding: "var(--soa-space-2) 0",
+        borderBottom: "1px solid var(--soa-border)",
+      }}
+    >
+      <strong style={{ minWidth: "9rem" }}>{stage.stage.replace(/_/g, " ")}</strong>
+      <span style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
+        attempt {stage.attempt}
+      </span>
+      <Badge
+        tone={
+          stage.state === "succeeded" ? "success" : stage.state === "failed" ? "critical" : "info"
+        }
+      >
+        {stage.state}
+      </Badge>
+      {stage.provider ? <Badge tone="neutral">{stage.provider}</Badge> : null}
+      {stage.latency_ms !== null ? (
+        <span style={{ font: "var(--soa-font-caption)" }}>{stage.latency_ms} ms</span>
+      ) : null}
+      {stage.safe_error ? (
+        <span style={{ color: "var(--soa-text-muted)" }}>
+          {stage.safe_error}
+          {stage.failure_class ? ` (${stage.failure_class})` : null}
+        </span>
+      ) : null}
+      {warnings.map((warning) => (
+        <Badge key={warning} tone="warning">
+          {warning}
+        </Badge>
+      ))}
+    </li>
+  );
+}
+
+function RunBlock({ run }: { run: ProcessingRunEntry }) {
+  return (
+    <section aria-label={`Run ${run.run_number}`} style={{ display: "grid", gap: "0.25rem" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: "var(--soa-space-3)",
+          alignItems: "baseline",
+          flexWrap: "wrap",
+        }}
+      >
+        <h3 style={{ margin: 0, font: "var(--soa-font-heading-sm)" }}>Run {run.run_number}</h3>
+        <Badge
+          tone={
+            run.state === "succeeded" ? "success" : run.state === "failed" ? "critical" : "info"
+          }
+        >
+          {run.state}
+        </Badge>
+        <span style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
+          {run.triggered_by} · {run.total_latency_ms} ms
+          {run.config_fingerprint ? (
+            <>
+              {" "}
+              · config <code>{run.config_fingerprint.slice(0, 12)}…</code>
+            </>
+          ) : null}
+        </span>
+      </div>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        {run.stages.map((stage) => (
+          <StageRow key={`${stage.stage}:${stage.attempt}`} stage={stage} />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function ArtifactRow({
   artifact,
   onDownload,
@@ -158,11 +305,29 @@ export function DocumentDetail() {
     queryKey: ["document", slug, documentId],
     queryFn: () => fetchDocumentDetail(slug, documentId),
   });
+  const runs = useQuery({
+    queryKey: ["document-runs", slug, documentId],
+    queryFn: () => fetchDocumentRuns(slug, documentId),
+    // Live refresh while the pipeline is moving: data refreshes in place
+    // (no remount), so scroll position and open dialogs are preserved.
+    refetchInterval: (query) =>
+      query.state.data && LIVE_STATES.has(query.state.data.state) ? 4000 : false,
+  });
 
   const cancel = useMutation({
     mutationFn: (reason: string) => cancelDocument(slug, documentId, reason),
-    onSettled: () =>
-      void queryClient.invalidateQueries({ queryKey: ["document", slug, documentId] }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", slug, documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
+    },
+  });
+  const reprocess = useMutation({
+    mutationFn: (options: { mode: "retry" | "current_config"; reason: string }) =>
+      reprocessDocument(slug, documentId, options),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", slug, documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
+    },
   });
   const download = useMutation({
     mutationFn: (artifactId: string) => requestArtifactDownload(slug, artifactId),
@@ -198,6 +363,9 @@ export function DocumentDetail() {
 
   const { document, artifacts, context, timeline } = detail.data;
   const cancellable = canReview && CANCELLABLE_STATES.has(document.state);
+  const canReprocess =
+    session.permissions.has("documents.reprocess") && REPROCESSABLE_STATES.has(document.state);
+  const hasRuns = (runs.data?.runs.length ?? 0) > 0;
 
   return (
     <AppShell
@@ -290,11 +458,73 @@ export function DocumentDetail() {
           )}
         </Panel>
 
+        <Panel title="Processing">
+          {reprocess.isError ? (
+            <Banner tone="critical" title="Reprocess refused">
+              {reprocess.error?.message ?? "The document was not changed."}
+            </Banner>
+          ) : null}
+          {reprocess.isSuccess ? (
+            <Banner tone="success" title={`Run ${reprocess.data.run_number} queued`}>
+              {reprocess.data.consequence}
+            </Banner>
+          ) : null}
+          {canReprocess ? (
+            <div
+              style={{
+                display: "flex",
+                gap: "var(--soa-space-2)",
+                marginBottom: "var(--soa-space-3)",
+              }}
+            >
+              <DialogTrigger>
+                <Button size="sm" isDisabled={!hasRuns}>
+                  Retry (same configuration)
+                </Button>
+                <ReprocessDialog
+                  mode="retry"
+                  explanation="A new run will re-execute the full pipeline under the SAME configuration as the last run."
+                  onConfirm={(mode, reason) => reprocess.mutate({ mode, reason })}
+                />
+              </DialogTrigger>
+              <DialogTrigger>
+                <Button size="sm" variant="subtle">
+                  Reprocess (current configuration)
+                </Button>
+                <ReprocessDialog
+                  mode="current_config"
+                  explanation="A new run will re-execute the full pipeline under the stream's currently published configuration."
+                  onConfirm={(mode, reason) => reprocess.mutate({ mode, reason })}
+                />
+              </DialogTrigger>
+            </div>
+          ) : null}
+          {runs.status === "pending" ? (
+            <Skeleton height="4rem" />
+          ) : runs.status === "error" ? (
+            <Banner tone="critical" title="Couldn’t load processing runs">
+              <Button size="sm" onPress={() => void runs.refetch()}>
+                Try again
+              </Button>
+            </Banner>
+          ) : runs.data.runs.length === 0 ? (
+            <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+              No processing runs yet — the document has not entered the pipeline.
+            </p>
+          ) : (
+            <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+              {runs.data.runs.map((run) => (
+                <RunBlock key={run.id} run={run} />
+              ))}
+            </div>
+          )}
+        </Panel>
+
         <Panel title="Extracted data">
-          <Badge tone="neutral">not available yet — extraction arrives with processing (PRC)</Badge>
+          <Badge tone="neutral">not available yet — the review workspace arrives with REV</Badge>
         </Panel>
         <Panel title="Validation">
-          <Badge tone="neutral">not available yet — validation results arrive with PRC</Badge>
+          <Badge tone="neutral">not available yet — validation review arrives with REV</Badge>
         </Panel>
         <Panel title="Delivery">
           <Badge tone="neutral">not available yet — exports arrive with EXP</Badge>
