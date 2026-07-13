@@ -127,6 +127,9 @@ class ExtractionResult:
     model: str | None = None
     cost_cents: int = 0
     warnings: tuple[str, ...] = ()
+    #: Exact instruction version (AIO-010 ``reference``) the call used;
+    #: None for providers that take no instructions (the mock).
+    instruction_reference: str | None = None
 
 
 class ExtractionProviderError(Exception):

@@ -121,13 +121,37 @@ class TestRequestDiscipline:
 
     def test_enum_fields_carry_their_allowed_values(self) -> None:
         provider = provider_with()
-        payload = provider.build_payload(
+        payload, _ = provider.build_payload(
             extraction_request(
                 fields=(FieldSpec(key="currency", field_type="enum", enum_values=("EUR", "USD")),)
             )
         )
         user = json.loads(payload["messages"][1]["content"])
         assert user["fields_to_extract"][0]["allowed_values"] == ["EUR", "USD"]
+
+    async def test_instructions_flow_through_the_safe_builder_with_their_reference(self) -> None:
+        from soa_worker.model_request_builder import TENANT_SECTION_HEADER
+
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            return model_answer(DEFAULT_FIELDS)
+
+        provider = OpenAiCompatibleExtractionProvider(
+            endpoint=ENDPOINT,
+            model="test-model",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            instructions={"instructions": "Prefer the header block."},
+            instruction_reference="instruction:abc:v3",
+        )
+        result = await provider.extract(extraction_request())
+        (payload,) = seen
+        system = payload["messages"][0]["content"]
+        assert "SECURITY RULES" in system
+        assert TENANT_SECTION_HEADER in system
+        assert "Prefer the header block." in system
+        assert result.instruction_reference == "instruction:abc:v3"
 
 
 class TestHonestOutputHandling:

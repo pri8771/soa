@@ -37,6 +37,7 @@ redaction hook) lands with AIO-010/011 and this adapter switches to it.
 """
 
 import json
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
@@ -48,6 +49,11 @@ from soa_worker.extraction.provider import (
     ExtractionRequest,
     ExtractionResult,
 )
+from soa_worker.model_request_builder import (
+    BuildLimits,
+    BuiltModelRequest,
+    build_extraction_messages,
+)
 
 PROVIDER_NAME = "local-openai-compatible"
 
@@ -56,22 +62,15 @@ CAPABILITY_WARNING = (
     "self-report and evidence is page-level only — review gates apply"
 )
 
-_SYSTEM_PROMPT = (
-    "You extract fields from business documents. Respond with ONE JSON object "
-    'of the form {"fields": [{"key", "value", "confidence", "page_number", '
-    '"quote", "row_index"}]}. Rules: values are copied VERBATIM from the '
-    "document text; a field you cannot find gets value null; confidence is "
-    "your own estimate between 0 and 1; page_number is the page the value "
-    "appears on; quote is the exact surrounding text; row_index is the "
-    "0-based row for table columns and null otherwise. Never invent values."
-)
-
 _DETERMINISM_SEED = 7
 
 
 class OpenAiCompatibleExtractionProvider:
     """See module docstring. ``client`` is injectable for tests; when
-    omitted, a client with the configured timeout is created per call."""
+    omitted, a client with the configured timeout is created per call.
+    ``instructions`` / ``instruction_reference`` are the stream's
+    published AIO-010 content; ``redactor`` and ``build_limits`` flow
+    into the AIO-011 injection-safe request builder."""
 
     def __init__(
         self,
@@ -81,54 +80,51 @@ class OpenAiCompatibleExtractionProvider:
         timeout_seconds: float = 60.0,
         max_tokens: int = 4000,
         client: httpx.AsyncClient | None = None,
+        instructions: Mapping[str, Any] | None = None,
+        instruction_reference: str | None = None,
+        build_limits: BuildLimits | None = None,
+        redactor: Callable[[str], str] | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._model = model
         self._timeout = timeout_seconds
         self._max_tokens = max_tokens
         self._client = client
+        self._instructions = instructions
+        self._instruction_reference = instruction_reference
+        self._build_limits = build_limits
+        self._redactor = redactor
 
     @property
     def name(self) -> str:
         return PROVIDER_NAME
 
-    def build_payload(self, request: ExtractionRequest) -> dict[str, Any]:
-        """The exact chat-completions payload — exposed so tests (and
-        AIO-011's hardening) can inspect it. Carries no tools."""
-        fields = [
-            {
-                "key": spec.key,
-                "type": spec.field_type,
-                "allowed_values": list(spec.enum_values) if spec.enum_values else None,
-            }
-            for spec in request.fields
-        ]
-        pages = [
-            {"page_number": page.page_number, "text": page.text or ""}
-            for page in sorted(request.pages, key=lambda p: p.page_number)
-        ]
-        user_message = json.dumps(
-            {"fields_to_extract": fields, "document_pages": pages},
-            ensure_ascii=False,
-            sort_keys=True,
+    def build_payload(self, request: ExtractionRequest) -> tuple[dict[str, Any], BuiltModelRequest]:
+        """The exact chat-completions payload, built via the AIO-011
+        injection-safe builder — exposed so tests can inspect it.
+        Carries no tools."""
+        built = build_extraction_messages(
+            request,
+            instructions=self._instructions,
+            instruction_reference=self._instruction_reference,
+            limits=self._build_limits,
+            redactor=self._redactor,
         )
-        return {
+        payload = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
+            "messages": list(built.messages),
             "temperature": 0,
             "seed": _DETERMINISM_SEED,
             "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }
+        return payload, built
 
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
-        payload = self.build_payload(request)
+        payload, built = self.build_payload(request)
         assert "tools" not in payload  # the model reads; it never acts
         content = await self._complete(payload)
-        return self._to_result(request, content)
+        return self._to_result(request, content, built)
 
     async def _complete(self, payload: dict[str, Any]) -> str:
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
@@ -172,7 +168,9 @@ class OpenAiCompatibleExtractionProvider:
             )
         return content
 
-    def _to_result(self, request: ExtractionRequest, content: str) -> ExtractionResult:
+    def _to_result(
+        self, request: ExtractionRequest, content: str, built: BuiltModelRequest
+    ) -> ExtractionResult:
         try:
             parsed = json.loads(content)
             entries = parsed["fields"]
@@ -188,7 +186,7 @@ class OpenAiCompatibleExtractionProvider:
 
         requested = {spec.key for spec in request.fields}
         pages = {page.page_number: page for page in request.pages}
-        warnings = [CAPABILITY_WARNING]
+        warnings = [CAPABILITY_WARNING, *built.warnings]
         found: dict[tuple[str, int | None], ExtractedField] = {}
         for entry in entries:
             if not isinstance(entry, dict) or "key" not in entry:
@@ -240,6 +238,7 @@ class OpenAiCompatibleExtractionProvider:
             model=self._model,
             cost_cents=0,
             warnings=tuple(warnings),
+            instruction_reference=built.instruction_reference,
         )
 
 
