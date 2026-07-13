@@ -31,6 +31,9 @@ class NativeTextFailure(StrEnum):
     #: wrappers, subset fonts without a unicode map).
     FONTS_UNMAPPABLE = "fonts_unmappable"
     UNSUPPORTED = "unsupported"
+    #: Operational failure (timeout, crash) — says nothing about the
+    #: document itself; the only kind that is normally retryable.
+    UNAVAILABLE = "unavailable"
 
 
 class NativeTextError(Exception):

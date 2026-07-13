@@ -171,7 +171,7 @@ class TestSelection:
 
     def test_require_provider_says_when_nothing_is_registered_at_all(self) -> None:
         with pytest.raises(NoCapableProviderError, match="registered at all"):
-            require_provider(Capability.NATIVE_TEXT)
+            require_provider(Capability.SPLIT)
 
 
 class TestBuiltins:
