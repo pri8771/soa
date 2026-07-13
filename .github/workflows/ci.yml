@@ -274,7 +274,7 @@ jobs:
         run: |
           mkdir -p sbom
           uvx --from cyclonedx-bom cyclonedx-py requirements /tmp/requirements.txt \
-            --output-format JSON --outfile sbom/python-sbom.cdx.json
+            --output-format JSON --output-file sbom/python-sbom.cdx.json
           pnpm dlx @cyclonedx/cyclonedx-npm --output-format JSON \
             --output-file sbom/web-sbom.cdx.json
       - name: Upload SBOM artifacts
