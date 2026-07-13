@@ -32,6 +32,9 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "documents.upload",
         "documents.review",
         "documents.approve",
+        # Approving past unresolved CRITICAL blockers — deliberately a
+        # separate grant from documents.approve (REV-012).
+        "documents.approve.override",
         "documents.reject",
         "documents.reprocess",
         "processes.read",
@@ -97,6 +100,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "documents.read",
             "documents.review",
             "documents.approve",
+            "documents.approve.override",
             "documents.reject",
             "documents.reprocess",
             "processes.read",

@@ -96,6 +96,10 @@ class ReviewTask(
     escalated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     escalated_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     escalation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: Dual approval (REV-012): when policy demands a second approver,
+    #: the first approval is recorded here and the task returns to OPEN.
+    first_approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    first_approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     __table_args__ = (
         # One ACTIVE primary task per document.

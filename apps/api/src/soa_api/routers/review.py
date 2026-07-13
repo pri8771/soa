@@ -26,6 +26,13 @@ from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_api.services.approval import (
+    ApprovalPermissionError,
+    ApprovalStateError,
+    CriticalBlockersError,
+    approve_document,
+    reject_document,
+)
 from soa_api.services.revalidation import normalize_correction, revalidate_run
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.corrections import (
@@ -685,6 +692,85 @@ async def add_review_comment(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
     return _serialize_comment(comment)
+
+
+class ApproveRequest(BaseModel):
+    #: Required only when critical blockers remain (authorized override).
+    override_reason: str | None = Field(default=None, max_length=500)
+
+
+class RejectRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+async def _task_and_document(
+    session: DbSession, authorized: AuthorizedContext, task_id: uuid.UUID
+) -> tuple[ReviewTask, Document]:
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="The task's document is gone."
+        )
+    return task, document
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/approve")
+async def approve_review_task(
+    task_id: uuid.UUID,
+    body: ApproveRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.approve"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Approve (REV-012): final validation runs NOW; critical blockers
+    refuse approval unless an authorized override reason is given;
+    remaining warnings are captured on the approval."""
+    task, document = await _task_and_document(session, authorized, task_id)
+    try:
+        result = await approve_document(
+            session,
+            authorized.org_context,
+            task=task,
+            document=document,
+            actor=_actor(authorized),
+            can_override="documents.approve.override" in authorized.permissions,
+            override_reason=body.override_reason,
+        )
+    except CriticalBlockersError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except ApprovalStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except ApprovalPermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from None
+    return {**result, "task": _serialize(task, document)}
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/reject")
+async def reject_review_task(
+    task_id: uuid.UUID,
+    body: RejectRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.reject"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    task, document = await _task_and_document(session, authorized, task_id)
+    try:
+        result = await reject_document(
+            session,
+            authorized.org_context,
+            task=task,
+            document=document,
+            actor=_actor(authorized),
+            reason=body.reason,
+        )
+    except ApprovalStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except ApprovalPermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+    return {**result, "task": _serialize(task, document)}
 
 
 class EscalateRequest(BaseModel):
