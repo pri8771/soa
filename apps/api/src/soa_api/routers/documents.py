@@ -33,6 +33,7 @@ from soa_db.documents import (
     transition_document,
 )
 from soa_db.jobs import enqueue_job
+from soa_db.pages import DocumentPageRepository
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from soa_db.review_tasks import cancel_active_task_for_document
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
@@ -304,6 +305,49 @@ async def list_document_runs(
             }
         )
     return {"document_id": str(document.id), "state": document.state, "runs": payload}
+
+
+@router.get("/orgs/{organization_slug}/documents/{document_id}/pages")
+async def list_document_pages(
+    document_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Rendered pages of the document's most recent run that produced
+    any (REV-004 viewer). Page images and text artifacts are referenced
+    by ARTIFACT ID — the client exchanges those for short-lived signed
+    URLs via the STO-004 endpoint; object keys never appear here."""
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    runs = await ProcessingRunRepository(session, authorized.org_context).list_for_document(
+        document.id
+    )
+    page_repo = DocumentPageRepository(session, authorized.org_context)
+    for run in reversed(runs):
+        pages = await page_repo.list_for_run(run.id)
+        if pages:
+            return {
+                "document_id": str(document.id),
+                "run_id": str(run.id),
+                "run_number": run.run_number,
+                "pages": [
+                    {
+                        "page_number": page.page_number,
+                        "width_px": page.width_px,
+                        "height_px": page.height_px,
+                        "dpi": page.dpi,
+                        "rotation_degrees": page.rotation_degrees,
+                        "content_type": page.content_type,
+                        "image_artifact_id": str(page.image_artifact_id),
+                        "text_artifact_id": (
+                            str(page.text_artifact_id) if page.text_artifact_id else None
+                        ),
+                    }
+                    for page in pages
+                ],
+            }
+    return {"document_id": str(document.id), "run_id": None, "run_number": None, "pages": []}
 
 
 #: States where the record is (or is becoming) a business commitment —

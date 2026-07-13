@@ -333,3 +333,45 @@ async def test_runs_endpoint_returns_stage_attempts_with_redacted_summaries(
     # Reads only need documents.read: the reviewer can see the timeline.
     readable = client.get(f"/orgs/northstar/documents/{document_id}/runs", headers=REVIEWER)
     assert readable.status_code == 200
+
+
+async def test_pages_endpoint_returns_latest_run_pages_by_artifact_id(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.pages import create_page
+
+    client, db = harness
+    document_id, run_id = await seed_document(
+        client, db, to_state=DocumentState.REVIEW_REQUIRED, with_run=True
+    )
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    image_artifact = uuid.uuid4()
+    async with db.session_scope() as session:
+        await create_page(
+            session,
+            context,
+            document_id=uuid.UUID(document_id),
+            run_id=uuid.UUID(str(run_id)),
+            page_number=1,
+            width_px=1700,
+            height_px=2200,
+            dpi=200,
+            image_artifact_id=image_artifact,
+        )
+    response = client.get(f"/orgs/northstar/documents/{document_id}/pages", headers=REVIEWER)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run_id"] == str(run_id)
+    (page,) = payload["pages"]
+    assert page["page_number"] == 1
+    assert page["width_px"] == 1700
+    assert page["image_artifact_id"] == str(image_artifact)
+    assert page["text_artifact_id"] is None
+    # No object keys anywhere in the payload.
+    assert "object_key" not in response.text
+    # A document with no rendered pages answers honestly.
+    empty_id, _ = await seed_document(client, db, to_state=None)
+    empty = client.get(f"/orgs/northstar/documents/{empty_id}/pages", headers=ADMIN).json()
+    assert empty["pages"] == []
+    assert empty["run_id"] is None

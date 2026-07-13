@@ -37,6 +37,7 @@ import {
   type ProcessingRunEntry,
   type StageRunEntry,
 } from "../api/client";
+import { DocumentViewer } from "../components/viewer/DocumentViewer";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -456,6 +457,10 @@ export function DocumentDetail() {
               ))}
             </ul>
           )}
+        </Panel>
+
+        <Panel title="Preview">
+          <DocumentViewer organizationSlug={slug} documentId={documentId} />
         </Panel>
 
         <Panel title="Processing">

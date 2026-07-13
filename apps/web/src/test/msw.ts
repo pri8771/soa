@@ -588,13 +588,58 @@ export const handlers = [
       ],
     });
   }),
-  http.post("/api/orgs/:slug/artifacts/:artifactId/download-url", () =>
+  http.post("/api/orgs/:slug/artifacts/:artifactId/download-url", ({ params }) =>
     HttpResponse.json({
-      url: "https://storage.test/signed/download",
+      url: `https://storage.test/signed/${String(params["artifactId"])}`,
       expires_at: "2026-07-13T12:05:00+00:00",
       method: "GET",
     }),
   ),
+  // Stored page text served from a "signed" URL (REV-004 text search).
+  http.get("https://storage.test/signed/:artifactId", () =>
+    HttpResponse.text("PURCHASE ORDER PO-100042 total 1,234.50 Acme Industrial Supply"),
+  ),
+  http.get("/api/orgs/:slug/documents/:documentId/pages", ({ params }) => {
+    const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
+    if (!found) {
+      return HttpResponse.json({ error: { message: "Document not found." } }, { status: 404 });
+    }
+    if (found.state !== "failed_retryable") {
+      return HttpResponse.json({
+        document_id: found.id,
+        run_id: null,
+        run_number: null,
+        pages: [],
+      });
+    }
+    return HttpResponse.json({
+      document_id: found.id,
+      run_id: "a1111111-1111-4111-8111-111111111111",
+      run_number: 1,
+      pages: [
+        {
+          page_number: 1,
+          width_px: 1700,
+          height_px: 2200,
+          dpi: 200,
+          rotation_degrees: 0,
+          content_type: "image/png",
+          image_artifact_id: "c1111111-1111-4111-8111-111111111111",
+          text_artifact_id: null,
+        },
+        {
+          page_number: 2,
+          width_px: 1700,
+          height_px: 2200,
+          dpi: 200,
+          rotation_degrees: 0,
+          content_type: "image/png",
+          image_artifact_id: "c2222222-2222-4222-8222-222222222222",
+          text_artifact_id: "c3333333-3333-4333-8333-333333333333",
+        },
+      ],
+    });
+  }),
   http.get("/api/orgs/:slug/processes/:processSlug/schema", () =>
     HttpResponse.json(DEFAULT_SCHEMA_LISTING),
   ),

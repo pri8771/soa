@@ -830,3 +830,30 @@ export function releaseReviewTask(
     body: JSON.stringify({}),
   });
 }
+
+// --- Document pages (REV-004 viewer) ---
+
+export interface DocumentPageEntry {
+  page_number: number;
+  width_px: number;
+  height_px: number;
+  dpi: number | null;
+  rotation_degrees: number;
+  content_type: string;
+  image_artifact_id: string;
+  text_artifact_id: string | null;
+}
+
+export interface DocumentPages {
+  document_id: string;
+  run_id: string | null;
+  run_number: number | null;
+  pages: DocumentPageEntry[];
+}
+
+export function fetchDocumentPages(
+  organizationSlug: string,
+  documentId: string,
+): Promise<DocumentPages> {
+  return apiFetch<DocumentPages>(`/orgs/${organizationSlug}/documents/${documentId}/pages`);
+}
