@@ -107,7 +107,7 @@ async def test_happy_path_and_idempotent_complete(
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["document_id"] == payload["document_id"]
-    assert completed.json()["state"] == "received"
+    assert completed.json()["state"] == "queued"
 
     # Retrying complete is safe: same document, no second delivery.
     again = client.post(f"/orgs/northstar/uploads/{payload['session_id']}/complete", headers=ADMIN)

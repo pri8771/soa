@@ -31,9 +31,16 @@ from soa_api.domain.uploads import (
     is_expired,
     validate_upload_declaration,
 )
+from soa_api.services.file_inspection import InspectionVerdict, inspect_file
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType, record_audit_event
-from soa_db.documents import DocumentRepository, SourceChannel, create_document
+from soa_db.documents import (
+    DocumentRepository,
+    DocumentState,
+    SourceChannel,
+    create_document,
+    transition_document,
+)
 from soa_db.types import utcnow, uuid7
 from soa_storage import ObjectNotFoundError
 from soa_storage.keys import artifact_key
@@ -265,6 +272,36 @@ async def complete_upload(
         target_id=str(record.id),
         organization_id=authorized.org_context.organization_id,
         summary={"document_id": str(record.document_id)},
+    )
+
+    # File-safety inspection (ING-003): trust the bytes, not the label.
+    # Runs synchronously here until ING-004/007 move it onto worker jobs.
+    await transition_document(
+        session,
+        authorized.org_context,
+        document=document,
+        to_state=DocumentState.VALIDATING_FILE,
+        actor_id=_actor(authorized),
+        actor_type=ActorType.USER,
+    )
+    head = (await store.get(record.object_key))[:64]
+    inspection = inspect_file(
+        head=head,
+        declared_type=record.declared_content_type,
+        filename=record.declared_filename,
+    )
+    outcome = {
+        InspectionVerdict.PASSED: DocumentState.QUEUED,
+        InspectionVerdict.REJECTED: DocumentState.REJECTED,
+        InspectionVerdict.QUARANTINED: DocumentState.QUARANTINED,
+    }[inspection.verdict]
+    await transition_document(
+        session,
+        authorized.org_context,
+        document=document,
+        to_state=outcome,
+        reason=inspection.reason,
+        actor_id="system:file-inspection",
     )
     return CompleteResponse(document_id=str(record.document_id), state=document.state)
 
