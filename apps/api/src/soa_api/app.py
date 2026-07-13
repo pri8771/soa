@@ -73,6 +73,9 @@ def create_app(
                     secret_key=resolved.storage_secret_key or "",
                     bucket=resolved.storage_bucket,
                     region=resolved.storage_region,
+                    force_path_style=resolved.storage_force_path_style,
+                    sse=resolved.storage_sse,
+                    sse_kms_key_id=resolved.storage_sse_kms_key_id,
                 )
             )
         elif not resolved.is_production:

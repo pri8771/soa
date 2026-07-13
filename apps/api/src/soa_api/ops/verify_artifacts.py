@@ -64,6 +64,9 @@ async def _main() -> int:
             secret_key=settings.storage_secret_key or "",
             bucket=settings.storage_bucket,
             region=settings.storage_region,
+            force_path_style=settings.storage_force_path_style,
+            sse=settings.storage_sse,
+            sse_kms_key_id=settings.storage_sse_kms_key_id,
         )
     )
     db = DatabaseSessions(create_database_engine(settings.database_url))

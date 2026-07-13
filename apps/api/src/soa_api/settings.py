@@ -36,6 +36,11 @@ class ApiSettings(WebServiceSettings):
     storage_secret_key: str | None = None
     storage_bucket: str = "soa-artifacts"
     storage_region: str = "us-east-1"
+    # MinIO needs path-style; AWS accepts both. Encryption: unset uses the
+    # provider default; "AES256" or "aws:kms" (with optional key) force it.
+    storage_force_path_style: bool = True
+    storage_sse: str | None = None
+    storage_sse_kms_key_id: str | None = None
     # Signed download URLs are short-lived by design.
     download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 

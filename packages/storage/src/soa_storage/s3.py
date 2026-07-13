@@ -33,6 +33,23 @@ _SHA256_META = "sha256"
 
 @dataclass(frozen=True)
 class S3Settings:
+    """Adapter configuration. The same settings shape serves MinIO in
+    development and any S3-compatible production endpoint (STO-006).
+
+    Lifecycle assumptions the adapter bakes in:
+
+    - Object EXPIRATION is never delegated to bucket lifecycle rules —
+      retention deletion happens through the service (artifact retention
+      classes, STO-003) so it is authorized and audited. Lifecycle rules
+      may handle aborted-multipart cleanup only.
+    - Bucket VERSIONING is assumed off; artifacts are immutable rows over
+      immutable keys, so version history would only hide writes that
+      should have been refused.
+    - Storage-class transitions (e.g. to infrequent access) are fine:
+      they preserve object bytes and user metadata, which is where the
+      SHA-256 lives.
+    """
+
     endpoint_url: str
     access_key: str
     secret_key: str
@@ -40,6 +57,26 @@ class S3Settings:
     region: str = "us-east-1"
     # MinIO requires path-style addressing; AWS accepts both.
     force_path_style: bool = True
+    # Server-side encryption: None (provider default), "AES256" (SSE-S3),
+    # or "aws:kms" with an optional customer-managed key.
+    sse: str | None = None
+    sse_kms_key_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.sse not in (None, "AES256", "aws:kms"):
+            raise ValueError(f"unsupported sse mode {self.sse!r}")
+        if self.sse_kms_key_id and self.sse != "aws:kms":
+            raise ValueError("sse_kms_key_id requires sse='aws:kms'")
+
+
+def encryption_args(settings: S3Settings) -> dict[str, str]:
+    """Extra put/copy arguments for the configured encryption mode."""
+    if settings.sse is None:
+        return {}
+    args = {"ServerSideEncryption": settings.sse}
+    if settings.sse_kms_key_id:
+        args["SSEKMSKeyId"] = settings.sse_kms_key_id
+    return args
 
 
 def _is_missing(error: ClientError) -> bool:
@@ -97,6 +134,7 @@ class S3ObjectStore:
                 Body=data,
                 ContentType=content_type,
                 Metadata={_SHA256_META: digest},
+                **encryption_args(self._settings),
             )
         return ObjectMetadata(
             key=key,
@@ -152,6 +190,7 @@ class S3ObjectStore:
                 Key=destination_key,
                 CopySource={"Bucket": self._settings.bucket, "Key": source_key},
                 MetadataDirective="COPY",
+                **encryption_args(self._settings),
             )
         return ObjectMetadata(
             key=destination_key,

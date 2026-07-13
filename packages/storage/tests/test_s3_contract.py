@@ -27,6 +27,9 @@ def make_settings() -> S3Settings:
         access_key=os.environ.get("SOA_TEST_MINIO_ACCESS_KEY", "soa_dev"),
         secret_key=os.environ.get("SOA_TEST_MINIO_SECRET_KEY", "soa_dev_password"),
         bucket=f"contract-{secrets.token_hex(6)}",
+        # STO-006: point SOA_TEST_MINIO_URL at any S3-compatible
+        # integration endpoint and optionally exercise encryption.
+        sse=os.environ.get("SOA_TEST_MINIO_SSE") or None,
     )
 
 
