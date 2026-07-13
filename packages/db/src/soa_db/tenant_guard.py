@@ -42,6 +42,7 @@ RLS_PROTECTED_TABLES = (
     "policy_versions",  # 0015
     "artifacts",  # 0017
     "documents",  # 0018
+    "upload_sessions",  # 0019
 )
 
 

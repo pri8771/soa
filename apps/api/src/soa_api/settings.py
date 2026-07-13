@@ -44,6 +44,12 @@ class ApiSettings(WebServiceSettings):
     # Signed download URLs are short-lived by design.
     download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 
+    # Upload intake policy (ING-002). Plan/stream-level configurability
+    # arrives with ING-005; these are the platform maxima.
+    upload_session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    max_upload_bytes: int = Field(default=52_428_800, ge=1)  # 50 MiB
+    max_pending_upload_sessions: int = Field(default=100, ge=1)
+
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:
         if self.is_production:

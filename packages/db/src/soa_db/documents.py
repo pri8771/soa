@@ -229,6 +229,7 @@ async def create_document(
     session: AsyncSession,
     context: OrganizationContext,
     *,
+    document_id: uuid.UUID | None = None,
     stream_id: uuid.UUID,
     source_channel: SourceChannel,
     original_filename: str,
@@ -246,8 +247,10 @@ async def create_document(
         raise ValueError("content_sha256 must be 64 lowercase hex characters")
     if size_bytes <= 0:
         raise ValueError("size_bytes must be positive")
+    fields: dict[str, Any] = {"id": document_id} if document_id is not None else {}
     document = DocumentRepository(session, context).add(
         Document(
+            **fields,
             stream_id=stream_id,
             source_channel=source_channel.value,
             original_filename=original_filename[:255],
