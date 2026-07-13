@@ -8,6 +8,8 @@ dependencies = [
     "soa-db",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "pypdfium2>=4.30",
+    "pillow>=11.0",
 ]
 
 [project.scripts]

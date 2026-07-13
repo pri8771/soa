@@ -55,7 +55,7 @@ mypy_path = ["apps/api/src", "apps/worker/src", "packages/config/src", "packages
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["aiobotocore.*", "botocore.*"]
+module = ["aiobotocore.*", "botocore.*", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
