@@ -196,10 +196,12 @@ SYNTHETIC_SALES_ORDER_FIELDS: tuple[FixtureField, ...] = (
     FixtureField("lines.description", "Widget, 10mm galvanized", row_index=0),
     FixtureField("lines.quantity", "10", row_index=0),
     FixtureField("lines.unit_price", "45.00", row_index=0),
+    FixtureField("lines.line_total", "450.00", row_index=0),
     FixtureField("lines.sku", "GAD-205", row_index=1),
     FixtureField("lines.description", "Gadget, large", row_index=1),
     FixtureField("lines.quantity", "3", row_index=1),
     FixtureField("lines.unit_price", "261.50", row_index=1, confidence=0.88),
+    FixtureField("lines.line_total", "784.50", row_index=1),
 )
 
 DEFAULT_FIXTURES: Mapping[str, tuple[FixtureField, ...]] = {
@@ -226,6 +228,7 @@ SYNTHETIC_SALES_ORDER_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("lines.description", "text"),
     FieldSpec("lines.quantity", "number"),
     FieldSpec("lines.unit_price", "money"),
+    FieldSpec("lines.line_total", "money"),
 )
 
 

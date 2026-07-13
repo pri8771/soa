@@ -2902,6 +2902,9 @@ dependencies = [
     { name = "pypdfium2" },
     { name = "soa-config" },
     { name = "soa-db" },
+    { name = "soa-normalize" },
+    { name = "soa-rules" },
+    { name = "soa-storage" },
 ]
 
 [package.metadata]
@@ -2912,6 +2915,9 @@ requires-dist = [
     { name = "pypdfium2", specifier = ">=4.30" },
     { name = "soa-config", editable = "packages/config" },
     { name = "soa-db", editable = "packages/db" },
+    { name = "soa-normalize", editable = "packages/normalize" },
+    { name = "soa-rules", editable = "packages/rules" },
+    { name = "soa-storage", editable = "packages/storage" },
 ]
 
 [[package]]

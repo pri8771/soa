@@ -199,6 +199,8 @@ class Orchestrator:
                     latency_ms=int((time.monotonic() - started) * 1000),
                 )
                 return
+            if outcome.provider is not None:
+                stage_run.provider = outcome.provider  # before success seals the row
             await complete_stage(
                 session,
                 run=run,
@@ -207,8 +209,6 @@ class Orchestrator:
                 cost_cents=outcome.cost_cents,
                 output_summary=outcome.output_summary,
             )
-            if outcome.provider is not None:
-                stage_run.provider = outcome.provider
             await self._advance(session, context, run, document, stage, route=outcome.route)
 
     # -- helpers ---------------------------------------------------------------
