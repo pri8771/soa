@@ -253,6 +253,12 @@ export function DocumentsQueue() {
           }
           hasMore={documents.hasNextPage}
           onLoadMore={() => void documents.fetchNextPage()}
+          onRowActivate={(row) =>
+            void navigate({
+              to: "/app/$organizationSlug/documents/$documentId",
+              params: { organizationSlug: slug, documentId: row.id },
+            })
+          }
         />
         {canReview && selectedDocs.length > 0 && !allCancellable ? (
           <p style={{ margin: 0, font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>

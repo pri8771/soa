@@ -647,3 +647,55 @@ export function cancelDocument(
     body: JSON.stringify({ reason }),
   });
 }
+
+// --- Document detail (ING-011/012) ---
+
+export interface DocumentArtifact {
+  id: string;
+  kind: string;
+  sha256: string;
+  size_bytes: number;
+  content_type: string;
+  produced_by_stage: string | null;
+  retention_class: string;
+  created_at: string;
+}
+
+export interface TimelineEntry {
+  occurred_at: string;
+  action: string;
+  actor_type: string;
+  actor_id: string;
+  target_type: string;
+  summary: Record<string, unknown>;
+  correlation_id: string | null;
+}
+
+export interface DocumentDetail {
+  document: DocumentSummary;
+  artifacts: DocumentArtifact[];
+  context: {
+    stream_id: string;
+    stream_slug?: string;
+    stream_name?: string;
+    stream_version_number?: number;
+    pinned_process_version_id?: string | null;
+  };
+  timeline: TimelineEntry[];
+}
+
+export function fetchDocumentDetail(
+  organizationSlug: string,
+  documentId: string,
+): Promise<DocumentDetail> {
+  return apiFetch<DocumentDetail>(`/orgs/${organizationSlug}/documents/${documentId}`);
+}
+
+export function requestArtifactDownload(
+  organizationSlug: string,
+  artifactId: string,
+): Promise<{ url: string; expires_at: string; method: string }> {
+  return apiFetch(`/orgs/${organizationSlug}/artifacts/${artifactId}/download-url`, {
+    method: "POST",
+  });
+}

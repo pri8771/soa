@@ -348,6 +348,70 @@ export const handlers = [
   http.post("/api/orgs/:slug/documents/:documentId/cancel", ({ params }) =>
     HttpResponse.json({ id: String(params["documentId"]), state: "cancelled" }),
   ),
+  http.get("/api/orgs/:slug/documents/:documentId", ({ params }) => {
+    const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
+    if (!found) {
+      return HttpResponse.json({ error: { message: "Document not found." } }, { status: 404 });
+    }
+    return HttpResponse.json({
+      document: found,
+      artifacts: [
+        {
+          id: "91111111-1111-4111-8111-111111111111",
+          kind: "original",
+          sha256: found.content_sha256,
+          size_bytes: found.size_bytes,
+          content_type: found.content_type,
+          produced_by_stage: "intake",
+          retention_class: "standard",
+          created_at: found.received_at,
+        },
+      ],
+      context: {
+        stream_id: found.stream_id,
+        stream_slug: "email",
+        stream_name: "Email intake",
+        stream_version_number: 2,
+        pinned_process_version_id: "32222222-2222-4222-8222-222222222222",
+      },
+      timeline: [
+        {
+          occurred_at: found.received_at,
+          action: "document.received",
+          actor_type: "user",
+          actor_id: "user:u-1",
+          target_type: "document",
+          summary: { source_channel: found.source_channel },
+          correlation_id: "corr-1",
+        },
+        {
+          occurred_at: found.received_at,
+          action: "document.state_changed",
+          actor_type: "system",
+          actor_id: "system:file-inspection",
+          target_type: "document",
+          summary: { from: "received", to: "validating_file", reason: null },
+          correlation_id: "corr-1",
+        },
+        {
+          occurred_at: found.received_at,
+          action: "document.state_changed",
+          actor_type: "system",
+          actor_id: "system:malware-scan",
+          target_type: "document",
+          summary: { from: "validating_file", to: found.state, reason: found.state_reason },
+          correlation_id: "corr-1",
+        },
+      ],
+    });
+  }),
+  http.post("/api/orgs/:slug/artifacts/:artifactId/download-url", () =>
+    HttpResponse.json({
+      url: "https://storage.test/signed/download",
+      expires_at: "2026-07-13T12:05:00+00:00",
+      method: "GET",
+    }),
+  ),
   http.get("/api/orgs/:slug/processes/:processSlug/schema", () =>
     HttpResponse.json(DEFAULT_SCHEMA_LISTING),
   ),
