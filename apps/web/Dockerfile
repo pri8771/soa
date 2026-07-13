@@ -19,10 +19,19 @@ RUN pnpm --filter @soa/web run build
 
 FROM nginxinc/nginx-unprivileged:1.27-bookworm AS runtime
 
+# Apply Debian security updates: the pinned base tag lags the security
+# repo (openssl/perl patches), so pull current fixes rather than suppress
+# fixable CVEs. Root only for the apt step; drop straight back to the
+# unprivileged nginx user (REL-002 digest-pinning refreshes the base).
+USER root
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Replace the stock server with our security-header + SPA-fallback config.
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
+# Back to the unprivileged user (uid 101) — the runtime never runs as root.
+USER nginx
 EXPOSE 8080
-# The base image's CMD already starts nginx as the unprivileged `nginx`
-# user; no USER/root escalation is introduced here.
