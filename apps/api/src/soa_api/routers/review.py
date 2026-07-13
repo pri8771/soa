@@ -25,8 +25,11 @@ from sqlalchemy import CursorResult, select, update
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
-from soa_db.audit import ActorType, record_audit_event
-from soa_db.documents import Document
+from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_db.audit import ActorType, AuditEvent, record_audit_event
+from soa_db.documents import Document, DocumentRepository
+from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository
+from soa_db.pages import DocumentPageRepository
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from soa_db.review_tasks import (
     InvalidReviewTaskTransitionError,
@@ -35,6 +38,7 @@ from soa_db.review_tasks import (
     ReviewTaskState,
     release_task,
 )
+from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.types import utcnow
 
 router = APIRouter(tags=["review"])
@@ -313,3 +317,158 @@ async def release_review_task(
     except InvalidReviewTaskTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return _serialize(task, None)
+
+
+#: History returned by the workspace is bounded; older entries live in the
+#: full audit trail (ING-011).
+_HISTORY_LIMIT = 50
+
+
+def _field_payload(field: ExtractedField) -> dict[str, Any]:
+    """One extracted field for the review workspace: values, provenance,
+    validation, candidates, and evidence — by page/polygon/quote only,
+    never by object key."""
+    return {
+        "field_key": field.field_key,
+        "row_index": field.row_index,
+        "raw_value": field.raw_value,
+        "normalized_value": field.normalized_value,
+        "normalization_error": field.normalization_error,
+        "confidence": field.confidence,
+        "validation_status": field.validation_status,
+        "provider": field.provider,
+        "provider_model": field.provider_model,
+        "evidence": [span.to_json() for span in field.evidence_spans()],
+        "candidates": [candidate.to_json() for candidate in field.candidate_readings()],
+    }
+
+
+@router.get("/orgs/{organization_slug}/review-tasks/{task_id}/workspace")
+async def review_workspace(
+    task_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Everything the review workspace needs in ONE bounded response
+    (REV-006): the task, the document, the run and its route decision,
+    header fields and line items with candidates/validations/evidence,
+    page metadata for the viewer, recent history, and the configuration
+    context. Artifact content stays behind the separate short-lived
+    signed-URL endpoint — only artifact IDS appear here."""
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="The task's document is gone."
+        )
+
+    run = await ProcessingRunRepository(session, authorized.org_context).get(task.run_id)
+    decision: dict[str, Any] | None = None
+    if run is not None:
+        stages = await StageRunRepository(session, authorized.org_context).list_for_run(run.id)
+        for stage in stages:
+            if stage.stage == "validating_data" and stage.state == "succeeded":
+                summary = stage.output_summary or {}
+                raw_decision = summary.get("decision")
+                decision = raw_decision if isinstance(raw_decision, dict) else None
+
+    fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
+        task.run_id
+    )
+    header = [_field_payload(field) for field in fields if field.row_index is None]
+    line_items: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    for field in fields:
+        if field.row_index is None:
+            continue
+        table = field.field_key.partition(".")[0]
+        line_items.setdefault(table, {}).setdefault(field.row_index, []).append(
+            _field_payload(field)
+        )
+    tables = {
+        table: [cells for _, cells in sorted(rows.items())] for table, rows in line_items.items()
+    }
+
+    pages = await DocumentPageRepository(session, authorized.org_context).list_for_run(task.run_id)
+    page_rows = [
+        {
+            "page_number": page.page_number,
+            "width_px": page.width_px,
+            "height_px": page.height_px,
+            "dpi": page.dpi,
+            "rotation_degrees": page.rotation_degrees,
+            "content_type": page.content_type,
+            "image_artifact_id": str(page.image_artifact_id),
+            "text_artifact_id": str(page.text_artifact_id) if page.text_artifact_id else None,
+        }
+        for page in pages
+    ]
+
+    events = (
+        (
+            await session.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.organization_id == authorized.org_context.organization_id,
+                    AuditEvent.target_id.in_([str(task.id), str(document.id)]),
+                )
+                .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+                .limit(_HISTORY_LIMIT)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    history = [
+        {
+            "occurred_at": event.occurred_at.isoformat(),
+            "action": event.action,
+            "actor_type": event.actor_type,
+            "actor_id": event.actor_id,
+            "target_type": event.target_type,
+            "summary": event.summary or {},
+        }
+        for event in reversed(events)
+    ]
+
+    stream = await StreamRepository(session, authorized.org_context).get(document.stream_id)
+    context: dict[str, Any] = {
+        "stream_id": str(document.stream_id),
+        "run_stream_version_id": str(run.stream_version_id)
+        if run and run.stream_version_id
+        else None,
+        "config_fingerprint": run.config_fingerprint if run else None,
+    }
+    if stream is not None:
+        context["stream_slug"] = stream.slug
+        context["stream_name"] = stream.name
+        if stream.active_version_id is not None:
+            active = await StreamVersionRepository(session, authorized.org_context).get(
+                stream.active_version_id
+            )
+            if active is not None:
+                context["current_stream_version_number"] = active.version_number
+
+    return {
+        "task": _serialize(task, document),
+        "document": {
+            "id": str(document.id),
+            "state": document.state,
+            "state_reason": document.state_reason,
+            "original_filename": document.original_filename,
+            "priority": document.priority,
+            "received_at": document.received_at.isoformat(),
+        },
+        "run": {
+            "id": str(task.run_id),
+            "run_number": run.run_number if run else None,
+            "state": run.state if run else None,
+            "decision": decision,
+        },
+        "fields": header,
+        "line_items": tables,
+        "pages": page_rows,
+        "history": history,
+        "context": context,
+    }

@@ -233,3 +233,140 @@ async def test_queue_requires_review_permission_and_membership(
     # A non-member cannot even see the organization: 404, not an empty list.
     outsider = {"X-Dev-User": "user:integration-admin"}
     assert client.get("/orgs/northstar/review-tasks", headers=outsider).status_code == 404
+
+
+async def test_workspace_returns_the_full_bounded_read_model(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.extracted_fields import (
+        Candidate,
+        Evidence,
+        EvidenceCertainty,
+        create_extracted_field,
+    )
+    from soa_db.pages import create_page
+    from soa_db.runs import start_run
+
+    client, db = harness
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        document = await create_document(
+            session,
+            context,
+            stream_id=stream_id,
+            source_channel=SourceChannel.UPLOAD,
+            original_filename="po-workspace.pdf",
+            content_sha256="d" * 64,
+            size_bytes=100,
+            content_type="application/pdf",
+            actor_id="user:test",
+        )
+        run = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256="d" * 64,
+            stream_version_id=None,
+            config_fingerprint="b" * 64,
+            triggered_by="system:test",
+        )
+        image_artifact = uuid.uuid4()
+        await create_page(
+            session,
+            context,
+            document_id=document.id,
+            run_id=run.id,
+            page_number=1,
+            width_px=1700,
+            height_px=2200,
+            dpi=200,
+            image_artifact_id=image_artifact,
+        )
+        await create_extracted_field(
+            session,
+            context,
+            document_id=document.id,
+            run_id=run.id,
+            field_key="po_number",
+            raw_value="PO-100042",
+            confidence=0.6,
+            provider="mock",
+            evidence=(
+                Evidence(
+                    page_number=1,
+                    certainty=EvidenceCertainty.REGION,
+                    polygon=((100.0, 200.0), (400.0, 200.0), (400.0, 260.0), (100.0, 260.0)),
+                    quote="PO-100042",
+                ),
+            ),
+            candidates=(Candidate("PO-1000A2", 0.35),),
+            page_dimensions={1: (1700, 2200)},
+        )
+        for row, sku in enumerate(["WID-100", "GAD-205"]):
+            await create_extracted_field(
+                session,
+                context,
+                document_id=document.id,
+                run_id=run.id,
+                field_key="lines.sku",
+                raw_value=sku,
+                confidence=0.9,
+                provider="mock",
+                row_index=row,
+            )
+        task = await route_document_to_review(
+            session,
+            context,
+            document_id=document.id,
+            run_id=run.id,
+            reasons=[
+                {
+                    "code": "low_confidence",
+                    "message": "below the gate",
+                    "field_key": "po_number",
+                    "row_index": None,
+                    "rule_key": None,
+                }
+            ],
+            priority=10,
+        )
+        task_id = str(task.id)
+
+    response = client.get(f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["task"]["id"] == task_id
+    assert payload["document"]["original_filename"] == "po-workspace.pdf"
+    assert payload["run"]["run_number"] == 1
+    assert payload["context"]["config_fingerprint"] == "b" * 64
+
+    (po,) = payload["fields"]
+    assert po["field_key"] == "po_number"
+    assert po["raw_value"] == "PO-100042"
+    assert po["candidates"] == [{"raw_value": "PO-1000A2", "confidence": 0.35}]
+    (span,) = po["evidence"]
+    assert span["page_number"] == 1
+    assert span["polygon"] == [[100.0, 200.0], [400.0, 200.0], [400.0, 260.0], [100.0, 260.0]]
+    assert span["quote"] == "PO-100042"
+
+    assert [cells[0]["raw_value"] for cells in payload["line_items"]["lines"]] == [
+        "WID-100",
+        "GAD-205",
+    ]
+    (page,) = payload["pages"]
+    assert page["page_number"] == 1
+    assert page["image_artifact_id"]  # artifact ID, not a URL or key
+    assert "object_key" not in response.text
+    assert "orgs/" not in response.text.replace("/orgs/northstar", "")
+
+    actions = [entry["action"] for entry in payload["history"]]
+    assert "review_task.created" in actions
+    assert "document.received" in actions
+
+    # Permission enforced: no documents.review, no workspace.
+    assert (
+        client.get(f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=AUDITOR).status_code
+        == 403
+    )
