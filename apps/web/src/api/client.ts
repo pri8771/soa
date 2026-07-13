@@ -521,3 +521,73 @@ export function rollbackProcess(
     { method: "POST", body: JSON.stringify({ target_version_id: targetVersionId, reason }) },
   );
 }
+
+// --- Upload sessions (ING-002/008) ---
+
+export interface UploadSessionCreated {
+  session_id: string;
+  document_id: string;
+  upload_url: string;
+  upload_method: string;
+  expires_at: string;
+  state: string;
+}
+
+export interface UploadCompleteResult {
+  document_id: string;
+  state: string;
+  state_reason: string | null;
+  duplicate_of: string | null;
+}
+
+export function createUploadSession(
+  organizationSlug: string,
+  streamSlug: string,
+  declaration: {
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    sha256: string;
+    client_reference?: string;
+  },
+): Promise<UploadSessionCreated> {
+  return apiFetch<UploadSessionCreated>(`/orgs/${organizationSlug}/streams/${streamSlug}/uploads`, {
+    method: "POST",
+    body: JSON.stringify(declaration),
+  });
+}
+
+export function completeUploadSession(
+  organizationSlug: string,
+  sessionId: string,
+): Promise<UploadCompleteResult> {
+  return apiFetch<UploadCompleteResult>(`/orgs/${organizationSlug}/uploads/${sessionId}/complete`, {
+    method: "POST",
+  });
+}
+
+export function abortUploadSession(
+  organizationSlug: string,
+  sessionId: string,
+): Promise<{ state: string }> {
+  return apiFetch<{ state: string }>(`/orgs/${organizationSlug}/uploads/${sessionId}/abort`, {
+    method: "POST",
+  });
+}
+
+/** Blob bytes with a FileReader fallback (jsdom Files lack arrayBuffer). */
+export function readBlobBytes(file: Blob): Promise<ArrayBuffer> {
+  if (typeof file.arrayBuffer === "function") return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error ?? new Error("File could not be read."));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/** SHA-256 of a browser File/Blob, hex-encoded. */
+export async function sha256OfFile(file: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await readBlobBytes(file));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}

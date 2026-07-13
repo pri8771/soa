@@ -16,6 +16,7 @@ import { SchemaBuilder } from "../screens/SchemaBuilder";
 import { StreamConfigure } from "../screens/StreamConfigure";
 import { StreamDetail } from "../screens/StreamDetail";
 import { Streams } from "../screens/Streams";
+import { UploadDocuments } from "../screens/UploadDocuments";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
 import { SelectOrganization } from "../screens/SelectOrganization";
@@ -90,6 +91,12 @@ const processVersionsRoute = createRoute({
   component: ProcessVersions,
 });
 
+const uploadDocumentsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "documents/upload",
+  component: UploadDocuments,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams",
@@ -115,6 +122,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     areaRoute("overview", "Overview", "ANA"),
     areaRoute("documents", "Documents", "ING"),
+    uploadDocumentsRoute,
     areaRoute("review", "Review", "REV"),
     processesRoute,
     schemaBuilderRoute,

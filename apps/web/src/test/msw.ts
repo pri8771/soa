@@ -293,6 +293,32 @@ export const handlers = [
     HttpResponse.json({ valid: true, message: null }),
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
+  // Upload flow (ING-008): session -> signed PUT -> complete.
+  http.post("/api/orgs/:slug/streams/:streamSlug/uploads", () =>
+    HttpResponse.json(
+      {
+        session_id: "71111111-1111-4111-8111-111111111111",
+        document_id: "72222222-2222-4222-8222-222222222222",
+        upload_url: "https://storage.test/orgs/org-1/documents/doc/original/token-po.pdf",
+        upload_method: "PUT",
+        expires_at: "2026-07-13T12:00:00+00:00",
+        state: "pending",
+      },
+      { status: 201 },
+    ),
+  ),
+  http.put("https://storage.test/*", () => new HttpResponse(null, { status: 200 })),
+  http.post("/api/orgs/:slug/uploads/:sessionId/complete", () =>
+    HttpResponse.json({
+      document_id: "72222222-2222-4222-8222-222222222222",
+      state: "queued",
+      state_reason: null,
+      duplicate_of: null,
+    }),
+  ),
+  http.post("/api/orgs/:slug/uploads/:sessionId/abort", () =>
+    HttpResponse.json({ state: "aborted" }),
+  ),
   http.post("/api/orgs/:slug/streams/:streamSlug/resolve", async ({ request }) => {
     const body = (await request.json()) as { overrides: Record<string, unknown> };
     return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));

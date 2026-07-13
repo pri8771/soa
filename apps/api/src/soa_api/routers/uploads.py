@@ -55,6 +55,7 @@ from soa_api.services.malware import ScanVerdict
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import (
+    Document,
     DocumentRepository,
     DocumentState,
     SourceChannel,
@@ -103,6 +104,19 @@ class UploadSessionResponse(BaseModel):
 class CompleteResponse(BaseModel):
     document_id: str
     state: str
+    #: Why the document sits in an exceptional state (safe message).
+    state_reason: str | None = None
+    #: Set when the document duplicates an earlier one (ING-006).
+    duplicate_of: str | None = None
+
+    @classmethod
+    def from_document(cls, document: "Document") -> "CompleteResponse":
+        return cls(
+            document_id=str(document.id),
+            state=document.state,
+            state_reason=document.state_reason,
+            duplicate_of=str(document.duplicate_of) if document.duplicate_of else None,
+        )
 
 
 def _actor(authorized: AuthorizedContext) -> str:
@@ -271,7 +285,7 @@ async def complete_upload(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Session is completed but its document is missing.",
             )
-        return CompleteResponse(document_id=str(existing.id), state=existing.state)
+        return CompleteResponse.from_document(existing)
     if record.state == UploadSessionState.ABORTED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="This upload session was aborted."
@@ -372,7 +386,7 @@ async def complete_upload(
             reason=inspection.reason,
             actor_id="system:file-inspection",
         )
-        return CompleteResponse(document_id=str(record.document_id), state=document.state)
+        return CompleteResponse.from_document(document)
 
     # Malware scan (ING-004): unscanned files never proceed. A scanner
     # outage parks the document as failed_retryable — fail closed, retry
@@ -462,7 +476,7 @@ async def complete_upload(
                 organization_id=authorized.org_context.organization_id,
                 dedupe_key=f"document.registered:{document.id}",
             )
-    return CompleteResponse(document_id=str(record.document_id), state=document.state)
+    return CompleteResponse.from_document(document)
 
 
 @router.post("/orgs/{organization_slug}/uploads/{session_id}/abort")
