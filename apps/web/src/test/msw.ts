@@ -775,6 +775,68 @@ export const handlers = [
       },
     });
   }),
+  http.get("/api/orgs/:slug/analytics/quality", () =>
+    HttpResponse.json({
+      window: {
+        since: "2026-06-29T00:00:00+00:00",
+        until: "2026-07-13T00:00:00+00:00",
+        timezone: "UTC",
+      },
+      reviewed: { tasks_completed: 12, runs: 12 },
+      field_corrections: [
+        { field_key: "po_number", present_runs: 12, corrected_runs: 3, correction_rate: 0.25 },
+        { field_key: "total_amount", present_runs: 12, corrected_runs: 0, correction_rate: 0.0 },
+      ],
+      line_corrections: { cells_present: 48, cells_corrected: 6, correction_rate: 0.125 },
+      stp: { settled_documents: 20, straight_through: 8, stp_rate: 0.4 },
+      false_auto_approval: {
+        available: false,
+        reason:
+          "auto-approved documents have no reviewer to catch errors, so production data " +
+          "cannot measure this; run the AIO-016 evaluation against a gold dataset " +
+          "(AIO-015) for a defensible number",
+      },
+      calibration: {
+        cohorts: [
+          {
+            confidence_range: "[0.0, 0.5)",
+            fields_reviewed: 0,
+            corrected: 0,
+            correction_rate: null,
+          },
+          {
+            confidence_range: "[0.5, 0.8)",
+            fields_reviewed: 4,
+            corrected: 3,
+            correction_rate: 0.75,
+          },
+          {
+            confidence_range: "[0.95, 1.0]",
+            fields_reviewed: 40,
+            corrected: 1,
+            correction_rate: 0.025,
+          },
+        ],
+      },
+      ground_truth: {
+        gold_documents: 0,
+        note:
+          "all rates above are correction-based PROXIES; accuracy claims require " +
+          "evaluation against gold data",
+      },
+      notes: [],
+      definitions: {
+        "quality.field_correction_rate": {
+          key: "quality.field_correction_rate",
+          description:
+            "How often reviewers corrected a field — a PROXY for accuracy, not accuracy.",
+          numerator: "reviewed runs in which the field was corrected at least once",
+          denominator: "reviewed runs in which the field appeared (extracted or corrected)",
+          timezone: "UTC (day buckets are UTC calendar days; window is [since, until))",
+        },
+      },
+    }),
+  ),
   http.get("/api/orgs/:slug/analytics/operations", () =>
     HttpResponse.json({
       window: {

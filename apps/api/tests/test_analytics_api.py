@@ -131,3 +131,30 @@ async def test_window_validation_and_tenancy(
     # A non-member cannot even see the organization.
     outsider = {"X-Dev-User": "user:integration-admin"}
     assert client.get("/orgs/northstar/analytics/operations", headers=outsider).status_code == 404
+
+
+async def test_quality_snapshot_shape_and_honesty(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await seed(client, db)
+    response = client.get("/orgs/northstar/analytics/quality", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    # No reviewed tasks yet: rates are None/empty, never flattering zeros.
+    assert payload["reviewed"]["tasks_completed"] == 0
+    assert payload["field_corrections"] == []
+    assert payload["stp"]["stp_rate"] is None
+    assert payload["false_auto_approval"]["available"] is False
+    assert "gold" in payload["false_auto_approval"]["reason"]
+    assert payload["ground_truth"]["gold_documents"] == 0
+    assert payload["definitions"]["quality.field_correction_rate"]["numerator"]
+    # Same window validation as operations.
+    assert (
+        client.get(
+            "/orgs/northstar/analytics/quality",
+            params={"since": "not-a-date"},
+            headers=ADMIN,
+        ).status_code
+        == 400
+    )

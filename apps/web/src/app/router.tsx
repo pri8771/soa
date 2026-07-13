@@ -30,6 +30,7 @@ import { CatalogManager } from "../screens/CatalogManager";
 import { Catalogs } from "../screens/Catalogs";
 import { Providers } from "../screens/Providers";
 import { Operations } from "../screens/Operations";
+import { QualityDashboard } from "../screens/QualityDashboard";
 import { Simulation } from "../screens/Simulation";
 import { Workbench } from "../screens/Workbench";
 
@@ -192,6 +193,12 @@ const operationsRoute = createRoute({
   component: Operations,
 });
 
+const qualityRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "analytics",
+  component: QualityDashboard,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -217,7 +224,7 @@ const routeTree = rootRoute.addChildren([
     integrationsRoute,
     mappingStudioRoute,
     jobsRoute,
-    areaRoute("analytics", "Analytics", "ANA"),
+    qualityRoute,
     areaRoute("settings", "Settings", "TEN/SEC"),
   ]),
 ]);

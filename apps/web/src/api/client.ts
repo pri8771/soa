@@ -1010,6 +1010,41 @@ export function fetchOperationsSnapshot(organizationSlug: string): Promise<Opera
   return apiFetch(`/orgs/${organizationSlug}/analytics/operations`);
 }
 
+// --- Quality dashboard (ANA-005) ---
+
+export interface QualitySnapshot {
+  window: { since: string; until: string; timezone: string };
+  reviewed: { tasks_completed: number; runs: number };
+  field_corrections: {
+    field_key: string;
+    present_runs: number;
+    corrected_runs: number;
+    correction_rate: number | null;
+  }[];
+  line_corrections: {
+    cells_present: number;
+    cells_corrected: number;
+    correction_rate: number | null;
+  };
+  stp: { settled_documents: number; straight_through: number; stp_rate: number | null };
+  false_auto_approval: { available: boolean; reason: string };
+  calibration: {
+    cohorts: {
+      confidence_range: string;
+      fields_reviewed: number;
+      corrected: number;
+      correction_rate: number | null;
+    }[];
+  };
+  ground_truth: { gold_documents: number; note: string };
+  notes: string[];
+  definitions: Record<string, MetricDefinitionEntry>;
+}
+
+export function fetchQualitySnapshot(organizationSlug: string): Promise<QualitySnapshot> {
+  return apiFetch(`/orgs/${organizationSlug}/analytics/quality`);
+}
+
 // --- Catalog candidate matching in review (CAT-010) ---
 
 export interface CatalogMatchFeature {

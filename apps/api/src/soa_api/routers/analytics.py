@@ -18,6 +18,7 @@ from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_db.analytics import operational_snapshot
+from soa_db.analytics_quality import quality_snapshot
 from soa_db.types import utcnow
 
 router = APIRouter(tags=["analytics"])
@@ -102,6 +103,14 @@ async def operations_dashboard(
     """The ANA-004 read model: the operational snapshot for the window
     (default: the last 14 days) plus actionable attention items with
     their drill-down targets."""
+    since_dt, until_dt = _window(since, until)
+    snapshot = await operational_snapshot(
+        session, authorized.org_context, since=since_dt, until=until_dt
+    )
+    return {**snapshot, "needs_attention": _attention_items(snapshot)}
+
+
+def _window(since: str | None, until: str | None) -> tuple[datetime, datetime]:
     until_dt = _parse(until, "until") or utcnow()
     since_dt = _parse(since, "since") or (until_dt - timedelta(days=DEFAULT_WINDOW_DAYS))
     if since_dt >= until_dt:
@@ -113,7 +122,19 @@ async def operations_dashboard(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"the window cannot exceed {MAX_WINDOW_DAYS} days.",
         )
-    snapshot = await operational_snapshot(
-        session, authorized.org_context, since=since_dt, until=until_dt
-    )
-    return {**snapshot, "needs_attention": _attention_items(snapshot)}
+    return since_dt, until_dt
+
+
+@router.get("/orgs/{organization_slug}/analytics/quality")
+async def quality_dashboard(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+    since: Annotated[str | None, Query()] = None,
+    until: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """The ANA-005 read model: the ANA-002 quality snapshot for the
+    window (default: the last 14 days). Correction-proxy semantics,
+    sample sizes, and the false-auto-approval unavailability all travel
+    on the payload — the UI shows them rather than rounding them away."""
+    since_dt, until_dt = _window(since, until)
+    return await quality_snapshot(session, authorized.org_context, since=since_dt, until=until_dt)
