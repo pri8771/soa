@@ -305,6 +305,15 @@ def _eval(node: Mapping[str, Any], scope: _Scope, budget: _Budget) -> tuple[Any,
         value, sub_trace = _eval(node["arg"], scope, budget)
         result = None if value is None else not bool(value)
         return result, {"op": "not", "arg": sub_trace, "result": _json_safe(result)}
+    if op == "currency_of":
+        value, sub_trace = _eval(node["arg"], scope, budget)
+        # The currency a money value actually carries; indeterminate for
+        # a bare amount (currency was never guessed) or a non-money value.
+        currency = value.get("currency") if _is_money(value) else None
+        trace = {"op": "currency_of", "arg": sub_trace, "result": currency}
+        if currency is None:
+            trace["indeterminate"] = True
+        return currency, trace
     if op == "sum":
         return _sum(node, scope, budget)
     if op == "row_count":
