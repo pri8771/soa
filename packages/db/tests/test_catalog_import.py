@@ -79,9 +79,7 @@ class TestParsingVariants:
         assert second.aliases == ()
 
     def test_semicolon_and_crlf_files_are_sniffed(self) -> None:
-        data = (
-            b"sku;name;aliases;valid_from;unit;list_price\r\nSKU-1;Widget;W-9;;EA;1.00\r\n"
-        )
+        data = b"sku;name;aliases;valid_from;unit;list_price\r\nSKU-1;Widget;W-9;;EA;1.00\r\n"
         result = parse_catalog_csv(data, MAPPING)
         assert result.ok and result.delimiter == ";"
 
