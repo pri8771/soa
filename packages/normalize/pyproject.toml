@@ -1,0 +1,13 @@
+[project]
+name = "soa-normalize"
+version = "0.1.0"
+description = "Deterministic canonical normalization for extracted document values"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/soa_normalize"]
