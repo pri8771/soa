@@ -45,6 +45,7 @@ RLS_PROTECTED_TABLES = (
     "upload_sessions",  # 0019
     "processing_runs",  # 0021
     "stage_runs",  # 0021
+    "document_pages",  # 0022
 )
 
 
