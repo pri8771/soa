@@ -26,6 +26,15 @@ from soa_api.domain.processes import (
     create_draft,
     create_process,
 )
+from soa_api.domain.schemas import (
+    SchemaValidationError,
+    SchemaVersion,
+    SchemaVersionRepository,
+    create_schema_draft,
+    publish_schema_draft,
+    to_json_schema,
+    validate_schema,
+)
 from soa_api.domain.streams import (
     Stream,
     StreamRepository,
@@ -646,3 +655,138 @@ async def publish_stream_version(
     except InvalidVersionStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return StreamVersionResponse.from_model(published)
+
+
+# --- extraction schema (CFG-011 over the CFG-003 domain) -------------------
+
+
+class SchemaVersionResponse(BaseModel):
+    id: str
+    version_number: int
+    state: str
+    definition: dict[str, Any]
+    change_summary: str | None
+    version: int
+
+    @classmethod
+    def from_model(cls, record: SchemaVersion) -> "SchemaVersionResponse":
+        return cls(
+            id=str(record.id),
+            version_number=record.version_number,
+            state=record.state,
+            definition=dict(record.definition),
+            change_summary=record.change_summary,
+            version=record.version,
+        )
+
+
+class SchemaDraftRequest(BaseModel):
+    definition: dict[str, Any]
+    change_summary: str | None = Field(default=None, max_length=500)
+
+
+@router.get("/orgs/{organization_slug}/processes/{process_slug}/schema")
+async def get_schema_versions(
+    process_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.read"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    process = await _load_process(session, authorized, process_slug)
+    versions = await SchemaVersionRepository(session, authorized.org_context).list_for_process(
+        process.id
+    )
+    published = next((v for v in versions if v.state == VersionState.PUBLISHED), None)
+    return {
+        "versions": [SchemaVersionResponse.from_model(v).model_dump() for v in versions],
+        "published_json_schema": to_json_schema(validate_schema(published.definition))
+        if published
+        else None,
+    }
+
+
+@router.post(
+    "/orgs/{organization_slug}/processes/{process_slug}/schema/versions",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_schema_version(
+    process_slug: str,
+    body: SchemaDraftRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+) -> SchemaVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    try:
+        draft = await create_schema_draft(
+            session,
+            authorized.org_context,
+            process_id=process.id,
+            definition=body.definition,
+            change_summary=body.change_summary,
+            actor_id=_actor(authorized),
+        )
+    except SchemaValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    return SchemaVersionResponse.from_model(draft)
+
+
+@router.patch("/orgs/{organization_slug}/processes/{process_slug}/schema/versions/{version_id}")
+async def update_schema_draft(
+    process_slug: str,
+    version_id: uuid.UUID,
+    body: SchemaDraftRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+    if_match: Annotated[int | None, Header(alias="If-Match")] = None,
+) -> SchemaVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    record = await SchemaVersionRepository(session, authorized.org_context).get(version_id)
+    if record is None or record.process_id != process.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    if record.state != VersionState.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Published schema versions are immutable; create a new draft.",
+        )
+    try:
+        validate_schema(body.definition)  # no invalid schema can be stored
+        if if_match is not None:
+            record.expect_version(if_match)
+        record.definition = dict(body.definition)
+        if body.change_summary is not None:
+            record.change_summary = body.change_summary
+        await session.flush()
+    except SchemaValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return SchemaVersionResponse.from_model(record)
+
+
+@router.post(
+    "/orgs/{organization_slug}/processes/{process_slug}/schema/versions/{version_id}/publish"
+)
+async def publish_schema_version(
+    process_slug: str,
+    version_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("processes.manage"))],
+    session: DbSession,
+) -> SchemaVersionResponse:
+    process = await _load_process(session, authorized, process_slug)
+    record = await SchemaVersionRepository(session, authorized.org_context).get(version_id)
+    if record is None or record.process_id != process.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    try:
+        published = await publish_schema_draft(
+            session, authorized.org_context, draft=record, actor_id=_actor(authorized)
+        )
+    except SchemaValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    except InvalidVersionStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return SchemaVersionResponse.from_model(published)

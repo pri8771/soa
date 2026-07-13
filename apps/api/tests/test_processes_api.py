@@ -328,3 +328,73 @@ def test_stream_list_and_archive_with_impact(client: TestClient) -> None:
         headers=ADMIN,
     )
     assert again.status_code == 409
+
+
+def test_schema_draft_edit_publish_flow_over_http(client: TestClient) -> None:
+    make_org(client)
+    make_process(client)
+
+    invalid = client.post(
+        "/orgs/northstar/processes/purchase-orders/schema/versions",
+        json={"definition": {"fields": [{"key": "x", "label": "X", "type": "enum"}]}},
+        headers=ADMIN,
+    )
+    assert invalid.status_code == 422
+    assert "enum_values" in invalid.text
+
+    created = client.post(
+        "/orgs/northstar/processes/purchase-orders/schema/versions",
+        json={"definition": SCHEMA},
+        headers=ADMIN,
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+
+    # Invalid edits are rejected before storage; valid ones persist.
+    bad_edit = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/schema/versions/{draft['id']}",
+        json={
+            "definition": {
+                "fields": [
+                    {"key": "dup", "label": "A", "type": "text"},
+                    {"key": "dup", "label": "B", "type": "text"},
+                ]
+            }
+        },
+        headers={**ADMIN, "If-Match": str(draft["version"])},
+    )
+    assert bad_edit.status_code == 422
+    good_edit = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/schema/versions/{draft['id']}",
+        json={
+            "definition": {
+                "fields": SCHEMA["fields"] + [{"key": "total", "label": "Total", "type": "money"}]
+            }
+        },
+        headers={**ADMIN, "If-Match": str(draft["version"])},
+    )
+    assert good_edit.status_code == 200, good_edit.text
+
+    published = client.post(
+        f"/orgs/northstar/processes/purchase-orders/schema/versions/{draft['id']}/publish",
+        headers=ADMIN,
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["state"] == "published"
+
+    # Type change across versions is refused at publish.
+    breaking = client.post(
+        "/orgs/northstar/processes/purchase-orders/schema/versions",
+        json={"definition": {"fields": [{"key": "total", "label": "T", "type": "text"}]}},
+        headers=ADMIN,
+    ).json()
+    refused = client.post(
+        f"/orgs/northstar/processes/purchase-orders/schema/versions/{breaking['id']}/publish",
+        headers=ADMIN,
+    )
+    assert refused.status_code == 422
+    assert "type changes are rejected" in refused.text
+
+    listing = client.get("/orgs/northstar/processes/purchase-orders/schema", headers=ADMIN)
+    assert listing.status_code == 200
+    assert listing.json()["published_json_schema"]["required"] == ["po_number"]

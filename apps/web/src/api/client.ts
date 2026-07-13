@@ -217,3 +217,76 @@ export function archiveStream(
     body: JSON.stringify({ impact }),
   });
 }
+
+// --- Extraction schema (CFG-003/011) ---
+
+export interface SchemaField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "money" | "date" | "boolean" | "enum" | "table";
+  required?: boolean;
+  criticality?: "critical" | "standard" | "informational";
+  enum_values?: string[];
+  columns?: SchemaField[];
+}
+
+export interface SchemaDefinition {
+  fields: SchemaField[];
+}
+
+export interface SchemaVersionRecord {
+  id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  definition: SchemaDefinition;
+  change_summary: string | null;
+  version: number;
+}
+
+export interface SchemaListing {
+  versions: SchemaVersionRecord[];
+  published_json_schema: Record<string, unknown> | null;
+}
+
+export function fetchSchema(organizationSlug: string, processSlug: string): Promise<SchemaListing> {
+  return apiFetch<SchemaListing>(`/orgs/${organizationSlug}/processes/${processSlug}/schema`);
+}
+
+export function createSchemaDraft(
+  organizationSlug: string,
+  processSlug: string,
+  definition: SchemaDefinition,
+): Promise<SchemaVersionRecord> {
+  return apiFetch<SchemaVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/schema/versions`,
+    { method: "POST", body: JSON.stringify({ definition }) },
+  );
+}
+
+export function updateSchemaDraft(
+  organizationSlug: string,
+  processSlug: string,
+  versionId: string,
+  recordVersion: number,
+  definition: SchemaDefinition,
+): Promise<SchemaVersionRecord> {
+  return apiFetch<SchemaVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/schema/versions/${versionId}`,
+    {
+      method: "PATCH",
+      headers: { "If-Match": String(recordVersion) },
+      body: JSON.stringify({ definition }),
+    },
+  );
+}
+
+export function publishSchemaVersion(
+  organizationSlug: string,
+  processSlug: string,
+  versionId: string,
+): Promise<SchemaVersionRecord> {
+  return apiFetch<SchemaVersionRecord>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/schema/versions/${versionId}/publish`,
+    { method: "POST" },
+  );
+}

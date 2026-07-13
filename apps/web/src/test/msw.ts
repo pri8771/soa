@@ -121,7 +121,45 @@ export const DEFAULT_STREAM_DETAIL = {
   ],
 };
 
+export const DEFAULT_SCHEMA_DRAFT = {
+  id: "51111111-1111-4111-8111-111111111111",
+  version_number: 2,
+  state: "draft",
+  definition: {
+    fields: [
+      {
+        key: "po_number",
+        label: "PO number",
+        type: "text",
+        required: true,
+        criticality: "critical",
+      },
+      { key: "total", label: "Total", type: "money", criticality: "standard" },
+    ],
+  },
+  change_summary: null,
+  version: 1,
+};
+
+export const DEFAULT_SCHEMA_LISTING = {
+  versions: [
+    {
+      id: "50000000-0000-4000-8000-000000000001",
+      version_number: 1,
+      state: "published",
+      definition: { fields: [{ key: "po_number", label: "PO number", type: "text" }] },
+      change_summary: null,
+      version: 2,
+    },
+    DEFAULT_SCHEMA_DRAFT,
+  ],
+  published_json_schema: { type: "object" },
+};
+
 export const handlers = [
+  http.get("/api/orgs/:slug/processes/:processSlug/schema", () =>
+    HttpResponse.json(DEFAULT_SCHEMA_LISTING),
+  ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
   http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),
   http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),

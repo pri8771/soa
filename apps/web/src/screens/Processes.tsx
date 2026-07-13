@@ -9,7 +9,7 @@
 
 import { Badge, Banner, Button, Select } from "@soa/design-system";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 
 import { fetchProcesses, type ProcessSummary } from "../api/client";
@@ -51,8 +51,25 @@ const COLUMNS: ColumnDef<ProcessSummary>[] = [
   // Placeholder columns: populated by later epics (owner: TEN follow-up,
   // health: ANA). Rendered honestly as unavailable, never as fake data.
   { header: "Owner", cell: () => "—" },
+  {
+    id: "links",
+    header: "Configure",
+    cell: ({ row }) => <SchemaLink processSlug={row.original.slug} />,
+  },
   { header: "Health", cell: () => <Badge tone="neutral">not tracked yet</Badge> },
 ];
+
+function SchemaLink({ processSlug }: { processSlug: string }) {
+  const session = useShellSession();
+  return (
+    <Link
+      to="/app/$organizationSlug/processes/$processSlug/schema"
+      params={{ organizationSlug: session.organization.slug, processSlug }}
+    >
+      Schema
+    </Link>
+  );
+}
 
 export function Processes() {
   const session = useShellSession();
