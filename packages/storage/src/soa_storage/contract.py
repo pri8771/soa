@@ -97,6 +97,17 @@ class ObjectStoreContract:
         with pytest.raises(ObjectNotFoundError):
             await store.signed_download_url("ghost", expires_in_seconds=60)
 
+    async def test_list_keys_is_prefix_scoped_and_content_free(self) -> None:
+        store = await self.make_store()
+        await store.put("orgs/a/doc-1/original", b"one")
+        await store.put("orgs/a/doc-2/original", b"two")
+        await store.put("orgs/b/doc-9/original", b"three")
+        assert await store.list_keys("orgs/a/") == [
+            "orgs/a/doc-1/original",
+            "orgs/a/doc-2/original",
+        ]
+        assert len(await store.list_keys()) == 3
+
     async def test_abort_multipart_is_idempotent(self) -> None:
         store = await self.make_store()
         # Aborting an unknown upload must be safe to retry.

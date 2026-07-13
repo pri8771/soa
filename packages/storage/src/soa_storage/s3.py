@@ -170,6 +170,14 @@ class S3ObjectStore:
                 report[key] = None
         return report
 
+    async def list_keys(self, prefix: str = "") -> list[str]:
+        keys: list[str] = []
+        async with self._client() as client:
+            paginator = client.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self._settings.bucket, Prefix=prefix):
+                keys.extend(str(item["Key"]) for item in page.get("Contents", []))
+        return sorted(keys)
+
     async def signed_upload_url(
         self, key: str, *, expires_in_seconds: int, content_type: str
     ) -> SignedUrl:

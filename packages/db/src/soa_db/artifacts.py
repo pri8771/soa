@@ -108,6 +108,15 @@ class ArtifactRepository(ScopedRepository[Artifact]):
         return list((await self._session.execute(stmt)).scalars().all())
 
 
+async def export_manifest(session: AsyncSession, context: OrganizationContext) -> dict[str, str]:
+    """Object key -> SHA-256 for every artifact in the organization — the
+    expected side of backup/migration reconciliation (STO-005)."""
+    repo = ArtifactRepository(session, context)
+    stmt = repo._scoped_select().order_by(Artifact.object_key)
+    rows = (await session.execute(stmt)).scalars().all()
+    return {row.object_key: row.sha256 for row in rows}
+
+
 async def create_artifact(
     session: AsyncSession,
     context: OrganizationContext,

@@ -80,6 +80,9 @@ class MemoryObjectStore:
             report[key] = entry[1] if entry is not None else None
         return report
 
+    async def list_keys(self, prefix: str = "") -> list[str]:
+        return sorted(key for key in self._objects if key.startswith(prefix))
+
     async def signed_upload_url(
         self, key: str, *, expires_in_seconds: int, content_type: str
     ) -> SignedUrl:

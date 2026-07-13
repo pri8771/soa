@@ -32,6 +32,10 @@ local-down: ## Stop local services (data volumes are preserved)
 migrate: ## Apply database migrations
 	uv run alembic upgrade head
 
+.PHONY: verify-artifacts
+verify-artifacts: ## Reconcile artifact records against object storage (STO-005)
+	uv run python -m soa_api.ops.verify_artifacts
+
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data
 	@echo "ERROR: soa-fixtures defines the demo tenant, but the database SeedSink is not built yet (arrives with the ING epic's intake fixtures)." && exit 1

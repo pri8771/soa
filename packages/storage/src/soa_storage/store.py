@@ -101,6 +101,11 @@ class ObjectStore(Protocol):
         Never returns object content."""
         ...
 
+    async def list_keys(self, prefix: str = "") -> list[str]:
+        """Every stored key under ``prefix`` (reconciliation: finding
+        objects with no owning record). Keys only, never content."""
+        ...
+
     async def signed_upload_url(
         self, key: str, *, expires_in_seconds: int, content_type: str
     ) -> SignedUrl:
