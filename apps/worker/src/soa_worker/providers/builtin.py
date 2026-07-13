@@ -9,6 +9,7 @@ missing at startup must NOT register (unavailable credentials disable
 the capability clearly, per AIO-006).
 """
 
+import logging
 from typing import Any
 
 from soa_worker.extraction.mock import PROVIDER_NAME, MockExtractionProvider
@@ -53,3 +54,38 @@ register_provider(
     ),
     _native_text_factory,
 )
+
+# Tesseract OCR (AIO-004): registers ONLY when the binary and at least
+# one known language pack are installed — a missing engine disables the
+# capability clearly (resolution fails closed) instead of failing at
+# first use. Languages are the tags whose packs are actually installed.
+
+
+def _tesseract_factory() -> Any:
+    from soa_worker.tesseract_ocr import TesseractOcrProvider
+
+    return TesseractOcrProvider()
+
+
+def _register_tesseract() -> None:
+    from soa_worker.tesseract_ocr import PROVIDER_NAME as TESSERACT_NAME
+    from soa_worker.tesseract_ocr import installed_language_tags
+
+    languages = installed_language_tags()
+    if not languages:
+        logging.getLogger(__name__).info(
+            "tesseract or its language packs are not installed; the OCR capability is disabled"
+        )
+        return
+    register_provider(
+        ProviderInfo(
+            name=TESSERACT_NAME,
+            capability=Capability.OCR,
+            languages=languages,
+            data_policy=LOCAL_DATA_POLICY,
+        ),
+        _tesseract_factory,
+    )
+
+
+_register_tesseract()

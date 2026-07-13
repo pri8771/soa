@@ -39,7 +39,7 @@ US_RETAINING = DataPolicy(
 def info(
     name: str,
     *,
-    capability: Capability = Capability.OCR,
+    capability: Capability = Capability.CLASSIFY,
     languages: tuple[str, ...] = ("en",),
     data_policy: DataPolicy = LOCAL_DATA_POLICY,
 ) -> ProviderInfo:
@@ -93,7 +93,7 @@ class TestMetadataValidation:
 class TestRegistry:
     def test_resolution_fails_closed_for_unknown_providers(self) -> None:
         with pytest.raises(UnknownProviderError, match="nope"):
-            provider_info(Capability.OCR, "nope")
+            provider_info(Capability.CLASSIFY, "nope")
         with pytest.raises(UnknownProviderError):
             create_provider(Capability.NATIVE_TEXT, "nope")
 
@@ -109,27 +109,27 @@ class TestRegistry:
 
     def test_unregistering_disables_the_capability_clearly(self, scratch_providers) -> None:
         register_provider(info("ephemeral"), lambda: _Named("ephemeral"))
-        unregister_provider(Capability.OCR, "ephemeral")
+        unregister_provider(Capability.CLASSIFY, "ephemeral")
         with pytest.raises(UnknownProviderError, match="ephemeral"):
-            provider_info(Capability.OCR, "ephemeral")
+            provider_info(Capability.CLASSIFY, "ephemeral")
         with pytest.raises(UnknownProviderError):
-            unregister_provider(Capability.OCR, "ephemeral")
+            unregister_provider(Capability.CLASSIFY, "ephemeral")
 
     def test_created_instances_must_report_their_registered_name(self, scratch_providers) -> None:
         scratch_providers(info("honest"))
-        assert create_provider(Capability.OCR, "honest").name == "honest"
+        assert create_provider(Capability.CLASSIFY, "honest").name == "honest"
         scratch_providers(info("liar"), factory=lambda: _Named("someone-else"))
         with pytest.raises(ValueError, match="attributed to the wrong provider"):
-            create_provider(Capability.OCR, "liar")
+            create_provider(Capability.CLASSIFY, "liar")
 
 
 class TestSelection:
     def test_selection_matches_language_with_wildcard_support(self, scratch_providers) -> None:
         scratch_providers(info("english-only", languages=("en",)))
         scratch_providers(info("polyglot", languages=(ANY_LANGUAGE,)))
-        names = [i.name for i in select_providers(Capability.OCR, language="de")]
+        names = [i.name for i in select_providers(Capability.CLASSIFY, language="de")]
         assert names == ["polyglot"]
-        names = [i.name for i in select_providers(Capability.OCR, language="en")]
+        names = [i.name for i in select_providers(Capability.CLASSIFY, language="en")]
         assert names == ["english-only", "polyglot"]  # deterministic order
 
     def test_data_policy_defaults_are_strict(self, scratch_providers) -> None:
@@ -137,16 +137,16 @@ class TestSelection:
         scratch_providers(info("hosted-eu", data_policy=EU_HOSTED))
         scratch_providers(info("hosted-us", data_policy=US_RETAINING))
         # Default: nothing that ships content off-deployment is eligible.
-        assert [i.name for i in select_providers(Capability.OCR)] == ["local-ocr"]
+        assert [i.name for i in select_providers(Capability.CLASSIFY)] == ["local-ocr"]
         # Explicitly allowing third-party processing admits the EU host,
         # but the retaining/training one still needs those allowed too.
         assert [
-            i.name for i in select_providers(Capability.OCR, allow_third_party_processing=True)
+            i.name for i in select_providers(Capability.CLASSIFY, allow_third_party_processing=True)
         ] == ["hosted-eu", "local-ocr"]
         assert [
             i.name
             for i in select_providers(
-                Capability.OCR,
+                Capability.CLASSIFY,
                 allow_third_party_processing=True,
                 allow_content_retention=True,
                 allow_training_on_content=True,
@@ -155,19 +155,19 @@ class TestSelection:
 
     def test_region_constraint(self, scratch_providers) -> None:
         scratch_providers(info("hosted-eu", data_policy=EU_HOSTED))
-        pool = select_providers(Capability.OCR, region="eu", allow_third_party_processing=True)
+        pool = select_providers(Capability.CLASSIFY, region="eu", allow_third_party_processing=True)
         assert [i.name for i in pool] == ["hosted-eu"]
-        assert select_providers(Capability.OCR, region="mars") == ()
+        assert select_providers(Capability.CLASSIFY, region="mars") == ()
 
     def test_require_provider_names_the_constraint_that_failed(self, scratch_providers) -> None:
         scratch_providers(info("english-only", languages=("en",)))
-        assert require_provider(Capability.OCR, language="en").name == "english-only"
+        assert require_provider(Capability.CLASSIFY, language="en").name == "english-only"
         with pytest.raises(NoCapableProviderError, match="language 'de'"):
-            require_provider(Capability.OCR, language="de")
+            require_provider(Capability.CLASSIFY, language="de")
 
         scratch_providers(info("hosted-us", data_policy=US_RETAINING))
         with pytest.raises(NoCapableProviderError, match="data policy"):
-            require_provider(Capability.OCR, language="en", region="us")
+            require_provider(Capability.CLASSIFY, language="en", region="us")
 
     def test_require_provider_says_when_nothing_is_registered_at_all(self) -> None:
         with pytest.raises(NoCapableProviderError, match="registered at all"):
