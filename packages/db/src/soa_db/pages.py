@@ -13,7 +13,7 @@ Coordinate system (documented once, used by every evidence consumer):
 - Origin is the TOP-LEFT corner of the rendered page image.
 - ``x`` grows rightward, ``y`` grows downward.
 - Units are PIXELS of the rendered raster whose dimensions are stored
-  here (``width_px`` × ``height_px`` at ``dpi``). Evidence polygons are
+  here (``width_px`` by ``height_px`` at ``dpi``). Evidence polygons are
   lists of ``[x, y]`` vertices in this space; consumers rescale by
   comparing against the stored dimensions, never by assuming a DPI.
 
