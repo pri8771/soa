@@ -64,8 +64,11 @@ _ALLOWED: dict[str, frozenset[str]] = {
         }
     ),
     ExportJobState.SUCCEEDED.value: frozenset(),
-    ExportJobState.FAILED_TERMINAL.value: frozenset(),
-    ExportJobState.CANCELLED.value: frozenset(),
+    # Terminal for the machine itself; an operator REPLAY (audited, with
+    # a required reason — replay_export_job) may re-queue the same job:
+    # same payload, same mapping, same business key.
+    ExportJobState.FAILED_TERMINAL.value: frozenset({ExportJobState.PENDING.value}),
+    ExportJobState.CANCELLED.value: frozenset({ExportJobState.PENDING.value}),
 }
 
 
@@ -249,6 +252,41 @@ async def transition_export_job(
     return job
 
 
+async def replay_export_job(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    job: ExportJob,
+    actor_id: str,
+    reason: str,
+) -> ExportJob:
+    """Operator replay of a settled (failed_terminal/cancelled) export:
+    the SAME job re-queues — same payload reference, same pinned mapping,
+    same business key — with the reason on the audit record. Nothing is
+    re-extracted or re-derived."""
+    if not reason.strip():
+        raise ValueError("replay needs a reason")
+    if job.state not in (
+        ExportJobState.FAILED_TERMINAL.value,
+        ExportJobState.CANCELLED.value,
+    ):
+        raise InvalidExportTransitionError(job.id, job.state, "replayed")
+    from_state = job.state
+    job.state = ExportJobState.PENDING.value
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor_id,
+        action="export_job.replayed",
+        target_type="export_job",
+        target_id=str(job.id),
+        organization_id=context.organization_id,
+        summary={"from": from_state, "reason": reason.strip(), "business_key": job.business_key},
+    )
+    return job
+
+
 async def record_delivery_attempt(
     session: AsyncSession,
     context: OrganizationContext,
@@ -295,5 +333,6 @@ __all__ = [
     "create_export_job",
     "export_business_key",
     "record_delivery_attempt",
+    "replay_export_job",
     "transition_export_job",
 ]

@@ -108,7 +108,7 @@ def validate_destination(
     url: str,
     *,
     allowlist: Sequence[str],
-    resolve: Callable[[str], list[str]] = _default_resolver,
+    resolve: Callable[[str], list[str]] | None = None,
 ) -> None:
     """Refuse anything that is not an explicitly allowlisted PUBLIC HTTPS
     destination. Fails closed: no allowlist means no deliveries."""
@@ -125,8 +125,9 @@ def validate_destination(
         )
     if not _host_allowed(host, allowlist):
         raise DestinationRefusedError(f"host {host!r} is not on the destination allowlist")
+    resolver = resolve or _default_resolver
     try:
-        addresses = resolve(host)
+        addresses = resolver(host)
     except OSError as error:
         raise DestinationRefusedError(f"cannot resolve {host!r}: {error}") from None
     if not addresses:
@@ -173,7 +174,7 @@ async def deliver_webhook(
     attempt_number: int,
     timestamp: int,
     allowlist: Sequence[str],
-    resolve: Callable[[str], list[str]] = _default_resolver,
+    resolve: Callable[[str], list[str]] | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> WebhookResult:
     """One delivery attempt. The business key rides the idempotency

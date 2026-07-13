@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.services.canonical import build_canonical_order, persist_canonical_order
+from soa_api.services.export_orchestration import schedule_exports_on_approval
 from soa_api.services.revalidation import revalidate_run
 from soa_canonical.mapping import CanonicalMappingError
 from soa_db.audit import ActorType, record_audit_event
@@ -187,6 +188,18 @@ async def approve_document(
         order=order,
         actor_id=actor,
     )
+    # Approval TRIGGERS export (EXP-008): jobs for every deliverable
+    # integration, in this same transaction. Idempotent business keys +
+    # deduped queue jobs keep the intent exactly-once even if approval
+    # events replay.
+    exports = await schedule_exports_on_approval(
+        session,
+        context,
+        document=document,
+        run_id=task.run_id,
+        canonical_payload_id=canonical.id,
+        actor_id=actor,
+    )
     await transition_document(
         session,
         context,
@@ -248,6 +261,7 @@ async def approve_document(
         "warnings": remaining,
         "override_used": override_used,
         "canonical_payload_id": str(canonical.id),
+        "exports_scheduled": len(exports),
     }
 
 
