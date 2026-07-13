@@ -182,7 +182,7 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         assert validating.output_summary["decision"]["route"] == "approved"
         assert validating.output_summary["decision"]["reasons"] == []
         assert validating.output_summary["evaluation"]["blocking"] is False
-        assert validating.output_summary["rules_version"] == "1.0.0"
+        assert validating.output_summary["rules_version"] == "1.1.0"
         assert by_stage["extracting"].provider == "mock"
 
 

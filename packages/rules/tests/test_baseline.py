@@ -81,12 +81,14 @@ def test_delivery_before_order_date_fires() -> None:
     assert ("dates.delivery_after_order", None) in fired
 
 
-def test_missing_delivery_date_does_not_fire_the_date_rule() -> None:
-    # The date-order rule is indeterminate without the optional date; it
-    # must not be reported as a violation.
-    assert ("dates.delivery_after_order", None) not in triggered_keys(
-        clean_order(requested_delivery_date=None)
+def test_missing_delivery_date_passes_the_date_rule() -> None:
+    # The delivery date is optional: without it the guarded rule PASSES
+    # (not indeterminate), so the document is not parked in review.
+    result = evaluate_rule_set(
+        baseline_sales_order_rules(), clean_order(requested_delivery_date=None)
     )
+    finding = next(f for f in result.findings if f.rule_key == "dates.delivery_after_order")
+    assert finding.status == "passed"
 
 
 def test_zero_quantity_and_negative_price_fire_on_their_row() -> None:

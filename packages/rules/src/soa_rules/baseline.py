@@ -21,7 +21,73 @@ review rather than blocking — policy can tighten it per stream.
 from typing import Any
 
 #: Bump on ANY change to rules or tolerances below.
-BASELINE_VERSION = "1.0.0"
+BASELINE_VERSION = "1.1.0"  # 1.1.0: date-order rule guarded for the optional delivery date
+
+#: The canonical sales-order schema, shared by everything that runs the
+#: baseline until per-stream config resolution lands: the worker's stage
+#: pipeline, the mock provider's fixture, and the API's correction
+#: normalization all read THESE maps, so they cannot drift apart.
+CANONICAL_FIELD_TYPES: dict[str, str] = {
+    "po_number": "text",
+    "order_date": "date",
+    "requested_delivery_date": "date",
+    "customer_name": "text",
+    "currency": "enum",
+    "total_amount": "money",
+    "delivery_terms": "text",
+    "lines": "table",
+    "lines.sku": "text",
+    "lines.description": "text",
+    "lines.quantity": "number",
+    "lines.unit_price": "money",
+    "lines.line_total": "money",
+}
+
+CANONICAL_CRITICALITY: dict[str, str] = {
+    "po_number": "critical",
+    "order_date": "critical",
+    "requested_delivery_date": "standard",
+    "customer_name": "standard",
+    "currency": "standard",
+    "total_amount": "standard",
+    "delivery_terms": "informational",
+    "lines.sku": "standard",
+    "lines.description": "standard",
+    "lines.quantity": "standard",
+    "lines.unit_price": "standard",
+    "lines.line_total": "standard",
+}
+
+CANONICAL_ENUM_VALUES: dict[str, tuple[str, ...]] = {
+    "currency": ("USD", "EUR", "GBP"),
+}
+
+#: Per-key normalizer overrides; the PRC-008 type default applies otherwise.
+CANONICAL_NORMALIZER_OVERRIDES: dict[str, str] = {
+    "po_number": "identifier",
+    "lines.sku": "identifier",
+}
+
+#: Default PRC-008 normalizer per schema field type (names, not code —
+#: soa_normalize owns the semantics behind each name).
+TYPE_DEFAULT_NORMALIZERS: dict[str, str] = {
+    "text": "trim",
+    "date": "date_iso",
+    "money": "money",
+    "number": "decimal",
+    "boolean": "boolean",
+    "enum": "enum",
+}
+
+
+def canonical_normalizer_for(field_key: str) -> str | None:
+    """The normalizer name for a canonical field, override first."""
+    override = CANONICAL_NORMALIZER_OVERRIDES.get(field_key)
+    if override is not None:
+        return override
+    field_type = CANONICAL_FIELD_TYPES.get(field_key)
+    return TYPE_DEFAULT_NORMALIZERS.get(field_type) if field_type else None
+
 
 #: Per-line: |quantity x unit_price - line_total| <= one cent.
 LINE_TOTAL_ABS_TOLERANCE = "0.01"
@@ -82,10 +148,19 @@ def baseline_sales_order_rules() -> list[dict[str, Any]]:
             "key": "dates.delivery_after_order",
             "severity": "error",
             "action": "route_to_review",
+            # Guarded by is_present: the delivery date is OPTIONAL, so its
+            # absence makes this rule pass (Kleene AND with false), not
+            # indeterminate — an order without one must not park in review.
             "condition": {
-                "op": "gt",
-                "left": _field("order_date"),
-                "right": _field("requested_delivery_date"),
+                "op": "and",
+                "args": [
+                    {"op": "is_present", "key": "requested_delivery_date"},
+                    {
+                        "op": "gt",
+                        "left": _field("order_date"),
+                        "right": _field("requested_delivery_date"),
+                    },
+                ],
             },
             "message": "Requested delivery date is before the order date",
         },

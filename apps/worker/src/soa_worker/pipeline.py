@@ -47,7 +47,13 @@ from soa_rules import (
     decide_route,
     evaluate_rule_set,
 )
-from soa_rules.baseline import BASELINE_VERSION, baseline_sales_order_rules
+from soa_rules.baseline import (
+    BASELINE_VERSION,
+    CANONICAL_CRITICALITY,
+    CANONICAL_NORMALIZER_OVERRIDES,
+    TYPE_DEFAULT_NORMALIZERS,
+    baseline_sales_order_rules,
+)
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
@@ -62,16 +68,6 @@ from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOut
 from soa_worker.rendering import RenderError, RenderLimits, render_document
 
 ACTOR = "system:pipeline"
-
-#: Default normalizer per schema field type; per-key overrides win.
-_TYPE_NORMALIZERS = {
-    "text": "trim",
-    "date": "date_iso",
-    "money": "money",
-    "number": "decimal",
-    "boolean": "boolean",
-    "enum": "enum",
-}
 
 
 @dataclass(frozen=True)
@@ -92,33 +88,20 @@ class PipelineConfig:
 
     def normalizer_for(self, spec: FieldSpec) -> str | None:
         override = self.normalizer_overrides.get(spec.key)
-        return override or _TYPE_NORMALIZERS.get(spec.field_type)
+        return override or TYPE_DEFAULT_NORMALIZERS.get(spec.field_type)
 
 
 def canonical_sales_order_config() -> PipelineConfig:
     """The platform's stock sales-order pipeline configuration —
-    the PRC-006 fixture schema + PRC-010 baseline rules + PRC-011
-    baseline policy, US-locale normalization."""
+    the shared canonical schema (soa_rules.baseline) + PRC-010 baseline
+    rules + PRC-011 baseline policy, US-locale normalization."""
     return PipelineConfig(
         field_specs=SYNTHETIC_SALES_ORDER_FIELD_SPECS,
-        criticality={
-            "po_number": "critical",
-            "order_date": "critical",
-            "requested_delivery_date": "standard",
-            "customer_name": "standard",
-            "currency": "standard",
-            "total_amount": "standard",
-            "delivery_terms": "informational",
-            "lines.sku": "standard",
-            "lines.description": "standard",
-            "lines.quantity": "standard",
-            "lines.unit_price": "standard",
-            "lines.line_total": "standard",
-        },
+        criticality=CANONICAL_CRITICALITY,
         rules=baseline_sales_order_rules(),
         rules_version=BASELINE_VERSION,
         normalization=NormalizationContext(locale="en-US", currency="USD"),
-        normalizer_overrides={"po_number": "identifier", "lines.sku": "identifier"},
+        normalizer_overrides=CANONICAL_NORMALIZER_OVERRIDES,
     )
 
 

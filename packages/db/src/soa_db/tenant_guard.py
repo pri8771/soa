@@ -48,6 +48,7 @@ RLS_PROTECTED_TABLES = (
     "document_pages",  # 0022
     "extracted_fields",  # 0023
     "review_tasks",  # 0024
+    "field_corrections",  # 0025
 )
 
 

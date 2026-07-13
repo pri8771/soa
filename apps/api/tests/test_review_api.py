@@ -370,3 +370,233 @@ async def test_workspace_returns_the_full_bounded_read_model(
         client.get(f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=AUDITOR).status_code
         == 403
     )
+
+
+async def seed_correctable_task(client: TestClient, db: DatabaseSessions) -> tuple[str, int]:
+    """A claimed task over a run whose po_number is missing (a blocking
+    rule) and whose total disagrees with the lines — both correctable."""
+    from soa_db.extracted_fields import Evidence, EvidenceCertainty, create_extracted_field
+    from soa_db.runs import start_run
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        document = await create_document(
+            session,
+            context,
+            stream_id=stream_id,
+            source_channel=SourceChannel.UPLOAD,
+            original_filename="po-correct.pdf",
+            content_sha256="e" * 64,
+            size_bytes=100,
+            content_type="application/pdf",
+            actor_id="user:test",
+        )
+        run = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256="e" * 64,
+            stream_version_id=None,
+            config_fingerprint=None,
+            triggered_by="system:test",
+        )
+        values: list[tuple[str, str | None, int | None]] = [
+            ("po_number", None, None),  # missing: blocking rule fires
+            ("order_date", "2026-03-14", None),
+            ("customer_name", "Acme", None),
+            ("currency", "USD", None),
+            ("total_amount", "999.99", None),  # disagrees with the line
+            ("lines.sku", "WID-100", 0),
+            ("lines.quantity", "10", 0),
+            ("lines.unit_price", "45.00", 0),
+            ("lines.line_total", "450.00", 0),
+        ]
+        for key, value, row in values:
+            await create_extracted_field(
+                session,
+                context,
+                document_id=document.id,
+                run_id=run.id,
+                field_key=key,
+                raw_value=value,
+                # order_date is CRITICAL: give it a passing confidence so
+                # the only review reasons are the two seeded defects.
+                confidence=(0.99 if key == "order_date" else 0.9) if value is not None else 0.0,
+                provider="mock",
+                row_index=row,
+                normalized_value=value,
+                # Critical fields need evidence to auto-approve (PRC-011).
+                evidence=(
+                    (Evidence(page_number=1, certainty=EvidenceCertainty.PAGE),)
+                    if key == "order_date"
+                    else ()
+                ),
+            )
+        task = await route_document_to_review(
+            session,
+            context,
+            document_id=document.id,
+            run_id=run.id,
+            reasons=[
+                {
+                    "code": "rule_triggered",
+                    "message": "PO number is required",
+                    "field_key": None,
+                    "row_index": None,
+                    "rule_key": "required.po_number",
+                }
+            ],
+            priority=10,
+        )
+        task_id = str(task.id)
+    claimed = client.post(f"/orgs/northstar/review-tasks/{task_id}/claim", headers=SUPERVISOR)
+    assert claimed.status_code == 200
+    return task_id, claimed.json()["version"]
+
+
+def correct(
+    client: TestClient,
+    task_id: str,
+    version: int,
+    headers: dict[str, str],
+    **body: object,
+) -> object:
+    payload = {"expected_version": version, **body}
+    return client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/corrections", json=payload, headers=headers
+    )
+
+
+async def test_corrections_append_normalize_and_revalidate(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+
+    # Fix the missing PO number: the blocking rule stops firing.
+    first = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="po_number",
+        value=" po-100042 ",
+        reason="read from the document",
+    )
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload["correction"]["corrected_raw_value"] == " po-100042 "
+    assert payload["correction"]["corrected_normalized_value"] == "PO-100042"
+    assert payload["task_version"] > version
+    reasons = [r["code"] for r in payload["revalidation"]["decision"]["reasons"]]
+    assert "rule_triggered" in reasons  # the totals mismatch still stands
+
+    # Fix the total: the run now validates clean and would approve.
+    second = correct(
+        client,
+        task_id,
+        payload["task_version"],
+        SUPERVISOR,
+        field_key="total_amount",
+        value="450.00",
+        reason="header total was misread",
+    )
+    assert second.status_code == 200, second.text
+    revalidation = second.json()["revalidation"]
+    assert revalidation["decision"]["route"] == "approved", revalidation["decision"]["reasons"]
+    assert revalidation["decision"]["reasons"] == []
+    assert revalidation["evaluation"]["blocking"] is False
+
+    # The original extraction is untouched (immutable), the audit trail
+    # has both corrections.
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        from soa_db.extracted_fields import ExtractedFieldRepository
+        from soa_db.review_tasks import ReviewTaskRepository
+
+        task = await ReviewTaskRepository(session, context).get(uuid.UUID(task_id))
+        assert task is not None
+        fields = await ExtractedFieldRepository(session, context).list_for_run(task.run_id)
+        by_key = {(f.field_key, f.row_index): f for f in fields}
+        assert by_key[("po_number", None)].raw_value is None  # original retained
+        assert by_key[("total_amount", None)].raw_value == "999.99"
+        assert by_key[("total_amount", None)].validation_status == "passed"
+    detail_timeline = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()["history"]
+    corrected = [e for e in detail_timeline if e["action"] == "review.field_corrected"]
+    assert len(corrected) == 2
+
+
+async def test_stale_version_is_refused_without_saving(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    ok = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="po_number",
+        value="PO-1",
+    )
+    assert ok.status_code == 200
+    # A second editor still holding the old version is refused loudly.
+    stale = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="po_number",
+        value="PO-2",
+    )
+    assert stale.status_code == 409
+    assert "Reload before editing" in stale.json()["error"]["message"]
+
+
+async def test_only_the_assignee_may_correct(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    denied = correct(
+        client,
+        task_id,
+        version,
+        ADMIN,
+        field_key="po_number",
+        value="PO-1",
+    )
+    assert denied.status_code == 403
+    unknown_field = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="nonexistent",
+        value="x",
+    )
+    assert unknown_field.status_code == 404
+
+
+async def test_unnormalizable_corrections_are_kept_with_their_error(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    response = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="order_date",
+        value="next tuesday",
+    )
+    assert response.status_code == 200
+    correction = response.json()["correction"]
+    assert correction["corrected_normalized_value"] is None
+    assert "unrecognized date format" in correction["normalization_error"]

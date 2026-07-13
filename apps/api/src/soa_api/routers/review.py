@@ -26,7 +26,13 @@ from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_api.services.revalidation import normalize_correction, revalidate_run
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
+from soa_db.corrections import (
+    FieldCorrectionRepository,
+    latest_corrections,
+    record_correction,
+)
 from soa_db.documents import Document, DocumentRepository
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository
 from soa_db.pages import DocumentPageRepository
@@ -471,4 +477,115 @@ async def review_workspace(
         "pages": page_rows,
         "history": history,
         "context": context,
+    }
+
+
+class CorrectionRequest(BaseModel):
+    field_key: str = Field(min_length=1, max_length=255)
+    row_index: int | None = None
+    #: The corrected raw value; null/empty clears the field.
+    value: str | None = Field(default=None, max_length=10_000)
+    reason: str | None = Field(default=None, max_length=500)
+    #: Evidence span the reviewer relied on (page/polygon/quote), optional.
+    evidence_selection: dict[str, Any] | None = None
+    #: The task version this correction was authored against (If-Match).
+    expected_version: int
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/corrections")
+async def correct_field(
+    task_id: uuid.UUID,
+    body: CorrectionRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Record a field correction (REV-009): APPEND-ONLY on top of the
+    immutable extraction, optimistic-locked on the task version so
+    concurrent editors can never silently overwrite each other, and
+    followed by a revalidation whose fresh decision comes back in the
+    response."""
+
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    if task.state != ReviewTaskState.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The task is {task.state}; claim it before correcting fields.",
+        )
+    actor = _actor(authorized)
+    if task.assigned_to != actor:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"The task is assigned to {task.assigned_to}; only the assignee may edit.",
+        )
+    if body.expected_version != task.version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The task changed since you loaded it (server version {task.version}, "
+                f"yours {body.expected_version}). Reload before editing — nothing was saved."
+            ),
+        )
+
+    fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
+        task.run_id
+    )
+    target = next(
+        (f for f in fields if f.field_key == body.field_key and f.row_index == body.row_index),
+        None,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="That field does not exist on this run.",
+        )
+
+    previous = latest_corrections(
+        await FieldCorrectionRepository(session, authorized.org_context).list_for_run(task.run_id)
+    ).get((body.field_key, body.row_index))
+    previous_raw = previous.corrected_raw_value if previous else target.raw_value
+
+    corrected_raw = body.value if body.value is not None and body.value != "" else None
+    normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)
+    correction = await record_correction(
+        session,
+        authorized.org_context,
+        document_id=task.document_id,
+        run_id=task.run_id,
+        task_id=task.id,
+        field_key=body.field_key,
+        row_index=body.row_index,
+        previous_raw_value=previous_raw,
+        corrected_raw_value=corrected_raw,
+        corrected_normalized_value=normalized,
+        normalization_error=normalization_error,
+        reason=body.reason,
+        evidence_selection=body.evidence_selection,
+        corrected_by=actor,
+        task_version=task.version,
+    )
+    # Bump the optimistic version: every correction is a task change.
+    task.updated_at = utcnow()
+    await session.flush()
+
+    document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
+    revalidation = (
+        await revalidate_run(session, authorized.org_context, document=document, run_id=task.run_id)
+        if document is not None
+        else None
+    )
+    return {
+        "correction": {
+            "id": str(correction.id),
+            "field_key": correction.field_key,
+            "row_index": correction.row_index,
+            "previous_raw_value": correction.previous_raw_value,
+            "corrected_raw_value": correction.corrected_raw_value,
+            "corrected_normalized_value": correction.corrected_normalized_value,
+            "normalization_error": correction.normalization_error,
+            "corrected_by": correction.corrected_by,
+        },
+        "task_version": task.version,
+        "revalidation": revalidation,
     }

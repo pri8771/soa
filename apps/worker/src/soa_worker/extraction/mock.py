@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from soa_rules.baseline import CANONICAL_ENUM_VALUES, CANONICAL_FIELD_TYPES
 from soa_worker.extraction.provider import (
     EvidenceSpan,
     ExtractedField,
@@ -213,22 +214,13 @@ SYNTHETIC_SALES_ORDER_DOCUMENT_ID = uuid.uuid5(
     uuid.NAMESPACE_URL, "soa:fixture:synthetic-sales-order"
 )
 
-SYNTHETIC_SALES_ORDER_FIELD_SPECS: tuple[FieldSpec, ...] = (
-    FieldSpec("po_number", "text"),
-    FieldSpec("order_date", "date"),
-    FieldSpec("requested_delivery_date", "date"),
-    FieldSpec("customer_name", "text"),
-    FieldSpec("currency", "enum", enum_values=("USD", "EUR", "GBP")),
-    FieldSpec("total_amount", "money"),
-    #: A field the fixture deliberately does NOT contain — exercises the
-    #: honest-absence path.
-    FieldSpec("delivery_terms", "text"),
-    FieldSpec("lines", "table"),
-    FieldSpec("lines.sku", "text"),
-    FieldSpec("lines.description", "text"),
-    FieldSpec("lines.quantity", "number"),
-    FieldSpec("lines.unit_price", "money"),
-    FieldSpec("lines.line_total", "money"),
+#: Built from the shared canonical schema (soa_rules.baseline) so the
+#: fixture cannot drift from what the pipeline and API believe the
+#: sales-order schema is. delivery_terms is deliberately NOT in the
+#: fixture VALUES — it exercises the honest-absence path.
+SYNTHETIC_SALES_ORDER_FIELD_SPECS: tuple[FieldSpec, ...] = tuple(
+    FieldSpec(key, field_type, enum_values=CANONICAL_ENUM_VALUES.get(key))
+    for key, field_type in CANONICAL_FIELD_TYPES.items()
 )
 
 
