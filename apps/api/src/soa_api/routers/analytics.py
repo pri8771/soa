@@ -19,8 +19,12 @@ from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
 from soa_db.analytics import operational_snapshot
 from soa_db.analytics_quality import quality_snapshot
+from soa_db.feature_flags import resolve_flag
 from soa_db.types import utcnow
 from soa_db.usage_ledger import usage_summary
+
+#: The ANA-009 quota key the cost dashboard reads.
+COST_QUOTA_KEY = "quota.monthly_cost_cents"
 
 router = APIRouter(tags=["analytics"])
 
@@ -155,13 +159,25 @@ async def usage_dashboard(
     honestly absent until the ANA-009 quota policy lands."""
     since_dt, until_dt = _window(since, until)
     summary = await usage_summary(session, authorized.org_context, since=since_dt, until=until_dt)
-    return {
-        **summary,
-        "quotas": {
+    quota = await resolve_flag(session, authorized.org_context, key=COST_QUOTA_KEY)
+    if quota.limit_value is not None:
+        spent = summary["totals"]["reconciled_cents"]
+        quotas: dict[str, Any] = {
+            "configured": True,
+            "key": COST_QUOTA_KEY,
+            "limit_cents": quota.limit_value,
+            "spent_cents": spent,
+            "risk_ratio": round(spent / quota.limit_value, 4) if quota.limit_value else None,
+            "source": quota.source,
+            "notes": list(quota.notes),
+        }
+    else:
+        quotas = {
             "configured": False,
             "reason": (
-                "no quota policy is configured yet (ANA-009) — usage is shown "
-                "without budget thresholds or alerts"
+                f"no {COST_QUOTA_KEY!r} quota is set for this organization "
+                "(ANA-009 flag API) — usage is shown without budget thresholds"
             ),
-        },
-    }
+            "notes": list(quota.notes),
+        }
+    return {**summary, "quotas": quotas}

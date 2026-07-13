@@ -1119,7 +1119,15 @@ export interface UsageSnapshot {
   groups: UsageGroup[];
   totals: { estimated_cents: number; adjustment_cents: number; reconciled_cents: number };
   semantics: Record<string, string>;
-  quotas: { configured: boolean; reason: string };
+  quotas: {
+    configured: boolean;
+    reason?: string;
+    key?: string;
+    limit_cents?: number;
+    spent_cents?: number;
+    risk_ratio?: number | null;
+    notes?: string[];
+  };
 }
 
 export function fetchUsageSnapshot(organizationSlug: string): Promise<UsageSnapshot> {

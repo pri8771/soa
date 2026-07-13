@@ -65,6 +65,7 @@ RLS_PROTECTED_TABLES = (
     "catalog_records",  # 0033
     "catalog_bindings",  # 0033
     "usage_ledger_entries",  # 0034
+    "feature_flags",  # 0035
 )
 
 

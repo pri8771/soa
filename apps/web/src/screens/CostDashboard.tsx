@@ -70,11 +70,19 @@ export function CostDashboard() {
           Window: {windowLabel}
         </p>
 
-        {!data.quotas.configured ? (
+        {data.quotas.configured ? (
+          <Banner
+            tone={(data.quotas.risk_ratio ?? 0) >= 0.8 ? "warning" : "info"}
+            title={`Budget: $${((data.quotas.spent_cents ?? 0) / 100).toFixed(2)} of $${((data.quotas.limit_cents ?? 0) / 100).toFixed(2)} used (${Math.round((data.quotas.risk_ratio ?? 0) * 100)}%)`}
+          >
+            Quota {data.quotas.key} — reconciled spend against the configured limit.
+            {(data.quotas.risk_ratio ?? 0) >= 0.8 ? " Approaching the budget." : ""}
+          </Banner>
+        ) : (
           <Banner tone="info" title="No budget thresholds yet">
             {data.quotas.reason}
           </Banner>
-        ) : null}
+        )}
 
         <section aria-label="Totals" style={{ display: "flex", gap: "var(--soa-space-4)" }}>
           <div>
