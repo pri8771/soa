@@ -464,3 +464,60 @@ export function publishStreamVersion(
     { method: "POST" },
   );
 }
+
+// --- Process versions: timeline, diff, rollback (CFG-007/014) ---
+
+export interface ProcessVersionSummary {
+  id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+  version: number;
+}
+
+export interface ProcessVersionDetail extends ProcessVersionSummary {
+  definition: Record<string, unknown>;
+}
+
+export interface ProcessDetail {
+  process: {
+    id: string;
+    name: string;
+    slug: string;
+    status: "active" | "archived";
+    active_version_id: string | null;
+    version: number;
+  };
+  versions: ProcessVersionSummary[];
+}
+
+export function fetchProcessDetail(
+  organizationSlug: string,
+  processSlug: string,
+): Promise<ProcessDetail> {
+  return apiFetch<ProcessDetail>(`/orgs/${organizationSlug}/processes/${processSlug}`);
+}
+
+export function fetchProcessVersion(
+  organizationSlug: string,
+  processSlug: string,
+  versionId: string,
+): Promise<ProcessVersionDetail> {
+  return apiFetch<ProcessVersionDetail>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/versions/${versionId}`,
+  );
+}
+
+export function rollbackProcess(
+  organizationSlug: string,
+  processSlug: string,
+  targetVersionId: string,
+  reason: string,
+): Promise<ProcessDetail["process"]> {
+  return apiFetch<ProcessDetail["process"]>(
+    `/orgs/${organizationSlug}/processes/${processSlug}/rollback`,
+    { method: "POST", body: JSON.stringify({ target_version_id: targetVersionId, reason }) },
+  );
+}

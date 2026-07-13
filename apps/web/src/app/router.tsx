@@ -10,6 +10,7 @@ import { AppLayout } from "../screens/AppLayout";
 import { Home } from "../screens/Home";
 import { JobsQueue } from "../screens/JobsQueue";
 import { Processes } from "../screens/Processes";
+import { ProcessVersions } from "../screens/ProcessVersions";
 import { RuleBuilder } from "../screens/RuleBuilder";
 import { SchemaBuilder } from "../screens/SchemaBuilder";
 import { StreamConfigure } from "../screens/StreamConfigure";
@@ -83,6 +84,12 @@ const ruleBuilderRoute = createRoute({
   component: RuleBuilder,
 });
 
+const processVersionsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "processes/$processSlug/versions",
+  component: ProcessVersions,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams",
@@ -112,6 +119,7 @@ const routeTree = rootRoute.addChildren([
     processesRoute,
     schemaBuilderRoute,
     ruleBuilderRoute,
+    processVersionsRoute,
     streamsRoute,
     streamDetailRoute,
     streamConfigureRoute,

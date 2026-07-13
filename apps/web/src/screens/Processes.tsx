@@ -70,6 +70,9 @@ function ConfigureLinks({ processSlug }: { processSlug: string }) {
       <Link to="/app/$organizationSlug/processes/$processSlug/rules" params={params}>
         Rules
       </Link>
+      <Link to="/app/$organizationSlug/processes/$processSlug/versions" params={params}>
+        Versions
+      </Link>
     </span>
   );
 }

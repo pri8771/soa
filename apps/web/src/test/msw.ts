@@ -197,6 +197,63 @@ export const DEFAULT_SCHEMA_LISTING = {
   published_json_schema: { type: "object" },
 };
 
+export const PROCESS_VERSION_IDS = {
+  v1: "30000000-0000-4000-8000-000000000001",
+  v2: "30000000-0000-4000-8000-000000000002",
+  v3: "32222222-2222-4222-8222-222222222222",
+};
+
+export const DEFAULT_PROCESS_DETAIL = {
+  process: {
+    id: "31111111-1111-4111-8111-111111111111",
+    name: "Purchase orders",
+    slug: "purchase-orders",
+    status: "active",
+    active_version_id: PROCESS_VERSION_IDS.v3,
+    version: 4,
+  },
+  versions: [
+    {
+      id: PROCESS_VERSION_IDS.v1,
+      version_number: 1,
+      state: "superseded",
+      change_summary: "initial configuration",
+      published_at: "2026-07-01T10:00:00+00:00",
+      published_by: "user:u-1",
+      version: 3,
+    },
+    {
+      id: PROCESS_VERSION_IDS.v2,
+      version_number: 2,
+      state: "superseded",
+      change_summary: "raise confidence floor",
+      published_at: "2026-07-05T10:00:00+00:00",
+      published_by: "user:u-1",
+      version: 3,
+    },
+    {
+      id: PROCESS_VERSION_IDS.v3,
+      version_number: 3,
+      state: "published",
+      change_summary: "switch to German",
+      published_at: "2026-07-10T10:00:00+00:00",
+      published_by: "user:u-1",
+      version: 2,
+    },
+  ],
+};
+
+/** v2 embeds a secret-looking key so tests can prove the diff redacts it. */
+export const PROCESS_VERSION_DEFINITIONS: Record<string, Record<string, unknown>> = {
+  [PROCESS_VERSION_IDS.v1]: { language: "en" },
+  [PROCESS_VERSION_IDS.v2]: {
+    language: "en",
+    confidence_floor: 0.9,
+    api_token: "sk-live-verysecret",
+  },
+  [PROCESS_VERSION_IDS.v3]: { language: "de", confidence_floor: 0.9 },
+};
+
 export const DEFAULT_RULES_DRAFT = {
   id: "61111111-1111-4111-8111-111111111111",
   version_number: 1,
@@ -242,6 +299,18 @@ export const handlers = [
   }),
   http.get("/api/orgs/:slug/streams/:streamSlug", () => HttpResponse.json(DEFAULT_STREAM_DETAIL)),
   http.get("/api/orgs/:slug/processes", () => HttpResponse.json(DEFAULT_PROCESSES)),
+  http.get("/api/orgs/:slug/processes/:processSlug", () =>
+    HttpResponse.json(DEFAULT_PROCESS_DETAIL),
+  ),
+  http.get("/api/orgs/:slug/processes/:processSlug/versions/:versionId", ({ params }) => {
+    const versionId = String(params["versionId"]);
+    const summary = DEFAULT_PROCESS_DETAIL.versions.find((v) => v.id === versionId);
+    const definition = PROCESS_VERSION_DEFINITIONS[versionId];
+    if (!summary || !definition) {
+      return HttpResponse.json({ error: { message: "Version not found." } }, { status: 404 });
+    }
+    return HttpResponse.json({ ...summary, definition });
+  }),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),
   http.get("/api/orgs/:slug/jobs/stats", () => HttpResponse.json(DEFAULT_JOB_STATS)),
   http.get("/api/orgs/:slug/jobs", ({ request }) => {
