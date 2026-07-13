@@ -12,6 +12,7 @@ from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import (
     artifacts,
+    catalogs,
     documents,
     email_intake,
     exports,
@@ -157,6 +158,7 @@ def create_app(
     app.include_router(organizations.router)
     app.include_router(jobs.router)
     app.include_router(processes.router)
+    app.include_router(catalogs.router)
     app.include_router(providers.router)
     app.include_router(artifacts.router)
     app.include_router(uploads.router)

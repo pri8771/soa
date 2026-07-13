@@ -43,6 +43,10 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         "streams.manage",
         "catalogs.read",
         "catalogs.manage",
+        # Activating a catalog version changes what production matches
+        # against — deliberately a separate grant from catalogs.manage
+        # (CAT-004 read/import/activate split).
+        "catalogs.activate",
         "integrations.read",
         "integrations.manage",
         "integrations.replay",

@@ -26,13 +26,14 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import Date, Index, String, UniqueConstraint, text
+from sqlalchemy import Date, Index, String, UniqueConstraint, cast, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.outbox import PORTABLE_JSON
+from soa_db.pagination import CursorRequest, Page, build_page
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
 from soa_db.types import GUID, UTCDateTime, utcnow
 from soa_db.versioning import (
@@ -168,6 +169,35 @@ class CatalogRecordRepository(ScopedRepository[CatalogRecord]):
             .order_by(CatalogRecord.source_id)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def search_page(
+        self,
+        catalog_version_id: uuid.UUID,
+        *,
+        request: "CursorRequest",
+        q: str | None = None,
+    ) -> "Page[CatalogRecord]":
+        """Cursor-paginated records, optionally filtered by a substring
+        of the source id, display name, or aliases."""
+        stmt = (
+            self._scoped_select()
+            .where(CatalogRecord.catalog_version_id == catalog_version_id)
+            .order_by(CatalogRecord.id)
+            .limit(request.limit + 1)
+        )
+        if request.after is not None:
+            stmt = stmt.where(CatalogRecord.id > request.after)
+        if q:
+            needle = f"%{q.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    func.lower(CatalogRecord.source_id).like(needle),
+                    func.lower(CatalogRecord.display_name).like(needle),
+                    func.lower(cast(CatalogRecord.aliases, String)).like(needle),
+                )
+            )
+        rows = list((await self._session.execute(stmt)).scalars().all())
+        return build_page(rows, request.limit, id_of=lambda row: row.id)
 
     async def get_by_source_id(
         self, catalog_version_id: uuid.UUID, source_id: str
