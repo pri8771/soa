@@ -1,0 +1,4 @@
+{
+  "_comment": "Active performance-regression waivers (REL-009). Each waiver is a TIME-LIMITED, attributed acceptance of a regression the staging perf gate would otherwise block, mirroring the SEC-011 vulnerability-exception model: an expired waiver stops excusing anything. Shape: {\"key\": \"catalog.match_index\", \"reason\": \"...\", \"owner\": \"perf@northstar.example\", \"expires\": \"2026-10-01\"}. Ships empty — no accepted performance regressions.",
+  "waivers": []
+}

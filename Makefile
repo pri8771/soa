@@ -95,6 +95,10 @@ build: ## Build all apps
 check-docs: ## Validate documentation links and documented commands
 	python3 scripts/check_docs.py
 
+.PHONY: perf
+perf: ## Run the performance test suite (REL-009)
+	uv run pytest tests/performance -o addopts=""
+
 .PHONY: docker-build
 docker-build: ## Build the API, worker, and web container images (REL-001)
 	docker build -f apps/api/Dockerfile -t soa-api .

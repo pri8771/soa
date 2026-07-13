@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-release performance baseline (REL-009). Reference p95 seconds for the CI-measured workloads, captured on a known machine. The staging perf run compares a release against these via soa_config.performance.compare_to_baseline (tolerance 0.25); a regression beyond tolerance blocks the release unless a perf/waivers.json entry covers it. The CI suite (tests/performance) enforces GENEROUS absolute ceilings independently, so machine-to-machine variance never flakes the build. Refresh these numbers when a legitimate, reviewed change moves them.",
+  "baseline": {
+    "catalog.match_index": 0.30,
+    "normalize.throughput": 0.08,
+    "rules.evaluate": 0.10
+  }
+}
