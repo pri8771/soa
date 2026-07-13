@@ -834,3 +834,282 @@ async def test_escalation_releases_reprioritizes_and_records_ownership(
         headers=SUPERVISOR,
     )
     assert blank.status_code == 400
+
+
+# --- Catalog candidate matching in review (CAT-010) ---
+
+
+async def bind_catalogs(client: TestClient, db: DatabaseSessions) -> None:
+    """A products catalog (for lines.sku) and a customers catalog (for
+    customer_name), both activated and rolling-bound to the stream."""
+    from soa_db.catalogs import (
+        CatalogBindingMode,
+        activate_catalog_version,
+        add_catalog_record,
+        bind_catalog_to_stream,
+        create_catalog,
+        create_catalog_version,
+    )
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+    context = OrganizationContext(organization_id=org_id)
+    catalogs: list[tuple[str, str, list[tuple[str, str, list[str]]]]] = [
+        (
+            "products",
+            "products",
+            [
+                ("WID-100", "Widget 100 (steel)", ["WIDGET 100"]),
+                ("WID-200", "Widget 200 (alloy)", []),
+                ("GAD-205", "Gadget 205", []),
+            ],
+        ),
+        ("customers", "customers", [("CUST-1", "Acme GmbH", ["Acme"])]),
+    ]
+    async with db.session_scope() as session:
+        for slug, catalog_type, records in catalogs:
+            catalog = await create_catalog(
+                session,
+                context,
+                name=slug.title(),
+                slug=slug,
+                catalog_type=catalog_type,
+                source="manual",
+                actor_id="user:test",
+            )
+            version = await create_catalog_version(
+                session, context, catalog=catalog, actor_id="user:test"
+            )
+            for source_id, name, aliases in records:
+                await add_catalog_record(
+                    session,
+                    context,
+                    version=version,
+                    source_id=source_id,
+                    display_name=name,
+                    aliases=aliases,
+                )
+            await activate_catalog_version(
+                session, context, catalog=catalog, version=version, actor_id="user:test"
+            )
+            await bind_catalog_to_stream(
+                session,
+                context,
+                stream_id=stream_id,
+                catalog=catalog,
+                mode=CatalogBindingMode.ROLLING,
+                actor_id="user:test",
+            )
+
+
+async def test_catalog_candidates_rank_with_explanations(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, _ = await seed_correctable_task(client, db)
+    await bind_catalogs(client, db)
+
+    # An exact identifier hit: score 1.0 with the tier as the explanation.
+    exact = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-candidates",
+        params={"field_key": "lines.sku", "q": "WID-100"},
+        headers=SUPERVISOR,
+    )
+    assert exact.status_code == 200, exact.text
+    payload = exact.json()
+    assert payload["available"] is True
+    assert payload["outcome"] == "auto_matched"
+    assert payload["machine_selected_source_id"] == "WID-100"
+    top = payload["candidates"][0]
+    assert (top["code"], top["score"]) == ("WID-100", 1.0)
+    assert top["features"][0]["name"] == "exact_identifier"
+    assert top["features"][0]["explanation"]
+
+    # A fuzzy query: every candidate carries per-feature explanations.
+    fuzzy = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-candidates",
+        params={"field_key": "lines.sku", "q": "Widgt 100 steel"},
+        headers=SUPERVISOR,
+    ).json()
+    assert fuzzy["candidates"], fuzzy["reasons"]
+    assert fuzzy["candidates"][0]["code"] == "WID-100"
+    for candidate in fuzzy["candidates"]:
+        assert {f["name"] for f in candidate["features"]} == {
+            "identifier",
+            "text_trigram",
+            "text_sequence",
+        }
+        assert all(f["explanation"] for f in candidate["features"])
+
+    # Fields the catalog does not match are refused with the list.
+    refused = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-candidates",
+        params={"field_key": "po_number", "q": "x"},
+        headers=SUPERVISOR,
+    )
+    assert refused.status_code == 400
+    assert "customer_name" in refused.json()["error"]["message"]
+
+
+async def test_catalog_candidates_without_a_binding_are_honest(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, _ = await seed_correctable_task(client, db)
+    response = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-candidates",
+        params={"field_key": "lines.sku", "q": "WID-100"},
+        headers=SUPERVISOR,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert "no products catalog bound" in payload["reason"]
+    assert payload["candidates"] == []
+
+
+async def test_catalog_selection_corrects_audits_and_revalidates(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    await bind_catalogs(client, db)
+
+    # Picking the machine's best candidate needs no override reason.
+    picked = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+        json={
+            "field_key": "lines.sku",
+            "row_index": 0,
+            "query": "WID-100",
+            "selected_source_id": "WID-100",
+            "expected_version": version,
+        },
+        headers=SUPERVISOR,
+    )
+    assert picked.status_code == 200, picked.text
+    payload = picked.json()
+    assert payload["override"] is False
+    # lines.sku is an identifier field: the correction is the source id.
+    assert payload["correction"]["corrected_raw_value"] == "WID-100"
+    assert payload["task_version"] > version
+    # Dependent validation recalculated: the fresh decision came back.
+    assert payload["revalidation"]["decision"]["route"] in ("approved", "review_required")
+
+    # customer_name is a text field: the correction is the display name.
+    named = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+        json={
+            "field_key": "customer_name",
+            "row_index": None,
+            "query": "Acme",
+            "selected_source_id": "CUST-1",
+            "expected_version": payload["task_version"],
+        },
+        headers=SUPERVISOR,
+    )
+    assert named.status_code == 200, named.text
+    assert named.json()["correction"]["corrected_raw_value"] == "Acme GmbH"
+
+    # The audit trail retains the FULL decision record for each pick.
+    history = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()["history"]
+    selections = [e for e in history if e["action"] == "catalog.match_selected"]
+    assert len(selections) == 2
+    decision = selections[0]["summary"]["decision"]
+    assert decision["outcome"] == "auto_matched"
+    assert decision["config_fingerprint"]
+    assert decision["exact_candidates"][0]["reason"]
+    assert selections[0]["summary"]["override"] is False
+
+
+async def test_catalog_override_requires_a_reason_and_becomes_a_labeled_example(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    await bind_catalogs(client, db)
+
+    def select(source_id: str | None, reason: str | None, expected: int) -> object:
+        body: dict[str, object] = {
+            "field_key": "lines.sku",
+            "row_index": 0,
+            "query": "WID-100",
+            "selected_source_id": source_id,
+            "expected_version": expected,
+        }
+        if reason is not None:
+            body["reason"] = reason
+        return client.post(
+            f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+            json=body,
+            headers=SUPERVISOR,
+        )
+
+    # Disagreeing with the machine without a written reason is refused.
+    refused = select("GAD-205", None, version)
+    assert refused.status_code == 400
+    assert "written reason" in refused.json()["error"]["message"]
+
+    # With a reason the override lands and is labeled for evaluation.
+    overridden = select("GAD-205", "the buyer's WID-100 is the gadget bundle", version)
+    assert overridden.status_code == 200, overridden.text
+    assert overridden.json()["override"] is True
+    assert overridden.json()["correction"]["corrected_raw_value"] == "GAD-205"
+
+    # Confirming NO match (with a reason) records the label, no correction.
+    confirmed = select(
+        None, "free-text item; not in the catalog", overridden.json()["task_version"]
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["correction"] is None
+    assert confirmed.json()["revalidation"] is None
+
+    history = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()["history"]
+    examples = [
+        e["summary"]["evaluation_example"]
+        for e in history
+        if e["action"] == "catalog.match_selected" and "evaluation_example" in e["summary"]
+    ]
+    assert len(examples) == 2
+    assert examples[0]["kind"] == "catalog_match_override"
+    assert examples[0]["human_selected_source_id"] == "GAD-205"
+    assert examples[0]["machine_selected_source_id"] == "WID-100"
+    assert examples[0]["agreed"] is False
+    assert examples[1]["human_selected_source_id"] is None
+
+    # A record outside the bound version is refused.
+    stale = select("SKU-DELETED", "why not", confirmed.json()["task_version"])
+    assert stale.status_code == 400
+    assert "not in the bound catalog version" in stale.json()["error"]["message"]
+
+
+async def test_catalog_selection_guards_assignment_and_version(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    await bind_catalogs(client, db)
+    body = {
+        "field_key": "lines.sku",
+        "row_index": 0,
+        "query": "WID-100",
+        "selected_source_id": "WID-100",
+        "expected_version": version,
+    }
+    # Only the assignee may pick.
+    denied = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection", json=body, headers=ADMIN
+    )
+    assert denied.status_code == 403
+    # A stale version is a loud 409, nothing saved.
+    stale = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+        json={**body, "expected_version": version + 7},
+        headers=SUPERVISOR,
+    )
+    assert stale.status_code == 409
+    assert "nothing was saved" in stale.json()["error"]["message"]

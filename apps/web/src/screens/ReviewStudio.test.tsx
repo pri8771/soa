@@ -374,3 +374,141 @@ describe("Review Studio approval actions (REV-013)", () => {
     expect(screen.queryByRole("button", { name: "Approve order…" })).not.toBeInTheDocument();
   });
 });
+
+describe("Review Studio catalog matching (CAT-010)", () => {
+  it("offers the picker on a catalog-matched cell and posts the best-match pick", async () => {
+    const user = userEvent.setup();
+    const posted: Record<string, unknown>[] = [];
+    server.use(
+      http.post(
+        "/api/orgs/northstar/review-tasks/:taskId/catalog-selection",
+        async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          posted.push(body);
+          return HttpResponse.json({
+            correction: {
+              id: "cor-cat-1",
+              field_key: body["field_key"],
+              row_index: body["row_index"],
+              previous_raw_value: "WID-1OO",
+              corrected_raw_value: body["selected_source_id"],
+              corrected_normalized_value: body["selected_source_id"],
+              normalization_error: null,
+              corrected_by: "user:u-1",
+            },
+            task_version: 4,
+            override: false,
+            revalidation: {
+              evaluation: { blocking: false },
+              decision: { route: "approved", reasons: [] },
+            },
+          });
+        },
+      ),
+    );
+    await renderApp(PATH);
+
+    // A field the catalog does not match offers no picker.
+    await user.click(await screen.findByLabelText("po number"));
+    expect(screen.queryByRole("region", { name: /Catalog match/ })).not.toBeInTheDocument();
+
+    // Focusing a sku cell offers the picker, seeded with the cell value.
+    await user.click(await screen.findByLabelText("sku row 0"));
+    const picker = await screen.findByRole("region", { name: "Catalog match for SKU" });
+    const search = within(picker).getByLabelText("Search catalog for SKU");
+    expect(search).toHaveValue("WID-100");
+
+    // Search: ranked candidates with score and per-feature explanation.
+    await user.click(within(picker).getByRole("button", { name: "Search catalog" }));
+    expect(await within(picker).findByText("WID-100")).toBeInTheDocument();
+    expect(within(picker).getByText("82% match")).toBeInTheDocument();
+    expect(within(picker).getByText("best match")).toBeInTheDocument();
+    const [explain] = within(picker).getAllByRole("button", { name: "Why this score" });
+    await user.click(explain);
+    expect(within(picker).getByText(/trigram overlap with 'Widget 100'/)).toBeInTheDocument();
+
+    // Picking the best match posts the selection without a reason.
+    await user.click(within(picker).getByRole("button", { name: "Pick WID-100" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({
+      field_key: "lines.sku",
+      row_index: 0,
+      query: "WID-100",
+      selected_source_id: "WID-100",
+      expected_version: 3,
+    });
+    expect(posted[0]).not.toHaveProperty("reason");
+    // The outcome is announced and the fresh decision is on screen.
+    expect(await screen.findByText(/Matched: the field is now “WID-100”/)).toBeInTheDocument();
+    expect(await screen.findByText("approved")).toBeInTheDocument();
+  });
+
+  it("picking a non-best candidate demands a written override reason", async () => {
+    const user = userEvent.setup();
+    const posted: Record<string, unknown>[] = [];
+    server.use(
+      http.post(
+        "/api/orgs/northstar/review-tasks/:taskId/catalog-selection",
+        async ({ request }) => {
+          posted.push((await request.json()) as Record<string, unknown>);
+          return HttpResponse.json({
+            correction: {
+              id: "cor-cat-2",
+              field_key: "lines.sku",
+              row_index: 0,
+              previous_raw_value: "WID-1OO",
+              corrected_raw_value: "GAD-205",
+              corrected_normalized_value: "GAD-205",
+              normalization_error: null,
+              corrected_by: "user:u-1",
+            },
+            task_version: 4,
+            override: true,
+            revalidation: null,
+          });
+        },
+      ),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByLabelText("sku row 0"));
+    const picker = await screen.findByRole("region", { name: "Catalog match for SKU" });
+    await user.click(within(picker).getByRole("button", { name: "Search catalog" }));
+    await user.click(await within(picker).findByRole("button", { name: "Pick GAD-205" }));
+
+    // Nothing posted yet — the override needs a stated reason first.
+    const override = within(picker).getByRole("group", { name: "Manual override" });
+    expect(posted).toHaveLength(0);
+    await user.type(
+      within(override).getByLabelText(/Override reason/),
+      "buyer's code maps to the gadget",
+    );
+    await user.click(within(override).getByRole("button", { name: "Pick with override" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({
+      selected_source_id: "GAD-205",
+      reason: "buyer's code maps to the gadget",
+    });
+    expect(await screen.findByText(/manual override recorded/)).toBeInTheDocument();
+  });
+
+  it("a stream without a usable catalog is stated in the picker, not a crash", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/catalog-candidates", () =>
+        HttpResponse.json({
+          available: false,
+          reason: "The document's stream has no products catalog bound.",
+          candidates: [],
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByLabelText("sku row 0"));
+    const picker = await screen.findByRole("region", { name: "Catalog match for SKU" });
+    await user.click(within(picker).getByRole("button", { name: "Search catalog" }));
+    expect(await within(picker).findByText("Catalog lookup failed")).toBeInTheDocument();
+    expect(
+      within(picker).getByText("The document's stream has no products catalog bound."),
+    ).toBeInTheDocument();
+  });
+});

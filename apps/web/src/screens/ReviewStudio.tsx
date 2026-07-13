@@ -19,13 +19,20 @@ import {
   approveReviewTask,
   correctField,
   escalateReviewTask,
+  fetchCatalogCandidates,
   fetchReviewWorkspace,
+  postCatalogSelection,
   rejectReviewTask,
+  type CatalogSelectionResult,
   type CorrectionResult,
   type ReviewWorkspace,
   type WorkspaceField,
 } from "../api/client";
 import { ApprovalPanel } from "../components/review/ApprovalPanel";
+import {
+  CatalogCandidatePicker,
+  type CatalogCandidate,
+} from "../components/review/CatalogCandidatePicker";
 import { ConflictResolver, type ConflictEntry } from "../components/review/ConflictResolver";
 import { HeaderFieldEditor, type SaveState } from "../components/review/HeaderFieldEditor";
 import { SplitLayout } from "../components/review/SplitLayout";
@@ -47,6 +54,14 @@ const LINE_COLUMNS = [
   "lines.unit_price",
   "lines.line_total",
 ];
+
+//: Fields the catalog matches (CAT-010) and how the picker labels them.
+//: The server owns the field-type mapping; this only decides when the
+//: picker is offered.
+const CATALOG_FIELD_LABELS: Record<string, string> = {
+  customer_name: "customer",
+  "lines.sku": "SKU",
+};
 
 /** Effective grid rows: extraction cells overlaid by the latest
  * corrections, plus correction-only (added) rows; fully cleared rows are
@@ -113,6 +128,13 @@ export function ReviewStudio() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({});
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
+  //: Which row the active field belongs to (null = header) so a catalog
+  //: pick lands on the right cell.
+  const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
+  const [catalogMessage, setCatalogMessage] = useState<string | null>(null);
+  //: The search text behind the currently shown candidates — the
+  //: selection posts it so the server can recompute the same decision.
+  const catalogQueryRef = useRef("");
 
   const [conflict, setConflict] = useState<string | null>(null);
   //: Edits refused by a version conflict — HELD (not lost) until the
@@ -148,6 +170,12 @@ export function ReviewStudio() {
 
   const stateKey = (fieldKey: string, rowIndex: number | null) =>
     rowIndex === null ? fieldKey : `${fieldKey}#${rowIndex}`;
+
+  const focusField = (fieldKey: string, rowIndex: number | null = null) => {
+    setActiveFieldKey(fieldKey);
+    setActiveRowIndex(rowIndex);
+    setCatalogMessage(null);
+  };
 
   const save = useMutation({
     mutationFn: ({
@@ -208,6 +236,62 @@ export function ReviewStudio() {
       ),
     );
     return queue.current;
+  };
+
+  //: A catalog pick (CAT-010) is a correction authored by the matcher:
+  //: it chains the task version like any save and comes back with the
+  //: fresh revalidation.
+  const pickCatalog = useMutation({
+    mutationFn: ({
+      fieldKey,
+      rowIndex,
+      candidate,
+      reason,
+    }: {
+      fieldKey: string;
+      rowIndex: number | null;
+      candidate: CatalogCandidate;
+      reason: string | null;
+    }) =>
+      postCatalogSelection(slug, taskId, {
+        field_key: fieldKey,
+        row_index: rowIndex,
+        query: catalogQueryRef.current,
+        selected_source_id: candidate.code,
+        ...(reason === null ? {} : { reason }),
+        expected_version: versionRef.current ?? workspace.data?.task.version ?? 0,
+      }),
+    onSuccess: (result: CatalogSelectionResult) => {
+      versionRef.current = result.task_version;
+      setCatalogMessage(
+        result.correction
+          ? `Matched: the field is now “${result.correction.corrected_raw_value ?? ""}”` +
+              (result.override ? " (manual override recorded)." : ".")
+          : "Recorded.",
+      );
+      if (result.revalidation) {
+        setDecision(result.revalidation.decision);
+        setRevalidatedBlocking(Boolean(result.revalidation.evaluation["blocking"]));
+      }
+      void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
+    },
+    onError: (error: unknown) =>
+      setCatalogMessage(
+        error instanceof Error
+          ? `The pick was not saved: ${error.message}`
+          : "The pick was not saved.",
+      ),
+  });
+  const enqueuePick = (candidate: CatalogCandidate, reason: string | null) => {
+    if (activeFieldKey === null) return;
+    const fieldKey = activeFieldKey;
+    const rowIndex = activeRowIndex;
+    queue.current = queue.current.then(() =>
+      pickCatalog.mutateAsync({ fieldKey, rowIndex, candidate, reason }).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
   };
 
   const saveBatch = (
@@ -440,7 +524,7 @@ export function ReviewStudio() {
               documentId={data.document.id}
               evidence={evidence}
               activeEvidenceId={activeEvidenceId}
-              onEvidenceSelect={(id) => setActiveFieldKey(id.split("#")[0])}
+              onEvidenceSelect={(id) => focusField(id.split("#")[0] ?? "")}
             />
           }
           right={
@@ -450,7 +534,7 @@ export function ReviewStudio() {
               drafts={drafts}
               saveStates={saveStates}
               activeFieldKey={activeFieldKey}
-              onFieldFocus={setActiveFieldKey}
+              onFieldFocus={focusField}
               onDraftChange={(fieldKey, value) =>
                 setDrafts((prev) => ({ ...prev, [fieldKey]: value }))
               }
@@ -459,6 +543,34 @@ export function ReviewStudio() {
             />
           }
         />
+
+        {editable && activeFieldKey !== null && activeFieldKey in CATALOG_FIELD_LABELS ? (
+          <div style={{ display: "grid", gap: "var(--soa-space-2)" }}>
+            <CatalogCandidatePicker
+              key={stateKey(activeFieldKey, activeRowIndex)}
+              fieldLabel={CATALOG_FIELD_LABELS[activeFieldKey] ?? activeFieldKey}
+              initialQuery={
+                (activeRowIndex === null ? drafts[activeFieldKey] : undefined) ??
+                serverValueFor(activeFieldKey, activeRowIndex).value ??
+                ""
+              }
+              loadCandidates={async (query) => {
+                catalogQueryRef.current = query;
+                const response = await fetchCatalogCandidates(slug, taskId, activeFieldKey, query);
+                if (!response.available) {
+                  throw new Error(response.reason ?? "No catalog is bound to this stream.");
+                }
+                return response.candidates;
+              }}
+              onPick={(candidate, reason) => enqueuePick(candidate, reason)}
+            />
+            {catalogMessage ? (
+              <p role="status" style={{ margin: 0, font: "var(--soa-font-caption)" }}>
+                {catalogMessage}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {Object.keys({ ...data.line_items, ...(pendingRows.length ? { lines: [] } : {}) }).map(
           (table) => {
@@ -474,7 +586,7 @@ export function ReviewStudio() {
                 rows={rows}
                 saveStates={saveStates}
                 readOnly={!editable}
-                onCellFocus={(fieldKey) => setActiveFieldKey(fieldKey)}
+                onCellFocus={(fieldKey, rowIndex) => focusField(fieldKey, rowIndex)}
                 onSaveCell={(fieldKey, rowIndex, value) => {
                   setUndoStack((prev) => [
                     ...prev,

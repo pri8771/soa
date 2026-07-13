@@ -220,6 +220,14 @@ class CatalogBindingRepository(ScopedRepository[CatalogBinding]):
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def list_for_stream(self, stream_id: uuid.UUID) -> list[CatalogBinding]:
+        stmt = (
+            self._scoped_select()
+            .where(CatalogBinding.stream_id == stream_id)
+            .order_by(CatalogBinding.created_at, CatalogBinding.id)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
 
 async def create_catalog(
     session: AsyncSession,

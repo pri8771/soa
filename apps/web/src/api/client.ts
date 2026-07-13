@@ -957,6 +957,70 @@ export function correctField(
   });
 }
 
+// --- Catalog candidate matching in review (CAT-010) ---
+
+export interface CatalogMatchFeature {
+  name: string;
+  score: number;
+  explanation: string;
+}
+
+export interface CatalogMatchCandidate {
+  id: string;
+  code: string;
+  label: string;
+  score: number;
+  features: CatalogMatchFeature[];
+}
+
+export interface CatalogCandidatesResponse {
+  available: boolean;
+  reason?: string | null;
+  field_type?: string;
+  outcome?: string;
+  machine_selected_source_id?: string | null;
+  reasons?: string[];
+  candidates: CatalogMatchCandidate[];
+  task_version?: number;
+}
+
+export function fetchCatalogCandidates(
+  organizationSlug: string,
+  taskId: string,
+  fieldKey: string,
+  q: string,
+): Promise<CatalogCandidatesResponse> {
+  const params = new URLSearchParams({ field_key: fieldKey, q });
+  return apiFetch(
+    `/orgs/${organizationSlug}/review-tasks/${taskId}/catalog-candidates?${params.toString()}`,
+  );
+}
+
+export interface CatalogSelectionResult {
+  correction: CorrectionResult["correction"] | null;
+  task_version: number;
+  override: boolean;
+  revalidation: CorrectionResult["revalidation"];
+}
+
+export function postCatalogSelection(
+  organizationSlug: string,
+  taskId: string,
+  body: {
+    field_key: string;
+    row_index: number | null;
+    query: string;
+    selected_source_id: string | null;
+    reason?: string;
+    expected_version: number;
+  },
+): Promise<CatalogSelectionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/catalog-selection`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // --- Approval, rejection, escalation (REV-012/013, REV-011) ---
 
 export interface ApprovalWarning {

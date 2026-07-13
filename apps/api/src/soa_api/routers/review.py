@@ -35,6 +35,19 @@ from soa_api.services.approval import (
 )
 from soa_api.services.revalidation import normalize_correction, revalidate_run
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
+from soa_db.catalog_match_policy import (
+    MatchDecision,
+    MatchPolicyError,
+    override_to_evaluation_example,
+    resolve_match,
+)
+from soa_db.catalog_matching import RecordFacts, facts_of
+from soa_db.catalogs import (
+    CatalogBindingRepository,
+    CatalogRecordRepository,
+    CatalogRepository,
+    resolve_catalog_version,
+)
 from soa_db.corrections import (
     FieldCorrectionRepository,
     latest_corrections,
@@ -60,7 +73,7 @@ from soa_db.review_tasks import (
 )
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.types import utcnow
-from soa_rules.baseline import CANONICAL_FIELD_TYPES
+from soa_rules.baseline import CANONICAL_FIELD_TYPES, CANONICAL_NORMALIZER_OVERRIDES
 
 router = APIRouter(tags=["review"])
 
@@ -631,6 +644,306 @@ async def correct_field(
             "corrected_by": correction.corrected_by,
         },
         "task_version": task.version,
+        "revalidation": revalidation,
+    }
+
+
+# --- Catalog candidate matching in review (CAT-010) ---
+
+#: Canonical fields the catalog matches, and the CAT-009 field type each
+#: resolves under. The server owns this mapping — the client only names
+#: the field it is editing.
+CATALOG_MATCHED_FIELDS: dict[str, str] = {
+    "customer_name": "customer",
+    "lines.sku": "material",
+}
+
+#: Which CAT-001 catalog type serves each match field type.
+_CATALOG_TYPE_FOR_FIELD_TYPE: dict[str, str] = {
+    "customer": "customers",
+    "ship_to": "customers",
+    "material": "products",
+    "uom": "units",
+    "generic": "custom",
+}
+
+
+def _match_field_type(field_key: str) -> str:
+    field_type = CATALOG_MATCHED_FIELDS.get(field_key)
+    if field_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{field_key!r} is not a catalog-matched field; "
+                f"matched fields: {', '.join(sorted(CATALOG_MATCHED_FIELDS))}."
+            ),
+        )
+    return field_type
+
+
+async def _bound_catalog_records(
+    session: DbSession, authorized: AuthorizedContext, document: Document, field_type: str
+) -> tuple[list[RecordFacts] | None, str | None]:
+    """The records of the stream's bound catalog serving ``field_type``,
+    or ``(None, reason)`` when the stream has nothing usable bound."""
+    catalog_type = _CATALOG_TYPE_FOR_FIELD_TYPE[field_type]
+    bindings = await CatalogBindingRepository(session, authorized.org_context).list_for_stream(
+        document.stream_id
+    )
+    catalog_repo = CatalogRepository(session, authorized.org_context)
+    binding = None
+    for candidate in bindings:
+        catalog = await catalog_repo.get(candidate.catalog_id)
+        if catalog is not None and catalog.catalog_type == catalog_type:
+            binding = candidate
+            break
+    if binding is None:
+        return None, f"The document's stream has no {catalog_type} catalog bound."
+    version = await resolve_catalog_version(session, authorized.org_context, binding=binding)
+    if version is None:
+        return None, "The bound catalog has no activated version yet."
+    records = await CatalogRecordRepository(session, authorized.org_context).list_for_version(
+        version.id
+    )
+    return [facts_of(record) for record in records], None
+
+
+def _picker_candidates(decision: MatchDecision) -> list[dict[str, Any]]:
+    """Candidates shaped for the REV-010 picker: id/code/label/score plus
+    a per-feature explanation. Exact-tier hits carry their tier and
+    written reason as the single feature; fuzzy hits carry every CAT-007
+    feature score."""
+    if decision.exact_candidates:
+        return [
+            {
+                "id": str(candidate.record_id),
+                "code": candidate.source_id,
+                "label": candidate.display_name,
+                "score": 1.0,
+                "features": [
+                    {"name": candidate.tier, "score": 1.0, "explanation": candidate.reason}
+                ],
+            }
+            for candidate in decision.exact_candidates
+        ]
+    return [
+        {
+            "id": str(candidate.record_id),
+            "code": candidate.source_id,
+            "label": candidate.display_name,
+            "score": candidate.total_score,
+            "features": [
+                {"name": score.feature, "score": score.score, "explanation": score.detail}
+                for score in candidate.features
+            ],
+        }
+        for candidate in decision.fuzzy_candidates
+    ]
+
+
+@router.get("/orgs/{organization_slug}/review-tasks/{task_id}/catalog-candidates")
+async def catalog_candidates(
+    task_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+    field_key: Annotated[str, Query(min_length=1, max_length=255)],
+    q: Annotated[str, Query(max_length=500)] = "",
+) -> dict[str, Any]:
+    """Ranked catalog candidates for one review field (CAT-010): the
+    CAT-009 matching stack over the stream's bound catalog, shaped for
+    the picker. A stream without a usable catalog is stated honestly
+    (``available: false``), not treated as an error."""
+    task, document = await _task_and_document(session, authorized, task_id)
+    field_type = _match_field_type(field_key)
+    records, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    if records is None:
+        return {"available": False, "reason": unavailable, "candidates": []}
+    decision = resolve_match(q, records, field_type=field_type, as_of=document.received_at.date())
+    return {
+        "available": True,
+        "field_type": field_type,
+        "outcome": decision.outcome,
+        "machine_selected_source_id": decision.selected_source_id,
+        "reasons": list(decision.reasons),
+        "candidates": _picker_candidates(decision),
+        "task_version": task.version,
+    }
+
+
+class CatalogSelectionRequest(BaseModel):
+    field_key: str = Field(min_length=1, max_length=255)
+    row_index: int | None = None
+    #: The search text the candidates were ranked against.
+    query: str = Field(max_length=500)
+    #: The picked record; null = the reviewer confirms NO record matches.
+    selected_source_id: str | None = Field(default=None, max_length=200)
+    #: Required whenever the pick differs from the machine's best candidate.
+    reason: str | None = Field(default=None, max_length=500)
+    #: The task version this selection was authored against (If-Match).
+    expected_version: int
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/catalog-selection")
+async def select_catalog_record(
+    task_id: uuid.UUID,
+    body: CatalogSelectionRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Apply a reviewer's catalog pick (CAT-010). The CAT-009 decision is
+    recomputed server-side so the audit event retains the full record —
+    every candidate's feature scores, the config fingerprint, the
+    reasons. A pick that disagrees with the machine's best candidate is a
+    manual override: it needs a written reason and becomes a labeled
+    evaluation example. The pick lands as a REV-009 correction and the
+    run revalidates, so dependent validation recalculates immediately."""
+    task, document = await _task_and_document(session, authorized, task_id)
+    actor = _actor(authorized)
+    if task.state != ReviewTaskState.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The task is {task.state}; claim it before matching fields.",
+        )
+    if task.assigned_to != actor:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"The task is assigned to {task.assigned_to}; only the assignee may edit.",
+        )
+    if body.expected_version != task.version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The task changed since you loaded it (server version {task.version}, "
+                f"yours {body.expected_version}). Reload before editing — nothing was saved."
+            ),
+        )
+
+    field_type = _match_field_type(body.field_key)
+    records, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    if records is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=unavailable)
+
+    decision = resolve_match(
+        body.query, records, field_type=field_type, as_of=document.received_at.date()
+    )
+    presented = decision.exact_candidates or decision.fuzzy_candidates
+    top_source_id = decision.selected_source_id or (presented[0].source_id if presented else None)
+
+    chosen: RecordFacts | None = None
+    if body.selected_source_id is not None:
+        chosen = next(
+            (record for record in records if record.source_id == body.selected_source_id), None
+        )
+        if chosen is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{body.selected_source_id!r} is not in the bound catalog version — "
+                    "reload the candidates."
+                ),
+            )
+
+    is_override = body.selected_source_id != top_source_id
+    example: dict[str, Any] | None = None
+    if is_override:
+        try:
+            example = override_to_evaluation_example(
+                decision,
+                chosen_source_id=body.selected_source_id,
+                actor_id=actor,
+                reason=body.reason or "",
+            )
+        except MatchPolicyError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    correction_payload: dict[str, Any] | None = None
+    if chosen is not None:
+        # The corrected value is the catalog's representation of the
+        # record for this field: the source id for identifier fields,
+        # the display name for text fields.
+        corrected_raw = (
+            chosen.source_id
+            if CANONICAL_NORMALIZER_OVERRIDES.get(body.field_key) == "identifier"
+            else chosen.display_name
+        )
+        fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
+            task.run_id
+        )
+        target = next(
+            (f for f in fields if f.field_key == body.field_key and f.row_index == body.row_index),
+            None,
+        )
+        previous = latest_corrections(
+            await FieldCorrectionRepository(session, authorized.org_context).list_for_run(
+                task.run_id
+            )
+        ).get((body.field_key, body.row_index))
+        if target is None and previous is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That field does not exist on this run.",
+            )
+        previous_raw = (
+            previous.corrected_raw_value if previous else (target.raw_value if target else None)
+        )
+        normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)
+        correction = await record_correction(
+            session,
+            authorized.org_context,
+            document_id=task.document_id,
+            run_id=task.run_id,
+            task_id=task.id,
+            field_key=body.field_key,
+            row_index=body.row_index,
+            previous_raw_value=previous_raw,
+            corrected_raw_value=corrected_raw,
+            corrected_normalized_value=normalized,
+            normalization_error=normalization_error,
+            reason=body.reason,
+            evidence_selection=None,
+            corrected_by=actor,
+            task_version=task.version,
+        )
+        task.updated_at = utcnow()
+        correction_payload = {
+            "id": str(correction.id),
+            "field_key": correction.field_key,
+            "row_index": correction.row_index,
+            "previous_raw_value": correction.previous_raw_value,
+            "corrected_raw_value": correction.corrected_raw_value,
+            "corrected_normalized_value": correction.corrected_normalized_value,
+            "normalization_error": correction.normalization_error,
+            "corrected_by": correction.corrected_by,
+        }
+
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor,
+        action="catalog.match_selected",
+        target_type="review_task",
+        target_id=str(task.id),
+        organization_id=authorized.org_context.organization_id,
+        summary={
+            "field_key": body.field_key,
+            "row_index": body.row_index,
+            "selected_source_id": body.selected_source_id,
+            "override": is_override,
+            "decision": decision.to_record(),
+            **({"evaluation_example": example} if example is not None else {}),
+        },
+    )
+    await session.flush()
+
+    revalidation = (
+        await revalidate_run(session, authorized.org_context, document=document, run_id=task.run_id)
+        if chosen is not None
+        else None
+    )
+    return {
+        "correction": correction_payload,
+        "task_version": task.version,
+        "override": is_override,
         "revalidation": revalidation,
     }
 

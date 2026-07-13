@@ -13,6 +13,7 @@ from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.catalogs import (
     Catalog,
     CatalogBindingMode,
+    CatalogBindingRepository,
     CatalogError,
     CatalogRecordRepository,
     CatalogVersion,
@@ -266,6 +267,38 @@ class TestBindings:
             )
             resolved = await resolve_catalog_version(session, CONTEXT, binding=binding)
             assert resolved is not None and resolved.id == first_id  # still pinned
+
+    async def test_list_for_stream_returns_every_binding_in_creation_order(
+        self, db: DatabaseSessions
+    ) -> None:
+        catalog_id, _ = await self.make_active(db)
+        async with db.session_scope() as session:
+            first = await session.get(Catalog, catalog_id)
+            assert first is not None
+            second = await create_catalog(
+                session,
+                CONTEXT,
+                name="Customers",
+                slug="customers",
+                catalog_type="customers",
+                source="manual",
+                actor_id="user:u-1",
+            )
+            for catalog in (first, second):
+                await bind_catalog_to_stream(
+                    session,
+                    CONTEXT,
+                    stream_id=STREAM,
+                    catalog=catalog,
+                    mode=CatalogBindingMode.ROLLING,
+                    actor_id="user:u-1",
+                )
+            bindings = await CatalogBindingRepository(session, CONTEXT).list_for_stream(STREAM)
+            assert [b.catalog_id for b in bindings] == [first.id, second.id]
+            # A different stream has none.
+            assert (
+                await CatalogBindingRepository(session, CONTEXT).list_for_stream(uuid.uuid4()) == []
+            )
 
     async def test_records_carry_aliases_attributes_and_effective_dates(
         self, db: DatabaseSessions

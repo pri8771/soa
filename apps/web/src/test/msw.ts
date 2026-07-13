@@ -775,6 +775,79 @@ export const handlers = [
       },
     });
   }),
+  http.get("/api/orgs/:slug/review-tasks/:taskId/catalog-candidates", ({ request }) => {
+    const url = new URL(request.url);
+    const q = url.searchParams.get("q") ?? "";
+    return HttpResponse.json({
+      available: true,
+      field_type: "material",
+      outcome: "needs_review",
+      machine_selected_source_id: null,
+      reasons: [
+        `top fuzzy score 0.82 is below the material auto-match threshold 0.92 — routed to review`,
+      ],
+      candidates: [
+        {
+          id: "d1111111-1111-4111-8111-111111111111",
+          code: "WID-100",
+          label: "Widget 100 (steel)",
+          score: 0.82,
+          features: [
+            { name: "text_trigram", score: 0.8, explanation: `trigram overlap with 'Widget 100'` },
+            {
+              name: "text_sequence",
+              score: 0.85,
+              explanation: `sequence similarity with 'Widget 100'`,
+            },
+          ],
+        },
+        {
+          id: "d2222222-2222-4222-8222-222222222222",
+          code: "GAD-205",
+          label: "Gadget 205",
+          score: 0.55,
+          features: [
+            { name: "text_trigram", score: 0.5, explanation: `trigram overlap with 'Gadget 205'` },
+            {
+              name: "text_sequence",
+              score: 0.61,
+              explanation: `sequence similarity with 'Gadget 205'`,
+            },
+          ],
+        },
+      ].filter((candidate) => q !== "" || candidate.score > 0.6),
+      task_version: 3,
+    });
+  }),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/catalog-selection", async ({ request }) => {
+    const body = (await request.json()) as {
+      field_key: string;
+      row_index: number | null;
+      selected_source_id: string | null;
+      reason?: string;
+    };
+    return HttpResponse.json({
+      correction:
+        body.selected_source_id === null
+          ? null
+          : {
+              id: "cor-cat-1",
+              field_key: body.field_key,
+              row_index: body.row_index,
+              previous_raw_value: "WID-1OO",
+              corrected_raw_value: body.selected_source_id,
+              corrected_normalized_value: body.selected_source_id,
+              normalization_error: null,
+              corrected_by: "user:u-1",
+            },
+      task_version: 4,
+      override: Boolean(body.reason),
+      revalidation: {
+        evaluation: { blocking: false },
+        decision: { route: "approved", reasons: [] },
+      },
+    });
+  }),
   http.get("/api/orgs/:slug/review-tasks", ({ request }) => {
     const url = new URL(request.url);
     const view = url.searchParams.get("view") ?? "all";
