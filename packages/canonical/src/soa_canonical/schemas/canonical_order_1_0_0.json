@@ -5,15 +5,7 @@
   "description": "The ERP-neutral order every export starts from. Decimals are exact strings (never floats), dates are ISO 8601 strings, money always carries its currency, and every object is closed (additionalProperties: false) except the namespaced extensions block. Nullability is explicit: a field that may be unknown says so with a null branch; absence is not used to mean unknown.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "identifiers",
-    "dates",
-    "terms",
-    "totals",
-    "line_items",
-    "source"
-  ],
+  "required": ["schema_version", "identifiers", "dates", "terms", "totals", "line_items", "source"],
   "properties": {
     "schema_version": {
       "description": "The canonical schema version this payload conforms to.",
@@ -120,10 +112,7 @@
         "document_id": { "$ref": "#/$defs/uuid" },
         "run_id": { "$ref": "#/$defs/uuid" },
         "document_sha256": {
-          "anyOf": [
-            { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            { "type": "null" }
-          ]
+          "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }]
         },
         "received_at": {
           "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
