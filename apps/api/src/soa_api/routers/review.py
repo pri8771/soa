@@ -46,6 +46,7 @@ from soa_db.review_tasks import (
 )
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.types import utcnow
+from soa_rules.baseline import CANONICAL_FIELD_TYPES
 
 router = APIRouter(tags=["review"])
 
@@ -383,6 +384,9 @@ async def review_workspace(
     fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
         task.run_id
     )
+    corrections = latest_corrections(
+        await FieldCorrectionRepository(session, authorized.org_context).list_for_run(task.run_id)
+    )
     header = [_field_payload(field) for field in fields if field.row_index is None]
     line_items: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for field in fields:
@@ -474,6 +478,17 @@ async def review_workspace(
         },
         "fields": header,
         "line_items": tables,
+        "corrections": [
+            {
+                "field_key": correction.field_key,
+                "row_index": correction.row_index,
+                "corrected_raw_value": correction.corrected_raw_value,
+                "corrected_normalized_value": correction.corrected_normalized_value,
+                "normalization_error": correction.normalization_error,
+                "corrected_by": correction.corrected_by,
+            }
+            for correction in corrections.values()
+        ],
         "pages": page_rows,
         "history": history,
         "context": context,
@@ -535,7 +550,17 @@ async def correct_field(
         (f for f in fields if f.field_key == body.field_key and f.row_index == body.row_index),
         None,
     )
-    if target is None:
+    # A table cell may target a NEW row (REV-008 add/split): allowed when
+    # the column is part of the canonical schema — the correction itself
+    # becomes the row's cell. Header fields must exist on the run.
+    is_new_table_cell = (
+        target is None
+        and body.row_index is not None
+        and body.row_index >= 0
+        and "." in body.field_key
+        and CANONICAL_FIELD_TYPES.get(body.field_key) not in (None, "table")
+    )
+    if target is None and not is_new_table_cell:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="That field does not exist on this run.",
@@ -544,7 +569,9 @@ async def correct_field(
     previous = latest_corrections(
         await FieldCorrectionRepository(session, authorized.org_context).list_for_run(task.run_id)
     ).get((body.field_key, body.row_index))
-    previous_raw = previous.corrected_raw_value if previous else target.raw_value
+    previous_raw = (
+        previous.corrected_raw_value if previous else (target.raw_value if target else None)
+    )
 
     corrected_raw = body.value if body.value is not None and body.value != "" else None
     normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)

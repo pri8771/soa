@@ -112,6 +112,38 @@ async def revalidate_run(
                 ),
             )
         )
+    # Correction-only cells: rows the reviewer ADDED (REV-008) have no
+    # extraction rows at all — their corrections are the cells.
+    covered = {(field.field_key, field.row_index) for field in fields}
+    for (key, row), correction in corrections.items():
+        if (key, row) in covered or row is None:
+            continue
+        value = (
+            correction.corrected_normalized_value
+            if correction.corrected_normalized_value is not None
+            else correction.corrected_raw_value
+        )
+        table = key.partition(".")[0]
+        tables.setdefault(table, {}).setdefault(row, {})[key] = value
+        signals.append(
+            FieldSignal(
+                field_key=key,
+                criticality=CANONICAL_CRITICALITY.get(key, "standard"),
+                present=value is not None,
+                confidence=1.0,
+                has_evidence=True,
+                row_index=row,
+            )
+        )
+
+    # A row whose every cell was cleared no longer exists for the rules.
+    for table, rows in list(tables.items()):
+        tables[table] = {
+            row: cells
+            for row, cells in rows.items()
+            if any(value is not None for value in cells.values())
+        }
+
     if document.duplicate_of is not None:
         header["meta.duplicate_of"] = str(document.duplicate_of)
 

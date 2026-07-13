@@ -600,3 +600,72 @@ async def test_unnormalizable_corrections_are_kept_with_their_error(
     correction = response.json()["correction"]
     assert correction["corrected_normalized_value"] is None
     assert "unrecognized date format" in correction["normalization_error"]
+
+
+async def test_new_row_and_cleared_row_corrections(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """REV-008 row edits: a correction may target a NEW table row (add /
+    split), and clearing every cell of a row removes it from the rules'
+    view of the table."""
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    # Complete the header first so only line math matters.
+    for field_key, value in (("po_number", "PO-1"), ("total_amount", "900.00")):
+        response = correct(client, task_id, version, SUPERVISOR, field_key=field_key, value=value)
+        assert response.status_code == 200, response.text
+        version = response.json()["task_version"]
+
+    # Add a second line as corrections on a row that was never extracted.
+    for field_key, value in (
+        ("lines.sku", "GAD-205"),
+        ("lines.quantity", "10"),
+        ("lines.unit_price", "45.00"),
+        ("lines.line_total", "450.00"),
+    ):
+        response = correct(
+            client,
+            task_id,
+            version,
+            SUPERVISOR,
+            field_key=field_key,
+            value=value,
+            row_index=1,
+        )
+        assert response.status_code == 200, response.text
+        version = response.json()["task_version"]
+    revalidation = response.json()["revalidation"]
+    # Two 450.00 lines reconcile against the corrected 900.00 total.
+    assert revalidation["decision"]["route"] == "approved"
+
+    # Header fields can NOT be invented the same way.
+    bogus = correct(
+        client,
+        task_id,
+        version,
+        SUPERVISOR,
+        field_key="nonexistent",
+        value="x",
+        row_index=2,
+    )
+    assert bogus.status_code == 404
+
+    # Remove the added row: clear every cell; the total then mismatches
+    # again and the run goes back to review.
+    for field_key in ("lines.sku", "lines.quantity", "lines.unit_price", "lines.line_total"):
+        response = correct(
+            client,
+            task_id,
+            version,
+            SUPERVISOR,
+            field_key=field_key,
+            value=None,
+            row_index=1,
+            reason="row removed",
+        )
+        assert response.status_code == 200, response.text
+        version = response.json()["task_version"]
+    revalidation = response.json()["revalidation"]
+    assert revalidation["decision"]["route"] == "review_required"
+    codes = [r["rule_key"] for r in revalidation["decision"]["reasons"] if r["rule_key"]]
+    assert "totals.header_matches_lines" in codes

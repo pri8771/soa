@@ -881,6 +881,15 @@ export interface WorkspaceField {
   candidates: { raw_value: string; confidence: number }[];
 }
 
+export interface WorkspaceCorrection {
+  field_key: string;
+  row_index: number | null;
+  corrected_raw_value: string | null;
+  corrected_normalized_value: unknown;
+  normalization_error: string | null;
+  corrected_by: string;
+}
+
 export interface ReviewWorkspace {
   task: ReviewTaskEntry;
   document: {
@@ -899,6 +908,7 @@ export interface ReviewWorkspace {
   };
   fields: WorkspaceField[];
   line_items: Record<string, WorkspaceField[][]>;
+  corrections: WorkspaceCorrection[];
   pages: DocumentPageEntry[];
   history: Record<string, unknown>[];
   context: Record<string, unknown>;
