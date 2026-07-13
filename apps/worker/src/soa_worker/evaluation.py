@@ -59,6 +59,10 @@ class EvalPrediction:
     lines: tuple[dict[str, str | None], ...] = ()
     predicted_class: str | None = None
     cost_cents: int = 0
+    #: Whether the candidate configuration would have AUTO-APPROVED this
+    #: document (no human review) — the caller computes it from the
+    #: candidate's confidence policy. Feeds the false-auto-approval gate.
+    would_auto_approve: bool = False
 
 
 ExtractFn = Callable[[EvalDocument], Awaitable[EvalPrediction]]
@@ -109,6 +113,9 @@ class DocumentScore:
     class_correct: bool | None
     latency_ms: float
     cost_cents: int
+    auto_approved: bool = False
+    #: Field KEYS that failed even normalized matching (never values).
+    wrong_fields: tuple[str, ...] = ()
 
 
 def score_document(
@@ -147,6 +154,17 @@ def score_document(
     if document.expected_class is not None:
         class_correct = prediction.predicted_class == document.expected_class
 
+    wrong_fields = tuple(
+        sorted(
+            key
+            for key, expected in expected_fields.items()
+            if not (
+                _matches(expected, prediction.fields.get(key), normalized=False)
+                or _matches(expected, prediction.fields.get(key), normalized=True)
+            )
+        )
+    )
+
     return (
         DocumentScore(
             document_sha256=document.document_sha256,
@@ -161,6 +179,8 @@ def score_document(
             class_correct=class_correct,
             latency_ms=latency_ms,
             cost_cents=prediction.cost_cents,
+            auto_approved=prediction.would_auto_approve,
+            wrong_fields=wrong_fields,
         ),
         by_field,
     )
@@ -182,9 +202,22 @@ class EvaluationState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvaluationState":
         return cls(
-            scores={sha: DocumentScore(**raw) for sha, raw in data.get("scores", {}).items()},
+            scores={
+                sha: DocumentScore(**{**raw, "wrong_fields": tuple(raw.get("wrong_fields", ()))})
+                for sha, raw in data.get("scores", {}).items()
+            },
             errors=dict(data.get("errors", {})),
         )
+
+
+@dataclass(frozen=True)
+class CohortMetrics:
+    """Aggregate rates for one cohort (an evaluation split)."""
+
+    documents: int
+    field_exact_rate: float
+    field_normalized_rate: float
+    line_cell_exact_rate: float
 
 
 @dataclass(frozen=True)
@@ -195,16 +228,21 @@ class EvaluationReport:
     field_normalized_rate: float
     line_cell_exact_rate: float
     class_accuracy: float | None
+    #: Documents the candidate would auto-approve despite at least one
+    #: wrong field, over all scored documents — the gate's key signal.
+    false_auto_approval_rate: float
     mean_latency_ms: float
     total_cost_cents: int
     by_field: dict[str, FieldScore]
     by_split: dict[str, int]
+    by_cohort: dict[str, CohortMetrics]
     errors: dict[str, str]
 
     def to_json(self) -> str:
         payload = {
-            **{k: v for k, v in vars(self).items() if k not in ("by_field",)},
+            **{k: v for k, v in vars(self).items() if k not in ("by_field", "by_cohort")},
             "by_field": {key: vars(score) for key, score in self.by_field.items()},
+            "by_cohort": {key: vars(metrics) for key, metrics in self.by_cohort.items()},
         }
         return json.dumps(payload, sort_keys=True)
 
@@ -228,6 +266,24 @@ def build_report(
     ]
     fields_total = sum(score.fields_total for score in scores)
     class_scores = [score.class_correct for score in scores if score.class_correct is not None]
+    false_approvals = sum(1 for score in scores if score.auto_approved and score.wrong_fields)
+
+    def cohort_metrics(cohort_scores: list[DocumentScore]) -> CohortMetrics:
+        totals = sum(s.fields_total for s in cohort_scores)
+        return CohortMetrics(
+            documents=len(cohort_scores),
+            field_exact_rate=_rate(sum(s.fields_exact for s in cohort_scores), totals),
+            field_normalized_rate=_rate(sum(s.fields_normalized for s in cohort_scores), totals),
+            line_cell_exact_rate=_rate(
+                sum(s.line_cells_exact for s in cohort_scores),
+                sum(s.line_cells_total for s in cohort_scores),
+            ),
+        )
+
+    by_cohort = {
+        split: cohort_metrics([s for s in scores if s.split == split])
+        for split in sorted({s.split for s in scores})
+    }
     return EvaluationReport(
         documents_scored=len(scores),
         documents_failed=len(state.errors),
@@ -240,15 +296,14 @@ def build_report(
         class_accuracy=(
             _rate(sum(1 for c in class_scores if c), len(class_scores)) if class_scores else None
         ),
+        false_auto_approval_rate=_rate(false_approvals, len(scores)),
         mean_latency_ms=(
             round(sum(s.latency_ms for s in scores) / len(scores), 2) if scores else 0.0
         ),
         total_cost_cents=sum(s.cost_cents for s in scores),
         by_field=dict(by_field or {}),
-        by_split={
-            split: sum(1 for s in scores if s.split == split)
-            for split in sorted({s.split for s in scores})
-        },
+        by_split={split: metrics.documents for split, metrics in by_cohort.items()},
+        by_cohort=by_cohort,
         errors=dict(state.errors),
     )
 
@@ -303,6 +358,7 @@ async def run_evaluation(
 
 
 __all__ = [
+    "CohortMetrics",
     "DocumentScore",
     "EvalDocument",
     "EvalPrediction",
