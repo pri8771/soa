@@ -24,8 +24,6 @@ window lives in process memory — honest for a single API instance;
 multi-instance deployments need a shared store (REL epic).
 """
 
-import time
-from collections import defaultdict, deque
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
@@ -60,26 +58,6 @@ from soa_storage.keys import artifact_key
 router = APIRouter(tags=["public-api"])
 
 API_KEY_HEADER = "X-Api-Key"
-
-
-class _SlidingWindowLimiter:
-    """Per-key sliding window over the last 60 seconds. In-process only."""
-
-    def __init__(self) -> None:
-        self._events: dict[str, deque[float]] = defaultdict(deque)
-
-    def check(self, key: str, limit: int, *, now: float | None = None) -> bool:
-        current = now if now is not None else time.monotonic()
-        events = self._events[key]
-        while events and current - events[0] > 60.0:
-            events.popleft()
-        if len(events) >= limit:
-            return False
-        events.append(current)
-        return True
-
-
-RATE_LIMITER = _SlidingWindowLimiter()
 
 
 class IngestResponse(BaseModel):
@@ -126,12 +104,8 @@ async def ingest_document(
 ) -> Any:
     context, actor_id = await _authenticate(request, session)
 
-    if not RATE_LIMITER.check(actor_id, deps.settings.api_ingest_rate_per_minute):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded for this credential.",
-            headers={"Retry-After": "60"},
-        )
+    # Abuse control (SEC-003): per-credential cap via the shared limiter.
+    deps.rate_limiter.enforce("api_ingest", actor_id, deps.settings.api_ingest_rate_per_minute)
 
     stream = await StreamRepository(session, context).get_by_slug(stream_slug)
     if stream is None:

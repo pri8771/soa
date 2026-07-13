@@ -66,6 +66,15 @@ class ApiSettings(WebServiceSettings):
     # this shared secret; unset disables the endpoint entirely.
     email_intake_secret: str | None = None
 
+    # Abuse controls (SEC-003): per-minute sliding-window limits, keyed
+    # per principal (or per client IP for identity resolution). These
+    # are platform maxima against floods, not billing quotas (ANA-009).
+    rate_limit_uploads_per_minute: int = Field(default=60, ge=1)
+    rate_limit_download_urls_per_minute: int = Field(default=240, ge=1)
+    rate_limit_reprocess_per_minute: int = Field(default=30, ge=1)
+    rate_limit_replays_per_minute: int = Field(default=30, ge=1)
+    rate_limit_identity_per_minute: int = Field(default=240, ge=1)
+
     # Cross-origin access (SEC-002): a STRICT allowlist of browser
     # origins. Empty means no cross-origin access at all. Wildcards are
     # refused — credentialed wildcard CORS hands the API to every site.

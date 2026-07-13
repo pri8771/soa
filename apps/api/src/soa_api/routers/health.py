@@ -62,3 +62,12 @@ async def version(
         version=soa_api.__version__,
         environment=deps.settings.environment.value,
     )
+
+
+@router.get("/health/rate-limits")
+async def rate_limit_counters(
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> dict[str, dict[str, int]]:
+    """Per-operation allowed/denied totals since process start (SEC-003
+    observability). Counters only — identities never appear here."""
+    return deps.rate_limiter.snapshot()

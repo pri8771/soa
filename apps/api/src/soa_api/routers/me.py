@@ -1,10 +1,12 @@
 """Current-identity endpoints."""
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from soa_api.auth.dependency import CurrentPrincipal
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_api.domain.rbac import permissions_for_membership
 from soa_api.domain.tenancy import OrganizationRepository
 from soa_api.services.tenancy_service import ensure_user, list_memberships_for_user
@@ -34,7 +36,20 @@ class MeResponse(BaseModel):
 
 
 @router.get("/me")
-async def me(principal: CurrentPrincipal, session: DbSession) -> MeResponse:
+async def me(
+    request: Request,
+    principal: CurrentPrincipal,
+    session: DbSession,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> MeResponse:
+    # Abuse control (SEC-003): identity resolution is the session
+    # bootstrap — the closest thing to a local login (real login lives
+    # at the IdP, OPEN-002) — so it is capped per client address.
+    deps.rate_limiter.enforce(
+        "identity",
+        request.client.host if request.client else "unknown",
+        deps.settings.rate_limit_identity_per_minute,
+    )
     user = await ensure_user(session, principal)
     await bind_user(session, user.id)  # RLS: self-scoped membership reads
     memberships = await list_memberships_for_user(session, user.id)

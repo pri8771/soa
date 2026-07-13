@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.services.malware import MalwareScanner
+from soa_api.services.rate_limit import SlidingWindowRateLimiter
 from soa_api.settings import ApiSettings
 from soa_config.telemetry import Telemetry
 from soa_db import DatabaseSessions
@@ -39,6 +40,7 @@ class Dependencies:
     db: DatabaseSessions | None = None
     object_store: ObjectStore | None = None
     malware_scanner: MalwareScanner | None = None
+    rate_limiter: SlidingWindowRateLimiter = field(default_factory=SlidingWindowRateLimiter)
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:

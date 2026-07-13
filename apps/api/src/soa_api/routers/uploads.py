@@ -138,6 +138,12 @@ async def create_upload(
     store: ObjectStoreDep,
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> UploadSessionResponse:
+    # Abuse control (SEC-003): per-principal cap on session creation.
+    deps.rate_limiter.enforce(
+        "uploads",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_uploads_per_minute,
+    )
     stream = await StreamRepository(session, authorized.org_context).get_by_slug(stream_slug)
     if stream is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")

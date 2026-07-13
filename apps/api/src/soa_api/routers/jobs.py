@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_api.services.job_admin_service import (
     JobActionError,
     cancel_job,
@@ -139,7 +139,14 @@ async def replay_organization_job(
     body: JobActionRequest,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("jobs.manage"))],
     session: DbSession,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> JobResponse:
+    # Abuse control (SEC-003): per-principal cap on replays.
+    deps.rate_limiter.enforce(
+        "replays",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_replays_per_minute,
+    )
     job = await get_job(session, authorized.org_context, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")

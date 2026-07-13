@@ -22,7 +22,7 @@ from sqlalchemy import or_, select
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
 from soa_db.artifacts import ArtifactRepository
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
@@ -378,6 +378,7 @@ async def reprocess_document(
     body: ReprocessRequest,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.reprocess"))],
     session: DbSession,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> dict[str, Any]:
     """Start a NEW processing run for the document (PRC-013).
 
@@ -385,6 +386,12 @@ async def reprocess_document(
     document re-enters the queue and the full pipeline re-executes under
     the pinned configuration the chosen mode selects. Approved, exporting,
     completed, and archived documents are protected by policy."""
+    # Abuse control (SEC-003): per-principal cap on reprocessing.
+    deps.rate_limiter.enforce(
+        "reprocess",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_reprocess_per_minute,
+    )
     document = await DocumentRepository(session, authorized.org_context).get(document_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")

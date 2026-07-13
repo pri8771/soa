@@ -82,6 +82,12 @@ async def issue_download_url(
     store: ObjectStoreDep,
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> DownloadUrlResponse:
+    # Abuse control (SEC-003): per-principal cap on signed-URL minting.
+    deps.rate_limiter.enforce(
+        "download_urls",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_download_urls_per_minute,
+    )
     # Tenant scope first: an artifact outside the caller's organization is
     # indistinguishable from one that does not exist.
     artifact = await ArtifactRepository(session, authorized.org_context).get(artifact_id)

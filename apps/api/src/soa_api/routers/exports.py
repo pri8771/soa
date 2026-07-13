@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_api.services.export_orchestration import EXPORT_JOB_TYPE
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.exports import (
@@ -199,10 +199,17 @@ async def replay_export(
     body: ReplayRequest,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("integrations.replay"))],
     session: DbSession,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> dict[str, Any]:
     """Replay a SETTLED (failed_terminal/cancelled) export with an
     audited reason. Nothing is re-extracted; the fixed payload
     redelivers under the same business key."""
+    # Abuse control (SEC-003): per-principal cap on replays.
+    deps.rate_limiter.enforce(
+        "replays",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_replays_per_minute,
+    )
     job = await _load_job(session, authorized, export_job_id)
     try:
         await replay_export_job(

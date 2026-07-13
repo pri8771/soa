@@ -10,7 +10,6 @@ from sqlalchemy import select
 
 from soa_api.app import create_app
 from soa_api.domain.credentials import create_credential
-from soa_api.routers.public_ingest import RATE_LIMITER
 from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import Document
@@ -33,8 +32,8 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
         db=db,
         object_store=MemoryObjectStore(),
     )
-    # The limiter is module-global; isolate tests from each other.
-    RATE_LIMITER._events.clear()
+    # The limiter lives on the app's Dependencies now (SEC-003), so
+    # each create_app is isolated by construction.
     return TestClient(app, raise_server_exceptions=False), db
 
 
@@ -166,4 +165,5 @@ async def test_rate_limit_answers_429_with_retry_after(
         assert ingest(client, raw_key, data=PDF + str(index).encode()).status_code == 201
     limited = ingest(client, raw_key, data=PDF + b"overflow")
     assert limited.status_code == 429
-    assert limited.headers["Retry-After"] == "60"
+    assert 1 <= int(limited.headers["Retry-After"]) <= 61
+    assert limited.headers["X-RateLimit-Remaining"] == "0"
