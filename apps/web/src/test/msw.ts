@@ -775,6 +775,55 @@ export const handlers = [
       },
     });
   }),
+  http.get("/api/orgs/:slug/audit-events", ({ request }) => {
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action") ?? "";
+    const items = [
+      {
+        id: "f1111111-1111-4111-8111-111111111111",
+        occurred_at: "2026-07-12T10:00:00+00:00",
+        actor_type: "user",
+        actor_id: "user:u-1",
+        action: "document.approved",
+        target_type: "document",
+        target_id: "d-1",
+        summary: {},
+      },
+      {
+        id: "f2222222-2222-4222-8222-222222222222",
+        occurred_at: "2026-07-12T09:00:00+00:00",
+        actor_type: "system",
+        actor_id: "system:worker",
+        action: "catalog.match_selected",
+        target_type: "review_task",
+        target_id: "t-1",
+        summary: {},
+      },
+    ].filter((item) => item.action.startsWith(action));
+    return HttpResponse.json({ items, has_more: false, next_cursor: null });
+  }),
+  http.post("/api/orgs/:slug/audit-exports", () =>
+    HttpResponse.json(
+      {
+        export_id: "e9999999-9999-4999-8999-999999999999",
+        event_count: 2,
+        manifest_sha256: "ab".repeat(32),
+        manifest_download_url: "memory://store/audit-exports/manifest.json?sig=x",
+        manifest_expires_at: "2026-07-13T13:00:00+00:00",
+        files: [
+          {
+            name: "events-0001.ndjson",
+            sha256: "cd".repeat(32),
+            bytes: 512,
+            events: 2,
+            download_url: "memory://store/audit-exports/events-0001.ndjson?sig=x",
+            expires_at: "2026-07-13T13:00:00+00:00",
+          },
+        ],
+      },
+      { status: 201 },
+    ),
+  ),
   http.get("/api/orgs/:slug/analytics/usage", () =>
     HttpResponse.json({
       window: {

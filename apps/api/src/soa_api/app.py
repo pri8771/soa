@@ -13,6 +13,7 @@ from soa_api.errors import CORRELATION_HEADER, register_error_handlers
 from soa_api.routers import (
     analytics,
     artifacts,
+    audit,
     catalogs,
     documents,
     email_intake,
@@ -166,6 +167,7 @@ def create_app(
     app.include_router(documents.router)
     app.include_router(review.router)
     app.include_router(analytics.router)
+    app.include_router(audit.router)
     app.include_router(instructions.router)
     app.include_router(integrations.router)
     app.include_router(exports.router)

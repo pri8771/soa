@@ -29,6 +29,7 @@ import { SelectOrganization } from "../screens/SelectOrganization";
 import { CatalogManager } from "../screens/CatalogManager";
 import { Catalogs } from "../screens/Catalogs";
 import { Providers } from "../screens/Providers";
+import { AuditTrail } from "../screens/AuditTrail";
 import { CostDashboard } from "../screens/CostDashboard";
 import { Operations } from "../screens/Operations";
 import { QualityDashboard } from "../screens/QualityDashboard";
@@ -206,6 +207,12 @@ const costsRoute = createRoute({
   component: CostDashboard,
 });
 
+const auditRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "audit",
+  component: AuditTrail,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   workbenchRoute,
@@ -233,6 +240,7 @@ const routeTree = rootRoute.addChildren([
     jobsRoute,
     qualityRoute,
     costsRoute,
+    auditRoute,
     areaRoute("settings", "Settings", "TEN/SEC"),
   ]),
 ]);

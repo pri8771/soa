@@ -1045,6 +1045,59 @@ export function fetchQualitySnapshot(organizationSlug: string): Promise<QualityS
   return apiFetch(`/orgs/${organizationSlug}/analytics/quality`);
 }
 
+// --- Audit trail (ANA-007) ---
+
+export interface AuditEventEntry {
+  id: string;
+  occurred_at: string;
+  actor_type: string;
+  actor_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  summary: Record<string, unknown>;
+}
+
+export function fetchAuditEvents(
+  organizationSlug: string,
+  params: { action?: string; target_type?: string; cursor?: string },
+): Promise<{ items: AuditEventEntry[]; has_more: boolean; next_cursor: string | null }> {
+  const search = new URLSearchParams();
+  if (params.action) search.set("action", params.action);
+  if (params.target_type) search.set("target_type", params.target_type);
+  if (params.cursor) search.set("cursor", params.cursor);
+  const query = search.toString();
+  return apiFetch(`/orgs/${organizationSlug}/audit-events${query ? `?${query}` : ""}`);
+}
+
+export interface AuditExportFile {
+  name: string;
+  sha256: string;
+  bytes: number;
+  events: number;
+  download_url: string;
+  expires_at: string;
+}
+
+export interface AuditExportResult {
+  export_id: string;
+  event_count: number;
+  manifest_sha256: string;
+  manifest_download_url: string;
+  manifest_expires_at: string;
+  files: AuditExportFile[];
+}
+
+export function createAuditExport(
+  organizationSlug: string,
+  filters: { action?: string; target_type?: string; since?: string; until?: string },
+): Promise<AuditExportResult> {
+  return apiFetch(`/orgs/${organizationSlug}/audit-exports`, {
+    method: "POST",
+    body: JSON.stringify(filters),
+  });
+}
+
 // --- Cost dashboard (ANA-006) ---
 
 export interface UsageGroup {

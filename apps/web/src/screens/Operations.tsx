@@ -167,6 +167,19 @@ export function Operations() {
                 <strong>Open the jobs queue</strong>
               </Link>
             </li>
+            <li style={{ display: "grid" }}>
+              <Link
+                to="/app/$organizationSlug/audit"
+                params={{ organizationSlug: slug }}
+                style={tile}
+                aria-label="Audit trail — open the filtered audit query"
+              >
+                <span style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
+                  Audit trail
+                </span>
+                <strong>Query and export</strong>
+              </Link>
+            </li>
           </ul>
         </Section>
 
