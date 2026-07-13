@@ -39,6 +39,7 @@ import {
   type StageRunEntry,
 } from "../api/client";
 import { PayloadViewer } from "../components/canonical/PayloadViewer";
+import { DeliveryHistory } from "../components/exports/DeliveryHistory";
 import { DocumentViewer } from "../components/viewer/DocumentViewer";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -554,7 +555,15 @@ export function DocumentDetail() {
           )}
         </Panel>
         <Panel title="Delivery">
-          <Badge tone="neutral">not available yet — exports arrive with EXP</Badge>
+          {session.permissions.has("integrations.read") ? (
+            <DeliveryHistory
+              organizationSlug={slug}
+              documentId={documentId}
+              canReplay={session.permissions.has("integrations.replay")}
+            />
+          ) : (
+            <Badge tone="neutral">viewing deliveries needs the integrations.read permission</Badge>
+          )}
         </Panel>
 
         <Panel title="Timeline">

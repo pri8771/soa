@@ -719,6 +719,9 @@ export const DEFAULT_MAPPING_DRAFT = {
 };
 
 export const handlers = [
+  // No fixture document has export jobs by default; delivery tests seed
+  // their own via server.use.
+  http.get("/api/orgs/:slug/exports", () => HttpResponse.json({ items: [] })),
   http.get("/api/orgs/:slug/integrations", () =>
     HttpResponse.json({ items: [DEFAULT_INTEGRATION] }),
   ),

@@ -1126,6 +1126,74 @@ export function publishMappingVersion(
   );
 }
 
+// --- Delivery history (EXP-009) ---
+
+export interface ExportJobEntry {
+  id: string;
+  document_id: string;
+  run_id: string;
+  canonical_payload_id: string;
+  integration_id: string;
+  integration_slug: string | null;
+  integration_name: string | null;
+  mapping_version_id: string;
+  business_key: string;
+  state: string;
+  attempt_count: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExportAttemptEntry {
+  attempt_number: number;
+  outcome: string;
+  response_status: number | null;
+  safe_error: string | null;
+  request_sha256: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface ExportDetail {
+  job: ExportJobEntry;
+  mapping_version_number: number | null;
+  attempts: ExportAttemptEntry[];
+}
+
+export function fetchExports(
+  organizationSlug: string,
+  options: { documentId?: string } = {},
+): Promise<{ items: ExportJobEntry[] }> {
+  const query = options.documentId ? `?document_id=${options.documentId}` : "";
+  return apiFetch(`/orgs/${organizationSlug}/exports${query}`);
+}
+
+export function fetchExportDetail(
+  organizationSlug: string,
+  exportJobId: string,
+): Promise<ExportDetail> {
+  return apiFetch(`/orgs/${organizationSlug}/exports/${exportJobId}`);
+}
+
+export function retryExport(
+  organizationSlug: string,
+  exportJobId: string,
+): Promise<ExportJobEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/exports/${exportJobId}/retry`, { method: "POST" });
+}
+
+export function replayExport(
+  organizationSlug: string,
+  exportJobId: string,
+  reason: string,
+): Promise<ExportJobEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/exports/${exportJobId}/replay`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 // --- Canonical payload (CAN-004) ---
 
 export interface CanonicalPayloadResponse {

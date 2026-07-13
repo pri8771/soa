@@ -28,7 +28,7 @@ describe("Document detail (ING-012)", () => {
     expect(
       screen.getByText(/canonical order is created when the document is approved/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/exports arrive with EXP/)).toBeInTheDocument();
+    expect(await screen.findByText(/no deliveries yet/)).toBeInTheDocument();
     // No runs yet: the processing panel says so instead of inventing one.
     const processing = screen.getByRole("region", { name: "Processing" });
     expect(within(processing).getByText(/No processing runs yet/)).toBeInTheDocument();
