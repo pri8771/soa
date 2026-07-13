@@ -717,6 +717,45 @@ export const handlers = [
       explanation: "Highest-priority open task, oldest first within the same priority.",
     }),
   ),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/approve", async ({ request }) => {
+    const body = (await request.json()) as { override_reason?: string };
+    return HttpResponse.json({
+      status: "approved",
+      idempotent: false,
+      task_version: 5,
+      warnings: [],
+      override_used: Boolean(body.override_reason),
+      task: { ...DEFAULT_WORKSPACE.task, state: "completed", outcome: "approved" },
+    });
+  }),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/reject", async ({ request }) => {
+    const body = (await request.json()) as { reason?: string };
+    if (!body.reason || body.reason.trim() === "") {
+      return HttpResponse.json({ error: { message: "rejection needs a reason" } }, { status: 400 });
+    }
+    return HttpResponse.json({
+      status: "rejected",
+      idempotent: false,
+      task_version: 5,
+      task: { ...DEFAULT_WORKSPACE.task, state: "completed", outcome: "rejected" },
+    });
+  }),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/escalate", async ({ request }) => {
+    const body = (await request.json()) as { reason?: string };
+    if (!body.reason || body.reason.trim() === "") {
+      return HttpResponse.json(
+        { error: { message: "escalation needs a reason" } },
+        { status: 400 },
+      );
+    }
+    return HttpResponse.json({
+      ...DEFAULT_WORKSPACE.task,
+      state: "open",
+      assigned_to: null,
+      priority: 10,
+      escalation_reason: body.reason,
+    });
+  }),
   http.post("/api/orgs/:slug/review-tasks/:taskId/claim", ({ params }) => {
     const found = DEFAULT_REVIEW_TASKS.find((t) => t.id === String(params["taskId"]));
     if (!found) {

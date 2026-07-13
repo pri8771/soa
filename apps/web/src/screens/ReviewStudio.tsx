@@ -16,12 +16,16 @@ import { useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
+  approveReviewTask,
   correctField,
+  escalateReviewTask,
   fetchReviewWorkspace,
+  rejectReviewTask,
   type CorrectionResult,
   type ReviewWorkspace,
   type WorkspaceField,
 } from "../api/client";
+import { ApprovalPanel } from "../components/review/ApprovalPanel";
 import { HeaderFieldEditor, type SaveState } from "../components/review/HeaderFieldEditor";
 import { LineItemGrid, type GridRow } from "../components/review/LineItemGrid";
 import { DocumentViewer, type EvidenceHighlight } from "../components/viewer/DocumentViewer";
@@ -113,6 +117,10 @@ export function ReviewStudio() {
     route: string;
     reasons: Record<string, unknown>[];
   } | null>(null);
+  //: Whether CRITICAL blockers remain — the routing verdict until a
+  //: correction revalidates, then the fresh evaluation's flag.
+  const [revalidatedBlocking, setRevalidatedBlocking] = useState<boolean | null>(null);
+  const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
   //: Grid state: locally added (still empty) rows and the undo stack —
   //: each entry restores a batch of previous cell values as NEW
@@ -150,7 +158,10 @@ export function ReviewStudio() {
     onSuccess: (result: CorrectionResult, { fieldKey, rowIndex }) => {
       versionRef.current = result.task_version;
       setSaveStates((prev) => ({ ...prev, [stateKey(fieldKey, rowIndex)]: { status: "saved" } }));
-      if (result.revalidation) setDecision(result.revalidation.decision);
+      if (result.revalidation) {
+        setDecision(result.revalidation.decision);
+        setRevalidatedBlocking(Boolean(result.revalidation.evaluation["blocking"]));
+      }
       void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
     },
     onError: (error: unknown, { fieldKey, rowIndex }) => {
@@ -182,6 +193,48 @@ export function ReviewStudio() {
     setUndoStack((prev) => [...prev, undoEntries]);
     for (const edit of edits) void enqueueSave(edit.fieldKey, edit.rowIndex, edit.value);
   };
+
+  //: Completion actions (REV-013). Each refreshes the workspace so the
+  //: task state, decision, and read-only banner reflect the outcome.
+  const finishRefresh = () => {
+    versionRef.current = null;
+    void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
+  };
+  const failure = (verb: string) => (error: unknown) =>
+    setCompletionMessage(
+      error instanceof Error ? `${verb} failed: ${error.message}` : `${verb} failed.`,
+    );
+  const approve = useMutation({
+    mutationFn: (overrideReason: string | null) =>
+      approveReviewTask(slug, taskId, overrideReason ?? undefined),
+    onSuccess: (result) => {
+      setCompletionMessage(
+        result.status === "pending_second_approval"
+          ? "First approval recorded — a second approver must finish this task."
+          : result.override_used
+            ? "Order approved with an authorized override."
+            : "Order approved.",
+      );
+      finishRefresh();
+    },
+    onError: failure("Approval"),
+  });
+  const reject = useMutation({
+    mutationFn: (reason: string) => rejectReviewTask(slug, taskId, reason),
+    onSuccess: () => {
+      setCompletionMessage("Document rejected.");
+      finishRefresh();
+    },
+    onError: failure("Rejection"),
+  });
+  const escalate = useMutation({
+    mutationFn: (reason: string) => escalateReviewTask(slug, taskId, reason),
+    onSuccess: () => {
+      setCompletionMessage("Task escalated and returned to the queue at top priority.");
+      finishRefresh();
+    },
+    onError: failure("Escalation"),
+  });
 
   const headerFields: WorkspaceField[] = workspace.data?.fields ?? [];
   const evidence: EvidenceHighlight[] = useMemo(
@@ -232,6 +285,10 @@ export function ReviewStudio() {
   const me = `user:${session.userId}`;
   const editable = data.task.state === "in_progress" && data.task.assigned_to === me;
   const currentDecision = decision ?? data.run.decision;
+  const readOnlyReason =
+    data.task.state === "in_progress"
+      ? `This task is assigned to ${data.task.assigned_to}; claim it from the queue to edit.`
+      : `This task is ${data.task.state}; claim it from the queue to edit.`;
 
   return (
     <AppShell
@@ -265,11 +322,9 @@ export function ReviewStudio() {
             {conflict}
           </Banner>
         ) : null}
-        {!editable ? (
+        {!editable && data.task.state !== "completed" ? (
           <Banner tone="info" title="Read-only">
-            {data.task.state === "in_progress"
-              ? `This task is assigned to ${data.task.assigned_to}; claim it from the queue to edit.`
-              : `This task is ${data.task.state}; claim it from the queue to edit.`}
+            {readOnlyReason}
           </Banner>
         ) : null}
         {currentDecision ? (
@@ -426,6 +481,27 @@ export function ReviewStudio() {
             );
           },
         )}
+
+        <ApprovalPanel
+          editable={editable}
+          readOnlyReason={readOnlyReason}
+          blocking={revalidatedBlocking ?? data.task.blocking}
+          decision={currentDecision}
+          canApprove={session.permissions.has("documents.approve")}
+          canOverride={session.permissions.has("documents.approve.override")}
+          canReject={session.permissions.has("documents.reject")}
+          destination={
+            (data.context["stream_name"] as string | undefined) ??
+            (data.context["stream_slug"] as string | undefined) ??
+            null
+          }
+          settledOutcome={data.task.state === "completed" ? data.task.outcome : null}
+          busy={approve.isPending || reject.isPending || escalate.isPending}
+          statusMessage={completionMessage}
+          onApprove={(overrideReason) => approve.mutate(overrideReason)}
+          onReject={(reason) => reject.mutate(reason)}
+          onEscalate={(reason) => escalate.mutate(reason)}
+        />
       </div>
     </AppShell>
   );

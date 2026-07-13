@@ -955,3 +955,62 @@ export function correctField(
     body: JSON.stringify(body),
   });
 }
+
+// --- Approval, rejection, escalation (REV-012/013, REV-011) ---
+
+export interface ApprovalWarning {
+  code: string | null;
+  message?: string | null;
+  field_key: string | null;
+  row_index?: number | null;
+  rule_key: string | null;
+}
+
+export interface ApprovalResult {
+  status: "approved" | "pending_second_approval";
+  idempotent: boolean;
+  task_version: number;
+  warnings: ApprovalWarning[];
+  override_used: boolean;
+  task: ReviewTaskEntry;
+}
+
+export function approveReviewTask(
+  organizationSlug: string,
+  taskId: string,
+  overrideReason?: string,
+): Promise<ApprovalResult> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/approve`, {
+    method: "POST",
+    body: JSON.stringify(overrideReason ? { override_reason: overrideReason } : {}),
+  });
+}
+
+export interface RejectionResult {
+  status: "rejected";
+  idempotent: boolean;
+  task_version: number;
+  task: ReviewTaskEntry;
+}
+
+export function rejectReviewTask(
+  organizationSlug: string,
+  taskId: string,
+  reason: string,
+): Promise<RejectionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function escalateReviewTask(
+  organizationSlug: string,
+  taskId: string,
+  reason: string,
+): Promise<ReviewTaskEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/escalate`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}

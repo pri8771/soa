@@ -170,7 +170,89 @@ describe("Review Studio header field editor (REV-007)", () => {
     );
     await renderApp(PATH);
     expect(await screen.findByText("Read-only")).toBeInTheDocument();
-    expect(screen.getByText(/assigned to user:u-2/)).toBeInTheDocument();
+    // The banner and the approval panel both say why (disabled reason).
+    expect(screen.getAllByText(/assigned to user:u-2/).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("po number")).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
+  });
+});
+
+describe("Review Studio approval actions (REV-013)", () => {
+  it("approves via the two-step confirm and announces the outcome", async () => {
+    const user = userEvent.setup();
+    const posted: unknown[] = [];
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/approve", async ({ request }) => {
+        posted.push(await request.json());
+        return HttpResponse.json({
+          status: "approved",
+          idempotent: false,
+          task_version: 5,
+          warnings: [],
+          override_used: false,
+          task: { ...DEFAULT_WORKSPACE.task, state: "completed", outcome: "approved" },
+        });
+      }),
+    );
+    await renderApp(PATH);
+    // Step one only opens the completion summary.
+    await user.click(await screen.findByRole("button", { name: "Approve order…" }));
+    expect(posted).toHaveLength(0);
+    expect(screen.getByText(/finding\(s\) remain/)).toBeInTheDocument();
+    // Step two performs the approval and the outcome is announced.
+    await user.click(screen.getByRole("button", { name: "Confirm approval" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toEqual({});
+    expect(await screen.findByText("Order approved.")).toBeInTheDocument();
+  });
+
+  it("escalates with a reason", async () => {
+    const user = userEvent.setup();
+    const posted: unknown[] = [];
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/escalate", async ({ request }) => {
+        posted.push(await request.json());
+        return HttpResponse.json({
+          ...DEFAULT_WORKSPACE.task,
+          state: "open",
+          assigned_to: null,
+          priority: 10,
+        });
+      }),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByRole("button", { name: "Escalate…" }));
+    await user.type(screen.getByLabelText(/Escalation reason/), "handwriting needs a supervisor");
+    await user.click(screen.getByRole("button", { name: "Confirm escalation" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toEqual({ reason: "handwriting needs a supervisor" });
+    expect(
+      await screen.findByText("Task escalated and returned to the queue at top priority."),
+    ).toBeInTheDocument();
+  });
+
+  it("the reviewer cannot reject (permission-gated) and is told why", async () => {
+    await renderApp(PATH);
+    expect(await screen.findByRole("button", { name: "Reject…" })).toBeDisabled();
+    expect(screen.getByText(/documents.reject permission/)).toBeInTheDocument();
+  });
+
+  it("a completed task shows the outcome instead of actions", async () => {
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", () =>
+        HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          task: {
+            ...DEFAULT_WORKSPACE.task,
+            state: "completed",
+            outcome: "approved",
+            assigned_to: null,
+          },
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    expect(await screen.findByText("This task is approved")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve order…" })).not.toBeInTheDocument();
   });
 });
