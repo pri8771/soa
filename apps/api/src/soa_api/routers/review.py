@@ -37,11 +37,18 @@ from soa_db.documents import Document, DocumentRepository
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository
 from soa_db.pages import DocumentPageRepository
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from soa_db.review_comments import (
+    MAX_COMMENT_LENGTH,
+    ReviewComment,
+    ReviewCommentRepository,
+    add_comment,
+)
 from soa_db.review_tasks import (
     InvalidReviewTaskTransitionError,
     ReviewTask,
     ReviewTaskRepository,
     ReviewTaskState,
+    escalate_task,
     release_task,
 )
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
@@ -106,6 +113,9 @@ def _serialize(task: ReviewTask, document: Document | None) -> dict[str, Any]:
         "reasons": task.reasons,
         "outcome": task.outcome,
         "version": task.version,
+        "escalated_at": task.escalated_at.isoformat() if task.escalated_at else None,
+        "escalated_by": task.escalated_by,
+        "escalation_reason": task.escalation_reason,
         "created_at": task.created_at.isoformat(),
         "document_filename": document.original_filename if document else None,
         "document_state": document.state if document else None,
@@ -616,3 +626,94 @@ async def correct_field(
         "task_version": task.version,
         "revalidation": revalidation,
     }
+
+
+def _serialize_comment(comment: ReviewComment) -> dict[str, Any]:
+    return {
+        "id": str(comment.id),
+        "task_id": str(comment.task_id),
+        "document_id": str(comment.document_id),
+        "author": comment.author,
+        "body": comment.body,
+        "mentions": comment.mentions,
+        "created_at": comment.created_at.isoformat(),
+    }
+
+
+@router.get("/orgs/{organization_slug}/review-tasks/{task_id}/comments")
+async def list_review_comments(
+    task_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """The comment thread on a review task (REV-011), oldest first. Any
+    reviewer in the organization may read and write the thread — commenting
+    is collaboration, not editing, so it is not restricted to the assignee."""
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    comments = await ReviewCommentRepository(session, authorized.org_context).list_for_task(task_id)
+    return {"items": [_serialize_comment(comment) for comment in comments]}
+
+
+class CommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=MAX_COMMENT_LENGTH)
+
+
+@router.post(
+    "/orgs/{organization_slug}/review-tasks/{task_id}/comments",
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_review_comment(
+    task_id: uuid.UUID,
+    body: CommentRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    try:
+        comment = await add_comment(
+            session,
+            authorized.org_context,
+            task_id=task.id,
+            document_id=task.document_id,
+            author=_actor(authorized),
+            body=body.body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+    return _serialize_comment(comment)
+
+
+class EscalateRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/escalate")
+async def escalate_review_task(
+    task_id: uuid.UUID,
+    body: EscalateRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Escalate a task (REV-011): records who raised it and why, bumps
+    queue priority, and returns an in-progress task to OPEN so a
+    supervisor can claim it. Settled tasks cannot be escalated."""
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    try:
+        await escalate_task(
+            session,
+            authorized.org_context,
+            task=task,
+            reason=body.reason,
+            actor_id=_actor(authorized),
+        )
+    except InvalidReviewTaskTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+    return _serialize(task, None)

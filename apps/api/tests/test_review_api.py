@@ -669,3 +669,168 @@ async def test_new_row_and_cleared_row_corrections(
     assert revalidation["decision"]["route"] == "review_required"
     codes = [r["rule_key"] for r in revalidation["decision"]["reasons"] if r["rule_key"]]
     assert "totals.header_matches_lines" in codes
+
+
+async def test_comments_are_tenant_scoped_audited_and_body_free_in_notifications(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """REV-011: the comment thread round-trips with mentions extracted,
+    lands in the audit trail, and the outbox notification carries ids
+    only — NEVER the comment body."""
+    from sqlalchemy import select
+
+    from soa_db.outbox import OutboxEvent
+
+    client, db = harness
+    (task_id,) = await seed_tasks(client, db, count=1)
+
+    body = "Totals look off — @admin can you check the freight line? Contains ACME-PO-77."
+    created = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/comments",
+        json={"body": body},
+        headers=SUPERVISOR,
+    )
+    assert created.status_code == 201, created.text
+    comment = created.json()
+    assert comment["body"] == body
+    assert comment["mentions"] == ["admin"]
+    assert comment["author"].startswith("user:")
+
+    # Any reviewer in the org reads the thread; ordering is oldest first.
+    second = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/comments",
+        json={"body": "Looking now."},
+        headers=ADMIN,
+    )
+    assert second.status_code == 201
+    listing = client.get(f"/orgs/northstar/review-tasks/{task_id}/comments", headers=ADMIN).json()
+    assert [c["body"] for c in listing["items"]] == [body, "Looking now."]
+
+    # Audited — with length only, never the text.
+    history = client.get(
+        f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
+    ).json()["history"]
+    audited = [e for e in history if e["action"] == "review.comment_added"]
+    assert len(audited) == 2
+    assert audited[0]["summary"] == {"comment_id": comment["id"], "length": len(body)}
+    assert "ACME-PO-77" not in str(audited)
+
+    # The notification event exists but does NOT contain the body.
+    async with db.session_scope() as session:
+        events = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(OutboxEvent.event_type == "review.comment_added")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 2
+        first_event = next(e for e in events if e.payload["comment_id"] == comment["id"])
+        assert first_event.payload["task_id"] == task_id
+        assert first_event.payload["mentions"] == ["admin"]
+        assert "body" not in first_event.payload
+        assert "ACME-PO-77" not in str(first_event.payload)
+
+    # Whitespace-only bodies are refused before anything is written.
+    blank = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/comments",
+        json={"body": "   "},
+        headers=SUPERVISOR,
+    )
+    assert blank.status_code == 400
+
+    # Permission matrix: no documents.review, no thread; unknown task 404.
+    assert (
+        client.get(f"/orgs/northstar/review-tasks/{task_id}/comments", headers=AUDITOR).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/orgs/northstar/review-tasks/{task_id}/comments",
+            json={"body": "x"},
+            headers=AUDITOR,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(
+            f"/orgs/northstar/review-tasks/{uuid.uuid4()}/comments", headers=SUPERVISOR
+        ).status_code
+        == 404
+    )
+
+
+async def test_escalation_releases_reprioritizes_and_records_ownership(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """REV-011 escalation: an in-progress task returns to OPEN with the
+    reason and escalator recorded and the priority raised, so a
+    supervisor can claim it; settled tasks refuse escalation."""
+    client, db = harness
+    task_ids = await seed_tasks(client, db, count=2)
+    task_id = task_ids[0]  # priority 30
+
+    claimed = client.post(f"/orgs/northstar/review-tasks/{task_id}/claim", headers=SUPERVISOR)
+    assert claimed.status_code == 200
+
+    escalated = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/escalate",
+        json={"reason": "Handwritten totals; needs a supervisor decision."},
+        headers=SUPERVISOR,
+    )
+    assert escalated.status_code == 200, escalated.text
+    payload = escalated.json()
+    assert payload["state"] == "open"
+    assert payload["assigned_to"] is None
+    assert payload["priority"] == 10  # jumped the queue from 30
+    assert payload["escalated_by"].startswith("user:")
+    assert payload["escalation_reason"] == "Handwritten totals; needs a supervisor decision."
+    assert payload["escalated_at"] is not None
+
+    # The escalated task is claimable again — by someone else.
+    reclaimed = client.post(f"/orgs/northstar/review-tasks/{task_id}/claim", headers=ADMIN)
+    assert reclaimed.status_code == 200
+    assert reclaimed.json()["escalation_reason"] is not None
+
+    # Escalation is audited.
+    history = client.get(f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=ADMIN).json()[
+        "history"
+    ]
+    audited = [e for e in history if e["action"] == "review_task.escalated"]
+    assert len(audited) == 1
+    assert audited[0]["summary"]["priority"] == 10
+
+    # A settled task cannot be escalated: 409, not a silent reopen.
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        from soa_db.review_tasks import ReviewTaskRepository, complete_task
+
+        task = await ReviewTaskRepository(session, context).get(uuid.UUID(task_id))
+        assert task is not None
+        await complete_task(session, context, task=task, outcome="approved", actor_id="user:test")
+    settled = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/escalate",
+        json={"reason": "too late"},
+        headers=SUPERVISOR,
+    )
+    assert settled.status_code == 409
+
+    # Permission matrix + blank reasons.
+    other = task_ids[1]
+    assert (
+        client.post(
+            f"/orgs/northstar/review-tasks/{other}/escalate",
+            json={"reason": "x"},
+            headers=AUDITOR,
+        ).status_code
+        == 403
+    )
+    blank = client.post(
+        f"/orgs/northstar/review-tasks/{other}/escalate",
+        json={"reason": "   "},
+        headers=SUPERVISOR,
+    )
+    assert blank.status_code == 400

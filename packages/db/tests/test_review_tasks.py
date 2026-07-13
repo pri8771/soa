@@ -9,6 +9,12 @@ from sqlalchemy.exc import IntegrityError
 
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.repository import OrganizationContext
+from soa_db.review_comments import (
+    MAX_COMMENT_LENGTH,
+    ReviewCommentRepository,
+    add_comment,
+    extract_mentions,
+)
 from soa_db.review_tasks import (
     InvalidReviewTaskTransitionError,
     ReviewTask,
@@ -17,6 +23,7 @@ from soa_db.review_tasks import (
     cancel_task,
     claim_task,
     complete_task,
+    escalate_task,
     release_task,
     route_document_to_review,
 )
@@ -217,3 +224,93 @@ async def test_tasks_are_tenant_scoped(db: DatabaseSessions) -> None:
     from soa_db.tenant_guard import RLS_PROTECTED_TABLES
 
     assert "review_tasks" in RLS_PROTECTED_TABLES
+
+
+# -- escalation (REV-011) ----------------------------------------------------------
+
+
+async def test_escalate_returns_in_progress_task_to_open_with_ownership(
+    db: DatabaseSessions,
+) -> None:
+    task_id = await make_task(db)
+    async with db.session_scope() as session:
+        task = await ReviewTaskRepository(session, CONTEXT).get(task_id)
+        assert task is not None
+        await claim_task(session, CONTEXT, task=task, user_id="user:reviewer")
+        await escalate_task(
+            session, CONTEXT, task=task, reason="needs supervisor", actor_id="user:reviewer"
+        )
+        assert task.state == "open"
+        assert task.assigned_to is None
+        assert task.priority == 10  # min(50, 10): escalations jump the queue
+        assert task.escalated_by == "user:reviewer"
+        assert task.escalation_reason == "needs supervisor"
+        assert task.escalated_at is not None
+        # Still claimable after escalation.
+        await claim_task(session, CONTEXT, task=task, user_id="user:supervisor")
+        assert task.state == "in_progress"
+
+
+async def test_escalate_refuses_settled_tasks_and_blank_reasons(db: DatabaseSessions) -> None:
+    task_id = await make_task(db)
+    async with db.session_scope() as session:
+        task = await ReviewTaskRepository(session, CONTEXT).get(task_id)
+        assert task is not None
+        with pytest.raises(ValueError, match="needs a reason"):
+            await escalate_task(session, CONTEXT, task=task, reason="   ", actor_id="user:x")
+        # An OPEN task escalates in place (no release needed).
+        await escalate_task(session, CONTEXT, task=task, reason="stuck", actor_id="user:x")
+        assert task.state == "open"
+        await claim_task(session, CONTEXT, task=task, user_id="user:x")
+        await complete_task(session, CONTEXT, task=task, outcome="approved", actor_id="user:x")
+        with pytest.raises(InvalidReviewTaskTransitionError):
+            await escalate_task(session, CONTEXT, task=task, reason="too late", actor_id="user:x")
+
+
+# -- comments (REV-011) ------------------------------------------------------------
+
+
+async def test_add_comment_validates_extracts_mentions_and_scopes_by_tenant(
+    db: DatabaseSessions,
+) -> None:
+    assert extract_mentions("ping @alice and @bob.smith — also @alice again") == [
+        "alice",
+        "bob.smith",
+    ]
+    assert extract_mentions("no handles here, a@b is too short") == []
+
+    task_id = await make_task(db)
+    async with db.session_scope() as session:
+        with pytest.raises(ValueError, match="needs a body"):
+            await add_comment(
+                session, CONTEXT, task_id=task_id, document_id=DOC, author="user:x", body="  "
+            )
+        with pytest.raises(ValueError, match="limited to"):
+            await add_comment(
+                session,
+                CONTEXT,
+                task_id=task_id,
+                document_id=DOC,
+                author="user:x",
+                body="x" * (MAX_COMMENT_LENGTH + 1),
+            )
+        comment = await add_comment(
+            session,
+            CONTEXT,
+            task_id=task_id,
+            document_id=DOC,
+            author="user:x",
+            body="  @alice please verify the totals  ",
+        )
+        assert comment.body == "@alice please verify the totals"  # stored trimmed
+        assert comment.mentions == ["alice"]
+
+    async with db.session_scope() as session:
+        mine = await ReviewCommentRepository(session, CONTEXT).list_for_task(task_id)
+        assert [c.body for c in mine] == ["@alice please verify the totals"]
+        other = OrganizationContext(organization_id=ORG_B)
+        assert await ReviewCommentRepository(session, other).list_for_task(task_id) == []
+
+    from soa_db.tenant_guard import RLS_PROTECTED_TABLES
+
+    assert "review_comments" in RLS_PROTECTED_TABLES

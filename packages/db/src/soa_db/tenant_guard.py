@@ -49,6 +49,7 @@ RLS_PROTECTED_TABLES = (
     "extracted_fields",  # 0023
     "review_tasks",  # 0024
     "field_corrections",  # 0025
+    "review_comments",  # 0026
 )
 
 

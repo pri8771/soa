@@ -91,6 +91,11 @@ class ReviewTask(
     #: How the task ended: approved/rejected for completions, a safe
     #: reason for cancellations.
     outcome: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: Escalation (REV-011): why, who raised it, and when. An escalated
+    #: task returns to OPEN so a supervisor can take ownership.
+    escalated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    escalated_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    escalation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     __table_args__ = (
         # One ACTIVE primary task per document.
@@ -315,6 +320,49 @@ async def cancel_task(
     return task
 
 
+async def escalate_task(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    task: ReviewTask,
+    reason: str,
+    actor_id: str,
+) -> ReviewTask:
+    """Escalate: record why and who, raise the queue priority, and hand
+    the task back to OPEN so a supervisor can claim ownership."""
+    if not reason.strip():
+        raise ValueError("escalation needs a reason")
+    if task.state == ReviewTaskState.IN_PROGRESS.value:
+        await _transition(
+            session,
+            context,
+            task,
+            ReviewTaskState.OPEN,
+            actor_id=actor_id,
+            summary={"escalated": True, "released_from": task.assigned_to},
+        )
+        task.assigned_to = None
+        task.assigned_at = None
+    elif task.state != ReviewTaskState.OPEN.value:
+        raise InvalidReviewTaskTransitionError(task.id, task.state, "escalated")
+    task.escalated_at = utcnow()
+    task.escalated_by = actor_id
+    task.escalation_reason = reason.strip()
+    task.priority = min(task.priority, 10)  # escalations jump the queue
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor_id,
+        action="review_task.escalated",
+        target_type="review_task",
+        target_id=str(task.id),
+        organization_id=context.organization_id,
+        summary={"reason": reason.strip(), "priority": task.priority},
+    )
+    return task
+
+
 async def cancel_active_task_for_document(
     session: AsyncSession,
     context: OrganizationContext,
@@ -340,6 +388,7 @@ __all__ = [
     "cancel_task",
     "claim_task",
     "complete_task",
+    "escalate_task",
     "release_task",
     "route_document_to_review",
 ]
