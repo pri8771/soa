@@ -1045,6 +1045,34 @@ export function fetchQualitySnapshot(organizationSlug: string): Promise<QualityS
   return apiFetch(`/orgs/${organizationSlug}/analytics/quality`);
 }
 
+// --- Cost dashboard (ANA-006) ---
+
+export interface UsageGroup {
+  stream_id: string | null;
+  provider: string;
+  provider_model: string | null;
+  cost_category: string;
+  billed_unit: string | null;
+  billed_quantity: number | null;
+  pages: number;
+  entries: number;
+  estimated_cents: number;
+  adjustment_cents: number;
+  reconciled_cents: number;
+}
+
+export interface UsageSnapshot {
+  window: { since: string; until: string; timezone: string };
+  groups: UsageGroup[];
+  totals: { estimated_cents: number; adjustment_cents: number; reconciled_cents: number };
+  semantics: Record<string, string>;
+  quotas: { configured: boolean; reason: string };
+}
+
+export function fetchUsageSnapshot(organizationSlug: string): Promise<UsageSnapshot> {
+  return apiFetch(`/orgs/${organizationSlug}/analytics/usage`);
+}
+
 // --- Catalog candidate matching in review (CAT-010) ---
 
 export interface CatalogMatchFeature {

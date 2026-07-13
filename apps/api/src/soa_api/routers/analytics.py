@@ -20,6 +20,7 @@ from soa_api.dependencies import DbSession
 from soa_db.analytics import operational_snapshot
 from soa_db.analytics_quality import quality_snapshot
 from soa_db.types import utcnow
+from soa_db.usage_ledger import usage_summary
 
 router = APIRouter(tags=["analytics"])
 
@@ -95,7 +96,7 @@ def _attention_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 @router.get("/orgs/{organization_slug}/analytics/operations")
 async def operations_dashboard(
-    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("analytics.read"))],
     session: DbSession,
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
@@ -127,7 +128,7 @@ def _window(since: str | None, until: str | None) -> tuple[datetime, datetime]:
 
 @router.get("/orgs/{organization_slug}/analytics/quality")
 async def quality_dashboard(
-    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("analytics.read"))],
     session: DbSession,
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
@@ -138,3 +139,29 @@ async def quality_dashboard(
     on the payload — the UI shows them rather than rounding them away."""
     since_dt, until_dt = _window(since, until)
     return await quality_snapshot(session, authorized.org_context, since=since_dt, until=until_dt)
+
+
+@router.get("/orgs/{organization_slug}/analytics/usage")
+async def usage_dashboard(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("analytics.read"))],
+    session: DbSession,
+    since: Annotated[str | None, Query()] = None,
+    until: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """The ANA-006 read model: the ANA-003 usage summary for the window.
+    Estimated cost, appended adjustments, and the reconciled total stay
+    separate; providers appear by catalog NAME only — no billing account
+    identifiers or secrets exist on this surface. Quota thresholds are
+    honestly absent until the ANA-009 quota policy lands."""
+    since_dt, until_dt = _window(since, until)
+    summary = await usage_summary(session, authorized.org_context, since=since_dt, until=until_dt)
+    return {
+        **summary,
+        "quotas": {
+            "configured": False,
+            "reason": (
+                "no quota policy is configured yet (ANA-009) — usage is shown "
+                "without budget thresholds or alerts"
+            ),
+        },
+    }

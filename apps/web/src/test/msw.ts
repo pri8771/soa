@@ -775,6 +775,55 @@ export const handlers = [
       },
     });
   }),
+  http.get("/api/orgs/:slug/analytics/usage", () =>
+    HttpResponse.json({
+      window: {
+        since: "2026-06-29T00:00:00+00:00",
+        until: "2026-07-13T00:00:00+00:00",
+        timezone: "UTC",
+      },
+      groups: [
+        {
+          stream_id: null,
+          provider: "hosted-ocr",
+          provider_model: null,
+          cost_category: "ocr",
+          billed_unit: "pages",
+          billed_quantity: 120,
+          pages: 120,
+          entries: 12,
+          estimated_cents: 1200,
+          adjustment_cents: -300,
+          reconciled_cents: 900,
+        },
+        {
+          stream_id: null,
+          provider: "local-llm",
+          provider_model: "qwen",
+          cost_category: "extraction",
+          billed_unit: "tokens",
+          billed_quantity: 512000,
+          pages: 0,
+          entries: 12,
+          estimated_cents: 0,
+          adjustment_cents: 0,
+          reconciled_cents: 0,
+        },
+      ],
+      totals: { estimated_cents: 1200, adjustment_cents: -300, reconciled_cents: 900 },
+      semantics: {
+        estimated_cents: "our price estimate at recording time",
+        billed_quantity: "provider-metered units (facts), summed per billed_unit only",
+        reconciled_cents: "estimated + appended adjustments; rows are immutable",
+      },
+      quotas: {
+        configured: false,
+        reason:
+          "no quota policy is configured yet (ANA-009) — usage is shown without budget " +
+          "thresholds or alerts",
+      },
+    }),
+  ),
   http.get("/api/orgs/:slug/analytics/quality", () =>
     HttpResponse.json({
       window: {

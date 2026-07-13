@@ -158,3 +158,49 @@ async def test_quality_snapshot_shape_and_honesty(
         ).status_code
         == 400
     )
+
+
+async def test_usage_snapshot_labels_and_quota_honesty(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.usage_ledger import record_usage
+
+    client, db = harness
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    async with db.session_scope() as session:
+        await record_usage(
+            session,
+            OrganizationContext(organization_id=org_id),
+            provider="hosted-ocr",
+            cost_category="ocr",
+            estimated_cost_cents=120,
+            billed_unit="pages",
+            billed_quantity=12,
+            actor_id="system:worker",
+        )
+    response = client.get("/orgs/northstar/analytics/usage", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    (group,) = payload["groups"]
+    # Estimated and reconciled stay separate, billed units are facts.
+    assert group["estimated_cents"] == 120
+    assert group["reconciled_cents"] == 120
+    assert (group["billed_unit"], group["billed_quantity"]) == ("pages", 12)
+    assert payload["semantics"]["reconciled_cents"].startswith("estimated + appended")
+    # No quota policy yet: stated, not faked.
+    assert payload["quotas"]["configured"] is False
+    assert "ANA-009" in payload["quotas"]["reason"]
+    # Provider appears by name only — nothing else identifies an account.
+    assert set(group) == {
+        "stream_id",
+        "provider",
+        "provider_model",
+        "cost_category",
+        "billed_unit",
+        "billed_quantity",
+        "pages",
+        "entries",
+        "estimated_cents",
+        "adjustment_cents",
+        "reconciled_cents",
+    }

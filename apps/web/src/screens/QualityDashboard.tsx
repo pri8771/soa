@@ -86,7 +86,10 @@ export function QualityDashboard() {
         </Banner>
         <p style={{ margin: 0, font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
           Window: {windowLabel} · Sample: {data.reviewed.tasks_completed} review task(s) completed
-          over {data.reviewed.runs} run(s)
+          over {data.reviewed.runs} run(s) ·{" "}
+          <Link to="/app/$organizationSlug/analytics/costs" params={{ organizationSlug: slug }}>
+            Cost dashboard
+          </Link>
         </p>
 
         <Section title="Field corrections">
