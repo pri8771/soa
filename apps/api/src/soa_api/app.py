@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 import soa_api
 from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
@@ -39,6 +40,31 @@ from soa_storage import MemoryObjectStore, ObjectStore
 from soa_storage.s3 import S3ObjectStore, S3Settings
 
 logger = logging.getLogger(__name__)
+
+
+def api_security_headers(*, is_production: bool) -> dict[str, str]:
+    """Response headers for every API response (SEC-002).
+
+    The API serves JSON to programmatic clients, so its CSP is total
+    lockdown — nothing may embed, script, or frame an API response. HSTS
+    applies only in production (local HTTP must keep working). CSRF
+    posture: authentication is header-borne (Authorization / X-Dev-User),
+    never cookies — the browser cannot be confused into attaching
+    credentials cross-site, so no CSRF token is needed; a test pins the
+    no-cookies invariant.
+    """
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-site",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    }
+    if is_production:
+        headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return headers
 
 
 def create_app(
@@ -124,6 +150,31 @@ def create_app(
     )
     deps.register_readiness_check("database", resolved_db.ping)
     app.state.dependencies = deps
+
+    # Cross-origin access (SEC-002): strict allowlist only; the settings
+    # validator has already refused wildcards. No configured origins
+    # means the middleware is not installed at all.
+    if resolved.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(resolved.cors_allowed_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Dev-User", CORRELATION_HEADER],
+            max_age=600,
+        )
+
+    security_headers = api_security_headers(is_production=resolved.is_production)
+
+    @app.middleware("http")
+    async def security_headers_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        for name, value in security_headers.items():
+            response.headers.setdefault(name, value)
+        return response
 
     @app.middleware("http")
     async def correlation_middleware(

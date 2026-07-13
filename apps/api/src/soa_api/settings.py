@@ -66,6 +66,25 @@ class ApiSettings(WebServiceSettings):
     # this shared secret; unset disables the endpoint entirely.
     email_intake_secret: str | None = None
 
+    # Cross-origin access (SEC-002): a STRICT allowlist of browser
+    # origins. Empty means no cross-origin access at all. Wildcards are
+    # refused — credentialed wildcard CORS hands the API to every site.
+    cors_allowed_origins: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_cors_allowlist(self) -> Self:
+        for origin in self.cors_allowed_origins:
+            if "*" in origin:
+                raise ValueError(
+                    "cors_allowed_origins must name each origin explicitly — "
+                    "wildcard credentialed CORS is forbidden"
+                )
+            if not origin.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+                raise ValueError(
+                    f"CORS origin {origin!r} must be https:// (or localhost for development)"
+                )
+        return self
+
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:
         if self.is_production:
