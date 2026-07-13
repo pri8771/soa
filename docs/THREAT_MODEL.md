@@ -92,9 +92,14 @@ support.
   instructions (JSON-as-delimiter), strips C0 controls, refuses
   instructions containing URLs, enforces build limits, and pins a platform
   security prompt (`apps/worker/src/soa_worker/model_request_builder.py`);
-  extraction runs with no tools and temperature 0; every LLM result carries a
-  capability warning; instruction content is a closed shape with size caps
-  (`packages/db/src/soa_db/instructions.py`).
+  extraction runs with no tools and temperature 0; response handling is
+  schema-only (unrequested keys dropped, injected tool calls ignored, values
+  coerced to strings, confidence clamped, evidence confined to real pages);
+  every LLM result carries a capability warning; instruction content is a
+  closed shape with size caps (`packages/db/src/soa_db/instructions.py`). A
+  shared injection corpus (`soa_fixtures.injection_corpus`) drives a required
+  CI suite against both defences (`tests/security/test_prompt_injection.py`,
+  SEC-007).
 - **Residual:** injection can still degrade extraction QUALITY (wrong values);
   the review flow and validation rules are the containment, not the prompt.
 
