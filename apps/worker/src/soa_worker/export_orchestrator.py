@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import soa_worker.webhook_adapter  # noqa: F401  (registers the "webhook" adapter)
 from soa_canonical.export_encoding import ExportMetadata
 from soa_canonical.mapping_engine import (
     MappingDefinitionError,
@@ -45,8 +46,12 @@ from soa_db.integrations import (
 )
 from soa_db.repository import OrganizationContext
 from soa_storage import ObjectStore
+from soa_worker.erp_adapter import (
+    AdapterDeliveryRequest,
+    UnknownAdapterError,
+    resolve_adapter,
+)
 from soa_worker.export_artifacts import store_export_artifact
-from soa_worker.webhook import deliver_webhook
 
 ACTOR = "system:export"
 
@@ -179,16 +184,26 @@ async def execute_export(
     )
     body = await store.get(stored.artifact.object_key)
 
-    webhook = await deliver_webhook(
+    # Delivery goes through the ADAPTER CONTRACT (EXP-010): resolve by
+    # integration type — orchestration never special-cases a destination.
+    try:
+        adapter = resolve_adapter(integration.integration_type)
+    except UnknownAdapterError as unknown:
+        return await _fail_terminal(
+            session, context, job=job, document=document, reason=str(unknown)[:500]
+        )
+    webhook = await adapter.deliver(
         client,
-        url=integration.endpoint_url,
-        body=body,
-        secret=secret,
-        business_key=job.business_key,
-        attempt_number=job.attempt_count + 1,
-        timestamp=timestamp,
-        allowlist=allowlist,
-        resolve=resolve,
+        AdapterDeliveryRequest(
+            url=integration.endpoint_url,
+            body=body,
+            secret=secret,
+            business_key=job.business_key,
+            attempt_number=job.attempt_count + 1,
+            timestamp=timestamp,
+            allowlist=allowlist,
+            resolve=resolve,
+        ),
     )
     attempt = await record_delivery_attempt(
         session,
