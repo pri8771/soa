@@ -80,6 +80,9 @@ class ReviewTask(
     #: rule_key}] — every entry names its source.
     reasons: Mapped[list[Any]] = mapped_column(PORTABLE_JSON, nullable=False, default=list)
     priority: Mapped[int] = mapped_column(nullable=False, default=100)
+    #: True when a blocking rule fired: the document cannot export until
+    #: resolved, so these tasks surface in their own queue view.
+    blocking: Mapped[bool] = mapped_column(nullable=False, default=False)
     sla_due_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     assigned_to: Mapped[str | None] = mapped_column(String(200), nullable=True)
     assigned_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -173,6 +176,7 @@ async def route_document_to_review(
     run_id: uuid.UUID,
     reasons: Sequence[Any],
     priority: int = 100,
+    blocking: bool = False,
     sla_due_at: datetime | None = None,
     actor_id: str = "system:pipeline",
 ) -> ReviewTask:
@@ -198,6 +202,7 @@ async def route_document_to_review(
             run_id=run_id,
             reasons=_validate_reasons(reasons),
             priority=priority,
+            blocking=blocking,
             sla_due_at=sla_due_at,
         )
     )

@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column("state", sa.String(20), nullable=False),
         sa.Column("reasons", sa.JSON(), nullable=False),
         sa.Column("priority", sa.Integer(), nullable=False),
+        sa.Column("blocking", sa.Boolean(), nullable=False),
         sa.Column("sla_due_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("assigned_to", sa.String(200), nullable=True),
         sa.Column("assigned_at", sa.DateTime(timezone=True), nullable=True),

@@ -395,6 +395,7 @@ class _Pipeline:
                 run_id=run.id,
                 reasons=[reason.to_json() for reason in decision.reasons],
                 priority=document.priority,
+                blocking=evaluation.blocking,
                 sla_due_at=document.sla_due_at,
                 actor_id=ACTOR,
             )

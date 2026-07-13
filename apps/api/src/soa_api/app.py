@@ -20,6 +20,7 @@ from soa_api.routers import (
     organizations,
     processes,
     public_ingest,
+    review,
     uploads,
 )
 from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
@@ -155,6 +156,7 @@ def create_app(
     app.include_router(artifacts.router)
     app.include_router(uploads.router)
     app.include_router(documents.router)
+    app.include_router(review.router)
     app.include_router(public_ingest.router)
     app.include_router(email_intake.router)
     return app
