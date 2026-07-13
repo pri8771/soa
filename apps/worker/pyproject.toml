@@ -10,6 +10,7 @@ dependencies = [
     "soa-normalize",
     "soa-rules",
     "soa-canonical",
+    "httpx>=0.27",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "pypdfium2>=4.30",
