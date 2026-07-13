@@ -57,6 +57,9 @@ RLS_PROTECTED_TABLES = (
     "export_jobs",  # 0030
     "delivery_attempts",  # 0030
     "instruction_versions",  # 0031
+    "gold_datasets",  # 0032
+    "gold_dataset_versions",  # 0032
+    "gold_documents",  # 0032
 )
 
 
