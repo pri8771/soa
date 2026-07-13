@@ -8,6 +8,13 @@ operand's resolved value, so "why did this rule fire" is answerable from
 the trace alone.
 """
 
+from soa_rules.confidence import (
+    ConfidencePolicy,
+    FieldSignal,
+    Reason,
+    RouteDecision,
+    decide_route,
+)
 from soa_rules.evaluator import (
     EvaluationInput,
     EvaluationLimits,
@@ -20,12 +27,17 @@ from soa_rules.evaluator import (
 )
 
 __all__ = [
+    "ConfidencePolicy",
     "EvaluationInput",
     "EvaluationLimits",
+    "FieldSignal",
+    "Reason",
+    "RouteDecision",
     "RuleComplexityError",
     "RuleDefinitionError",
     "RuleFinding",
     "RuleSetEvaluation",
+    "decide_route",
     "evaluate_expression",
     "evaluate_rule_set",
 ]
