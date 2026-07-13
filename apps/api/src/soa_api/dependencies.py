@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_api.settings import ApiSettings
 from soa_config.telemetry import Telemetry
 from soa_db import DatabaseSessions
+from soa_storage import ObjectStore
 
 if TYPE_CHECKING:
     from soa_api.auth.oidc import OidcTokenValidator
@@ -35,6 +36,7 @@ class Dependencies:
     telemetry: Telemetry = field(default_factory=Telemetry.noop)
     oidc_validator: "OidcTokenValidator | None" = None
     db: DatabaseSessions | None = None
+    object_store: ObjectStore | None = None
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:
@@ -74,3 +76,17 @@ async def get_db_session(
 
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+def get_object_store(
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> ObjectStore:
+    if deps.object_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is not configured.",
+        )
+    return deps.object_store
+
+
+ObjectStoreDep = Annotated[ObjectStore, Depends(get_object_store)]

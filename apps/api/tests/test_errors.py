@@ -20,6 +20,9 @@ def make_settings(environment: Environment) -> ApiSettings:
             oidc_issuer="https://id.example.com/",
             oidc_audience="soa-api",
             oidc_jwks_url="https://id.example.com/.well-known/jwks.json",
+            storage_endpoint_url="https://s3.internal.example.com",
+            storage_access_key="svc-storage",
+            storage_secret_key="managed-storage-secret",
         )
     return ApiSettings(environment=environment)
 

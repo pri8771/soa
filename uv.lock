@@ -2619,6 +2619,7 @@ dependencies = [
     { name = "soa-config" },
     { name = "soa-db" },
     { name = "soa-fixtures" },
+    { name = "soa-storage" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2632,6 +2633,7 @@ requires-dist = [
     { name = "soa-config", editable = "packages/config" },
     { name = "soa-db", editable = "packages/db" },
     { name = "soa-fixtures", editable = "packages/test-fixtures" },
+    { name = "soa-storage", editable = "packages/storage" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 

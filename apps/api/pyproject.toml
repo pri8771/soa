@@ -12,6 +12,7 @@ dependencies = [
     "pyjwt[crypto]>=2.10",
     "soa-fixtures",
     "soa-db",
+    "soa-storage",
     "email-validator>=2.2",
 ]
 
@@ -19,6 +20,7 @@ dependencies = [
 soa-config = { workspace = true }
 soa-fixtures = { workspace = true }
 soa-db = { workspace = true }
+soa-storage = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

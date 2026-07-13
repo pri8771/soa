@@ -10,11 +10,13 @@ import soa_api
 from soa_api.auth.oidc import OidcTokenValidator, httpx_jwks_fetcher
 from soa_api.dependencies import Dependencies
 from soa_api.errors import CORRELATION_HEADER, register_error_handlers
-from soa_api.routers import health, jobs, me, organizations, processes
+from soa_api.routers import artifacts, health, jobs, me, organizations, processes
 from soa_api.settings import ApiSettings, load_settings
 from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
 from soa_db import DatabaseSessions, create_database_engine
+from soa_storage import MemoryObjectStore, ObjectStore
+from soa_storage.s3 import S3ObjectStore, S3Settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ def create_app(
     telemetry: Telemetry | None = None,
     oidc_validator: "OidcTokenValidator | None" = None,
     db: DatabaseSessions | None = None,
+    object_store: ObjectStore | None = None,
 ) -> FastAPI:
     """Create the API application.
 
@@ -60,11 +63,30 @@ def create_app(
     if resolved_db is None:
         resolved_db = DatabaseSessions(create_database_engine(resolved.database_url))
 
+    resolved_store = object_store
+    if resolved_store is None:
+        if resolved.storage_endpoint_url:
+            resolved_store = S3ObjectStore(
+                S3Settings(
+                    endpoint_url=resolved.storage_endpoint_url,
+                    access_key=resolved.storage_access_key or "",
+                    secret_key=resolved.storage_secret_key or "",
+                    bucket=resolved.storage_bucket,
+                    region=resolved.storage_region,
+                )
+            )
+        elif not resolved.is_production:
+            # Local development/tests: real storage semantics, no service.
+            # Production without configured storage keeps the dependency
+            # unset so storage endpoints fail loudly with 503.
+            resolved_store = MemoryObjectStore()
+
     deps = Dependencies(
         settings=resolved,
         telemetry=resolved_telemetry,
         oidc_validator=oidc_validator,
         db=resolved_db,
+        object_store=resolved_store,
     )
     deps.register_readiness_check("database", resolved_db.ping)
     app.state.dependencies = deps
@@ -104,4 +126,5 @@ def create_app(
     app.include_router(organizations.router)
     app.include_router(jobs.router)
     app.include_router(processes.router)
+    app.include_router(artifacts.router)
     return app

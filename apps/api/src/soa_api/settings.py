@@ -28,6 +28,17 @@ class ApiSettings(WebServiceSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
 
+    # Object storage (STO-002/004). When the endpoint is unset the API
+    # falls back to an in-process memory store outside production; in
+    # production storage must be configured explicitly.
+    storage_endpoint_url: str | None = None
+    storage_access_key: str | None = None
+    storage_secret_key: str | None = None
+    storage_bucket: str = "soa-artifacts"
+    storage_region: str = "us-east-1"
+    # Signed download URLs are short-lived by design.
+    download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+
     @model_validator(mode="after")
     def _validate_auth_configuration(self) -> Self:
         if self.is_production:
@@ -36,6 +47,13 @@ class ApiSettings(WebServiceSettings):
                 problems.append("auth_dev_mode must be disabled in production")
             if not (self.oidc_issuer and self.oidc_audience and self.oidc_jwks_url):
                 problems.append("production requires oidc_issuer, oidc_audience, and oidc_jwks_url")
+            if not (
+                self.storage_endpoint_url and self.storage_access_key and self.storage_secret_key
+            ):
+                problems.append(
+                    "production requires storage_endpoint_url, storage_access_key, "
+                    "and storage_secret_key"
+                )
             if problems:
                 raise ValueError("; ".join(problems))
         return self
