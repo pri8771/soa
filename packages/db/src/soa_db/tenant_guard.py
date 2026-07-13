@@ -64,6 +64,7 @@ RLS_PROTECTED_TABLES = (
     "catalog_versions",  # 0033
     "catalog_records",  # 0033
     "catalog_bindings",  # 0033
+    "usage_ledger_entries",  # 0034
 )
 
 
