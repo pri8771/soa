@@ -95,7 +95,15 @@ Trivy runs with `ignore-unfixed: true`: an OS-package CVE with no
 released fix cannot be remediated by us, so failing on it would only
 force a noise exception. This differs deliberately from the dependency
 gate, which fails closed — application dependencies we *can* pin or
-upgrade get no such grace. The runtime sandbox profile those images must
+upgrade get no such grace.
+
+A small `.trivyignore` at the repo root suppresses advisories in the
+base image's Python **build tooling** (pip / setuptools / wheel), which
+sits in the system site-packages of `python:3.11-slim` but is never
+invoked by services that run from the self-contained `/app/.venv`. Each
+entry is documented with its reason — the container analog of the
+[exception process](#exception-process) above, not a blanket skip — and
+should disappear as REL-002 digest-pins refresh the base tooling. The runtime sandbox profile those images must
 satisfy at deploy time (read-only root filesystem, dropped capabilities,
 no network for converters) is specified in
 [`SANDBOX_PROFILE.md`](SANDBOX_PROFILE.md).

@@ -1,0 +1,20 @@
+# Trivy ignore list for the container images (REL-001 / SEC-011).
+#
+# These advisories are in the BASE IMAGE's Python build tooling
+# (pip / setuptools / its vendored jaraco.context / wheel), which lives
+# in the system site-packages of python:3.11-slim-bookworm. Our services
+# run from the self-contained /app/.venv and NEVER invoke pip, setuptools,
+# or wheel at runtime — the builder stage that used them is discarded — so
+# these "process a malicious tar/wheel archive" flaws are not reachable in
+# the running container.
+#
+# This file is the container analog of security/vulnerability-exceptions.
+# toml: a reviewed, in-repo, justified suppression rather than a blind
+# skip. Re-evaluate when the base image bumps its bundled build tooling
+# (REL-002 digest pinning) — the entries should then disappear on their
+# own.
+
+# jaraco.context (vendored in setuptools): path traversal via malicious tar
+CVE-2026-23949
+# wheel: privilege escalation / arbitrary code execution via malicious wheel
+CVE-2026-24049

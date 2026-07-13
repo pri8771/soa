@@ -324,6 +324,9 @@ jobs:
           severity: CRITICAL,HIGH
           # Unfixed OS-package CVEs cannot be remediated by us; the
           # dependency gate (soa_config.supply_chain) fails closed on app
-          # deps we CAN pin. See docs/SUPPLY_CHAIN_SECURITY.md.
+          # deps we CAN pin. Base-image build-tooling CVEs unreachable at
+          # runtime are justified in .trivyignore. See
+          # docs/SUPPLY_CHAIN_SECURITY.md.
           ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: "1"
