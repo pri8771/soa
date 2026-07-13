@@ -15,6 +15,12 @@ async def _run() -> None:
         environment=settings.environment.value,
         level="DEBUG" if settings.debug else "INFO",
     )
+    if settings.local_llm_endpoint:
+        # Optional profile (AIO-007): only a deployment that configured
+        # an endpoint gets the local LLM extraction capability.
+        from soa_worker.llm_extraction import register_local_llm_extraction
+
+        register_local_llm_extraction(settings.local_llm_endpoint, settings.local_llm_model)
     registry = HandlerRegistry()
     worker = Worker(settings, registry)
     worker.install_signal_handlers(asyncio.get_running_loop())
