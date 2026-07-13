@@ -34,6 +34,7 @@ dev = [
     "moto[server]>=5",
     "hypothesis>=6.115",
     "types-jsonschema>=4.23",
+    "types-openpyxl>=3.1",
 ]
 
 [tool.ruff]

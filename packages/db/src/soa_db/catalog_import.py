@@ -29,6 +29,7 @@ decision, not a default.
 
 import csv
 import io
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -149,16 +150,18 @@ def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
-def parse_catalog_csv(data: bytes, mapping: ColumnMapping) -> ParseResult:
-    """Parse and validate the upload. Issues are per-row facts, not
-    exceptions — the caller shows them all at once."""
-    text, encoding, warnings = _decode(data)
-    stripped = text.lstrip("\r\n")
-    if not stripped.strip():
-        raise CatalogImportError("the file is empty")
-    delimiter = _sniff_delimiter(stripped.splitlines()[0])
-    reader = csv.DictReader(io.StringIO(stripped), delimiter=delimiter)
-    header = reader.fieldnames or []
+def validate_import_rows(
+    rows: "Iterable[dict[str, str]]",
+    header: list[str],
+    mapping: ColumnMapping,
+    *,
+    warnings: list[str],
+    encoding: str,
+    delimiter: str,
+) -> ParseResult:
+    """The shared validation core: CSV (CAT-002) and XLSX (CAT-003) both
+    feed their rows through this, so every format gets identical issue
+    reporting, formula flagging, and bounds."""
     missing = [column for column in mapping.required_columns() if column not in header]
     if missing:
         raise CatalogImportError(
@@ -169,7 +172,7 @@ def parse_catalog_csv(data: bytes, mapping: ColumnMapping) -> ParseResult:
     records: list[ParsedRecord] = []
     issues: list[RowIssue] = []
     seen: set[str] = set()
-    for row_number, row in enumerate(reader, start=1):
+    for row_number, row in enumerate(rows, start=1):
         if row_number > MAX_ROWS:
             raise CatalogImportError(f"the file exceeds the {MAX_ROWS} row budget")
         cells = {key: (value or "").strip() for key, value in row.items() if key is not None}
@@ -199,15 +202,19 @@ def parse_catalog_csv(data: bytes, mapping: ColumnMapping) -> ParseResult:
 
         effective: dict[str, date | None] = {"from": None, "to": None}
         bad_date = False
-        for bound, column in (("from", mapping.effective_from), ("to", mapping.effective_to)):
-            if column and cells.get(column):
+        for bound, date_column in (
+            ("from", mapping.effective_from),
+            ("to", mapping.effective_to),
+        ):
+            if date_column and cells.get(date_column):
                 try:
-                    effective[bound] = _parse_date(cells[column])
+                    effective[bound] = _parse_date(cells[date_column])
                 except ValueError:
                     issues.append(
                         RowIssue(
                             row_number,
-                            f"{column!r} is not an ISO date (YYYY-MM-DD): {cells[column]!r}",
+                            f"{date_column!r} is not an ISO date (YYYY-MM-DD): "
+                            f"{cells[date_column]!r}",
                         )
                     )
                     bad_date = True
@@ -243,6 +250,21 @@ def parse_catalog_csv(data: bytes, mapping: ColumnMapping) -> ParseResult:
         warnings=tuple(warnings),
         encoding=encoding,
         delimiter=delimiter,
+    )
+
+
+def parse_catalog_csv(data: bytes, mapping: ColumnMapping) -> ParseResult:
+    """Parse and validate a CSV upload. Issues are per-row facts, not
+    exceptions — the caller shows them all at once."""
+    text, encoding, warnings = _decode(data)
+    stripped = text.lstrip("\r\n")
+    if not stripped.strip():
+        raise CatalogImportError("the file is empty")
+    delimiter = _sniff_delimiter(stripped.splitlines()[0])
+    reader = csv.DictReader(io.StringIO(stripped), delimiter=delimiter)
+    header = list(reader.fieldnames or [])
+    return validate_import_rows(
+        reader, header, mapping, warnings=warnings, encoding=encoding, delimiter=delimiter
     )
 
 
@@ -359,4 +381,5 @@ __all__ = [
     "import_identity",
     "parse_catalog_csv",
     "preview_import",
+    "validate_import_rows",
 ]

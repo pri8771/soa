@@ -8,6 +8,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "alembic>=1.14",
     "asyncpg>=0.30",
+    "openpyxl>=3.1",
 ]
 
 [tool.uv.sources]
