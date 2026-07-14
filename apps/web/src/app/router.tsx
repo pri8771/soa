@@ -18,6 +18,8 @@ import { StreamDetail } from "../screens/StreamDetail";
 import { Streams } from "../screens/Streams";
 import { DocumentDetail } from "../screens/DocumentDetail";
 import { DocumentsQueue } from "../screens/DocumentsQueue";
+import { GettingStarted } from "../screens/GettingStarted";
+import { Support } from "../screens/Support";
 import { Integrations } from "../screens/Integrations";
 import { MappingStudio } from "../screens/MappingStudio";
 import { ReviewQueue } from "../screens/ReviewQueue";
@@ -195,6 +197,18 @@ const operationsRoute = createRoute({
   component: Operations,
 });
 
+const gettingStartedRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "getting-started",
+  component: GettingStarted,
+});
+
+const supportRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "support",
+  component: Support,
+});
+
 const qualityRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "analytics",
@@ -219,6 +233,8 @@ const routeTree = rootRoute.addChildren([
   selectOrganizationRoute,
   appRoute.addChildren([
     operationsRoute,
+    gettingStartedRoute,
+    supportRoute,
     documentsRoute,
     uploadDocumentsRoute,
     documentDetailRoute,

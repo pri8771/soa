@@ -27,6 +27,7 @@ import {
   type UploadCompleteResult,
 } from "../api/client";
 import { AppShell } from "../shell/AppShell";
+import { HelpTip } from "../components/help/HelpTip";
 import { useShellSession } from "../shell/ShellContext";
 
 const ACCEPTED_TYPES: Record<string, string> = {
@@ -207,6 +208,7 @@ export function UploadDocuments() {
         { label: "Documents" },
         { label: "Upload" },
       ]}
+      actions={<HelpTip topic="upload" />}
     >
       <div style={{ display: "grid", gap: "var(--soa-space-5)", maxWidth: "56rem" }}>
         {!canUpload ? (

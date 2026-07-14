@@ -92,7 +92,9 @@ describe("Upload documents (ING-008)", () => {
     expect(screen.getByText(/Unsupported type/)).toBeInTheDocument();
     // Nothing ready to upload; the upload button is disabled and no
     // session was ever requested.
-    expect(screen.getByRole("button", { name: /Upload/ })).toBeDisabled();
+    // The submit button (name starts with "Upload"), not the "Help:
+    // Uploading documents" affordance.
+    expect(screen.getByRole("button", { name: /^Upload/ })).toBeDisabled();
     expect(sessionCalls).toEqual([]);
   });
 

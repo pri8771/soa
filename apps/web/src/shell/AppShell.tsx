@@ -19,6 +19,12 @@ import "./shell.css";
 /** Primary navigation, in blueprint order (§3.1). */
 export const NAV_ITEMS = [
   {
+    label: "Getting started",
+    to: "/app/$organizationSlug/getting-started",
+    permission: "organization.read",
+    icon: "✦",
+  },
+  {
     label: "Overview",
     to: "/app/$organizationSlug/overview",
     permission: "organization.read",
@@ -77,6 +83,12 @@ export const NAV_ITEMS = [
     to: "/app/$organizationSlug/settings",
     permission: "organization.manage",
     icon: "⚙",
+  },
+  {
+    label: "Support",
+    to: "/app/$organizationSlug/support",
+    permission: "organization.read",
+    icon: "☎",
   },
 ] as const;
 

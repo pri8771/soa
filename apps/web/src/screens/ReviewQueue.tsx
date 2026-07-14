@@ -25,6 +25,7 @@ import {
 } from "../api/client";
 import { DataTable } from "../components/table/DataTable";
 import { AppShell } from "../shell/AppShell";
+import { HelpTip } from "../components/help/HelpTip";
 import { useShellSession } from "../shell/ShellContext";
 
 const VIEW_OPTIONS = [
@@ -166,9 +167,12 @@ export function ReviewQueue() {
       title="Review"
       breadcrumbs={[{ label: session.organization.name }, { label: "Review" }]}
       actions={
-        <Button onPress={() => startNext.mutate()} isDisabled={startNext.isPending}>
-          Start next
-        </Button>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <HelpTip topic="review" />
+          <Button onPress={() => startNext.mutate()} isDisabled={startNext.isPending}>
+            Start next
+          </Button>
+        </div>
       }
     >
       <div style={{ display: "grid", gap: "var(--soa-space-5)" }}>

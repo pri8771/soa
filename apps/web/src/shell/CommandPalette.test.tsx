@@ -47,7 +47,7 @@ describe("CommandPalette", () => {
     const active = screen
       .getAllByRole("option")
       .find((option) => option.getAttribute("aria-selected") === "true");
-    expect(active).toHaveTextContent("Go to Review");
+    expect(active).toHaveTextContent("Go to Documents");
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
@@ -76,6 +76,11 @@ describe("CommandPalette permissions", () => {
       userId: "u-1",
     };
     const commands = buildNavigationCommands(session, () => {});
-    expect(commands.map((command) => command.label)).toEqual(["Go to Overview", "Go to Documents"]);
+    expect(commands.map((command) => command.label)).toEqual([
+      "Go to Getting started",
+      "Go to Overview",
+      "Go to Documents",
+      "Go to Support",
+    ]);
   });
 });
