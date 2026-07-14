@@ -26,6 +26,27 @@ def test_production_with_explicit_values_is_valid() -> None:
     assert settings.is_production
 
 
+def test_production_accepts_the_gcp_secret_backend() -> None:
+    settings = BaseServiceSettings(
+        environment=Environment.PRODUCTION,
+        secret_key=SecretStr(PROD_SECRET),
+        database_url=SecretStr(PROD_DB),
+        secrets_backend="gcp-secret-manager",
+        secrets_gcp_project="soa-pilot",
+    )
+    assert settings.is_production
+
+
+def test_gcp_backend_requires_a_project() -> None:
+    with pytest.raises(ValidationError, match="requires secrets_gcp_project"):
+        BaseServiceSettings(
+            environment=Environment.PRODUCTION,
+            secret_key=SecretStr(PROD_SECRET),
+            database_url=SecretStr(PROD_DB),
+            secrets_backend="gcp-secret-manager",
+        )
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_message"),
     [
@@ -48,7 +69,7 @@ def test_production_with_explicit_values_is_valid() -> None:
         ),
         (
             {"secrets_backend": "memory", "secrets_aws_region": None},
-            "requires the aws-secrets-manager secrets backend",
+            "requires a managed secrets backend",
         ),
     ],
 )

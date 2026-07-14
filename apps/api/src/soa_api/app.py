@@ -40,7 +40,7 @@ from soa_config.telemetry import Telemetry, configure_telemetry
 from soa_db import DatabaseSessions, create_database_engine
 from soa_storage import MemoryObjectStore, ObjectStore
 from soa_storage.s3 import S3ObjectStore, S3Settings
-from soa_storage.secrets_aws import build_secret_store
+from soa_storage.secrets_gcp import build_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -146,12 +146,13 @@ def create_app(
 
     resolved_secret_store = secret_store
     if resolved_secret_store is None:
-        # Settings validation already forced aws-secrets-manager in
+        # Settings validation already forced a managed backend in
         # production and required each backend's parameters (SEC-005).
         resolved_secret_store = build_secret_store(
             backend=resolved.secrets_backend,
             directory=resolved.secrets_directory,
             aws_region=resolved.secrets_aws_region,
+            gcp_project=resolved.secrets_gcp_project,
         )
 
     deps = Dependencies(

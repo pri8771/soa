@@ -45,9 +45,12 @@ class BaseServiceSettings(BaseSettings):
     # Secret store (SEC-005): where tenant-provided secret VALUES live.
     # The database stores only ``secretref://`` references. memory/file
     # are development backends; production must use a real manager.
-    secrets_backend: Literal["memory", "file", "aws-secrets-manager"] = "memory"
+    secrets_backend: Literal["memory", "file", "aws-secrets-manager", "gcp-secret-manager"] = (
+        "memory"
+    )
     secrets_directory: str | None = None  # required by the file backend
     secrets_aws_region: str | None = None  # required by the AWS backend
+    secrets_gcp_project: str | None = None  # required by the GCP backend
 
     @property
     def is_production(self) -> bool:
@@ -71,10 +74,10 @@ class BaseServiceSettings(BaseSettings):
         raw_db = self.database_url.get_secret_value()
         if any(credential in raw_db for credential in _DEV_DB_CREDENTIALS):
             problems.append("database_url must not use development credentials in production")
-        if self.secrets_backend != "aws-secrets-manager":
+        if self.secrets_backend not in ("aws-secrets-manager", "gcp-secret-manager"):
             problems.append(
-                "production requires the aws-secrets-manager secrets backend — "
-                "memory/file stores are development-only"
+                "production requires a managed secrets backend (aws-secrets-manager "
+                "or gcp-secret-manager) — memory/file stores are development-only"
             )
         if problems:
             raise ValueError("; ".join(problems))
@@ -86,6 +89,8 @@ class BaseServiceSettings(BaseSettings):
             raise ValueError("secrets_backend 'file' requires secrets_directory")
         if self.secrets_backend == "aws-secrets-manager" and not self.secrets_aws_region:
             raise ValueError("secrets_backend 'aws-secrets-manager' requires secrets_aws_region")
+        if self.secrets_backend == "gcp-secret-manager" and not self.secrets_gcp_project:
+            raise ValueError("secrets_backend 'gcp-secret-manager' requires secrets_gcp_project")
         return self
 
     @model_validator(mode="after")

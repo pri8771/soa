@@ -3,7 +3,12 @@ name = "soa-storage"
 version = "0.1.0"
 description = "Vendor-neutral object storage interface, contract tests, and adapters"
 requires-python = ">=3.11"
-dependencies = ["aiobotocore>=2.15", "soa-config"]
+dependencies = [
+  "aiobotocore>=2.15",
+  "google-cloud-secret-manager>=2.20",
+  "google-cloud-storage>=2.18",
+  "soa-config",
+]
 
 [tool.uv.sources]
 soa-config = { workspace = true }

@@ -154,11 +154,13 @@ See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md) and [`AI_OCR.md`](AI_OCR.md).
 
 Secrets are never stored as raw values in the database — only opaque
 `secretref://…` references are persisted, with values resolved from a
-secret store behind a stable interface (AWS Secrets Manager in
-production, forced by settings validation; GCP Secret Manager is the
-planned adapter for the chosen hosting — see [`DECISIONS.md`](DECISIONS.md)
-OPEN-001). Rotation issues a new reference rather than mutating one, so an
-audit trail can name exactly which credential version was in use.
+secret store behind a stable interface. Two managed production backends
+are implemented and selectable by settings — AWS Secrets Manager and GCP
+Secret Manager (the backend for the chosen GCP hosting, see
+[`DECISIONS.md`](DECISIONS.md) OPEN-001); production settings validation
+refuses the development memory/file stores. Rotation issues a new
+reference rather than mutating one, so an audit trail can name exactly
+which credential version was in use.
 
 A required CI test suite sweeps logs, telemetry spans, metrics, and API
 responses for leaked secrets or document content, and audit-event
