@@ -25,7 +25,6 @@ does not create a duplicate order. The connection test is a READ-ONLY
 metadata request that proves the token without creating anything.
 """
 
-
 import httpx
 
 from soa_worker.erp_adapter import (
