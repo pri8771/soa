@@ -57,9 +57,22 @@ https://quickbooks.api.intuit.com/v3/company/{realmId}/estimate
 
 ## Other ERPs
 
-NetSuite, SAP, and Microsoft Dynamics 365 reuse the same EXP-010 contract
-— each is a new adapter + registered integration type, not an
-orchestration change. QuickBooks Online is the first because its OAuth2
-REST API and JSON object model are the simplest to integrate; the others
-follow the pattern established here. See
-[`erp_adapter.py`](../apps/worker/src/soa_worker/erp_adapter.py).
+NetSuite, SAP S/4HANA, and Microsoft Dynamics 365 are also built, behind
+the same EXP-010 contract — each a registered integration type, not an
+orchestration change. Because all three share one shape (OAuth2 bearer
+auth over a JSON/OData REST endpoint), the transport lives once in a
+shared base and each vendor is a thin subclass; see
+[`erp_rest_adapters.py`](../apps/worker/src/soa_worker/erp_rest_adapters.py).
+
+| Integration type | Vendor | Sales-order object | Idempotency |
+| --- | --- | --- | --- |
+| `quickbooks_online` | QuickBooks Online | Estimate | RequestId parameter |
+| `netsuite` | NetSuite | `salesOrder` record | external-id upsert |
+| `microsoft_dynamics365` | Dynamics 365 | `salesorders` (OData) | alternate-key upsert |
+| `sap_s4hana` | SAP S/4HANA | `A_SalesOrder` (OData) | ETag (If-Match) |
+
+Each adapter is transport, auth, and response classification; the
+**mapping profile** (EXP-002/003) produces the vendor's object shape and
+sets the idempotency key. QuickBooks Online is documented in detail above
+because its API is the simplest to integrate; the others follow the same
+model. See [`erp_adapter.py`](../apps/worker/src/soa_worker/erp_adapter.py).

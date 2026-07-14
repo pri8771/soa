@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import soa_worker.erp_rest_adapters  # noqa: F401  (registers netsuite/dynamics/sap)
 import soa_worker.quickbooks_adapter  # noqa: F401  (registers "quickbooks_online")
 import soa_worker.webhook_adapter  # noqa: F401  (registers the "webhook" adapter)
 from soa_canonical.export_encoding import ExportMetadata

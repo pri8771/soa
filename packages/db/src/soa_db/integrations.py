@@ -41,8 +41,18 @@ from soa_db.versioning import (
 #: Fail-closed registry: an integration type that is not implemented
 #: cannot be configured. Webhook delivery is the EXP epic's target;
 #: further connector types join this set when they actually exist.
-#: ``quickbooks_online`` is the first real ERP connector (EXP-011).
-INTEGRATION_TYPES = frozenset({"webhook", "quickbooks_online"})
+#: ``quickbooks_online`` is the first real ERP connector (EXP-011); the
+#: bearer-REST family (NetSuite, Dynamics 365, SAP) follows the same
+#: EXP-010 contract.
+INTEGRATION_TYPES = frozenset(
+    {
+        "webhook",
+        "quickbooks_online",
+        "netsuite",
+        "microsoft_dynamics365",
+        "sap_s4hana",
+    }
+)
 
 
 class UnknownIntegrationTypeError(Exception):
