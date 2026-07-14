@@ -45,7 +45,24 @@ Owner explicitly rejected silent model retraining (Option A) and approved the ex
 
 ### 2.3 ERP integration posture
 
-No ERP adapter for the first pilot. Clients consume our **API / canonical JSON / signed webhook** and connect their own ERP. This matches ADR-023; `EXP-011` (first production ERP adapter) stays P1/deferred. Keep `EXP-010` (generic adapter contract) so a real adapter can be added without reworking export orchestration.
+Original pilot posture was API/canonical-JSON/webhook only. **Updated 2026-07-14 (owner):** build real ERP adapters — **QuickBooks Online first** (easiest), then NetSuite, SAP, Dynamics 365. All four are now DONE behind EXP-010 (`quickbooks_adapter.py` + the shared `erp_rest_adapters.py`); each is a registered `integration_type`. The mapping profile (EXP-002/003) still produces the vendor object shape; the adapters are transport/auth/classification.
+
+### 2.3a Session 2026-07-14 additions (all on `dev`, CI validating after repo went public)
+
+Owner decisions this session: hosting = **GCP/Firebase, not Firestore** (OPEN-001); LLMs = **local-first + BYO Claude/Gemini/OpenAI keys** (OPEN-004); ERPs = QuickBooks first then the big three. Built and pushed:
+
+- **AIO-008** hosted Claude adapter; **AIO-009** native Gemini adapter; BYO OpenAI/Gemini via the OpenAI-compatible adapter (Bearer auth). All reuse the AIO-011 builder + shared `model_extraction_result.py` parser. Local models via Ollama documented (`docs/LLM_PROVIDERS.md`).
+- **GTM-002** billing statement (`soa_db/billing_statement.py`, `docs/BILLING.md`); **GTM-004** versioned importable sample stream template (`soa_api/domain/sample_template.py`).
+- **SEC-013** `docs/SECURITY_AND_PRIVACY.md` (claims verified vs code).
+- **EXP-011 + family**: QuickBooks Online + NetSuite + Dynamics 365 + SAP adapters.
+- **GCP adapters**: `soa_storage/secrets_gcp.py` (GCP Secret Manager) + `soa_storage/gcs.py` (GCS object store), both behind existing interfaces, selectable via `storage_backend=gcs` / `secrets_backend=gcp-secret-manager` settings (wired in `app.py`).
+- **REL-002/REL-003** Terraform baseline (`infra/terraform/` — Cloud SQL+backups/PITR, Cloud Run, GCS, Secret Manager, VPC, monitoring; per-env tfvars; documents RPO≤5m/RTO≤1h). **REL-005** deploy workflow (`.github/workflows/deploy.yml` — migrate→deploy→readiness gate→smoke). Both authored ahead of a live project; owner runs `terraform apply` / wires WIF secrets.
+
+**CI lesson (cost 2 fix commits):** always run the FULL `uv run ruff check .`, `ruff format --check .`, and `uv run mypy` (whole tree) before pushing — per-file checks miss cross-file issues (RUF100 on grouped side-effect imports; format drift after an autofix; mypy namespace-package `attr-defined` on `google.cloud.storage`).
+
+### 2.3b Remaining buildable-without-owner vs owner-blocked
+
+Still buildable by an agent: GTM-003 onboarding checklist (UI), GTM-005 in-app help (UI), GTM-006 support intake (partly ANA-008-blocked). Owner-blocked: REL-004 restore rehearsal (needs live DB), REL-012 provider-migration rehearsal (needs REL-002/004 applied), PIL-001..008 (needs a pilot customer), ANA-008 support console (OPEN-002 identity), AIO-005/006 (OPEN-003 OCR + heavy deps), CAT-008 (heavy embedding dep), SEC-012 (external pen test), ENT-001..009 (post-pilot).
 
 ### 2.4 Execution mode
 
