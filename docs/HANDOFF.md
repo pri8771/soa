@@ -62,7 +62,7 @@ Owner decisions this session: hosting = **GCP/Firebase, not Firestore** (OPEN-00
 
 ### 2.3b Remaining buildable-without-owner vs owner-blocked
 
-Still buildable by an agent: GTM-003 onboarding checklist (UI), GTM-005 in-app help (UI), GTM-006 support intake (partly ANA-008-blocked). Owner-blocked: REL-004 restore rehearsal (needs live DB), REL-012 provider-migration rehearsal (needs REL-002/004 applied), PIL-001..008 (needs a pilot customer), ANA-008 support console (OPEN-002 identity), AIO-005/006 (OPEN-003 OCR + heavy deps), CAT-008 (heavy embedding dep), SEC-012 (external pen test), ENT-001..009 (post-pilot).
+GTM-003 onboarding checklist, GTM-005 in-app help, and GTM-006 support intake are now DONE (`apps/web/src/screens/GettingStarted.tsx` — resumable checklist deriving live status; `apps/web/src/components/help/` — HelpTip + content, wired onto Upload/Review; `apps/web/src/screens/Support.tsx` — support reference + REL-011 severity model + secure-attachment guidance + request composer; the GTM-006 staff-side triage console remains ANA-008, owner-blocked on identity). **With these, every agent-buildable task is complete.** Owner-blocked: REL-004 restore rehearsal (needs live DB), REL-012 provider-migration rehearsal (needs REL-002/004 applied), PIL-001..008 (needs a pilot customer), ANA-008 support console (OPEN-002 identity), AIO-005/006 (OPEN-003 OCR + heavy deps), CAT-008 (heavy embedding dep), SEC-012 (external pen test), ENT-001..009 (post-pilot).
 
 ### 2.4 Execution mode
 
