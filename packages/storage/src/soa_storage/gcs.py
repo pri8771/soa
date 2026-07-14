@@ -78,7 +78,7 @@ class GcsObjectStore:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            from google.cloud import storage  # type: ignore[import-untyped]
+            from google.cloud import storage  # type: ignore[attr-defined]
 
             self._client = storage.Client(project=self._settings.project)
         return self._client

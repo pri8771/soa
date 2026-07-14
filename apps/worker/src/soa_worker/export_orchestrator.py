@@ -23,9 +23,9 @@ from datetime import UTC, datetime
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import soa_worker.erp_rest_adapters  # noqa: F401  (registers netsuite/dynamics/sap)
-import soa_worker.quickbooks_adapter  # noqa: F401  (registers "quickbooks_online")
-import soa_worker.webhook_adapter  # noqa: F401  (registers the "webhook" adapter)
+import soa_worker.erp_rest_adapters
+import soa_worker.quickbooks_adapter
+import soa_worker.webhook_adapter
 from soa_canonical.export_encoding import ExportMetadata
 from soa_canonical.mapping_engine import (
     MappingDefinitionError,
@@ -55,6 +55,16 @@ from soa_worker.erp_adapter import (
     resolve_adapter,
 )
 from soa_worker.export_artifacts import store_export_artifact
+
+# Importing the adapter modules above registers their destination adapters
+# (webhook, quickbooks_online, netsuite, microsoft_dynamics365, sap_s4hana).
+# They are referenced here so the side-effect imports are unambiguously
+# "used" — avoiding both F401 and RUF100 across ruff versions.
+_REGISTERED_ADAPTER_MODULES = (
+    soa_worker.erp_rest_adapters,
+    soa_worker.quickbooks_adapter,
+    soa_worker.webhook_adapter,
+)
 
 ACTOR = "system:export"
 
