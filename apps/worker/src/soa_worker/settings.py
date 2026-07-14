@@ -37,6 +37,11 @@ class WorkerSettings(BaseServiceSettings):
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-sonnet-4-5"
 
+    #: Optional BYO hosted Gemini key (AIO-009 — native generateContent
+    #: adapter). Fail-closed like the others: unset means no such provider.
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-2.0-flash"
+
     #: Optional BYO hosted OpenAI-compatible key (OpenAI, or Gemini's
     #: OpenAI-compatible endpoint). Requires both a key and an endpoint;
     #: reuses the AIO-007 adapter with Bearer auth. Unset means no such

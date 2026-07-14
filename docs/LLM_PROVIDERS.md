@@ -82,12 +82,24 @@ export SOA_WORKER_ANTHROPIC_API_KEY="sk-ant-..."
 export SOA_WORKER_ANTHROPIC_MODEL="claude-sonnet-4-5"   # default; overridable
 ```
 
+### Gemini (native)
+
+A native Gemini adapter (AIO-009) speaks Google's `generateContent` API
+directly — a third API shape alongside Claude's Messages and OpenAI's
+chat-completions, which is what proves the provider contract is portable.
+The key travels as an `x-goog-api-key` header.
+
+```bash
+export SOA_WORKER_GEMINI_API_KEY="AIza-..."
+export SOA_WORKER_GEMINI_MODEL="gemini-2.0-flash"   # default; overridable
+```
+
 ### Gemini and OpenAI (OpenAI-compatible endpoint)
 
-Both expose an OpenAI-compatible `/chat/completions` endpoint, so they
-reuse the AIO-007 adapter with an endpoint + key. The key travels as a
-`Bearer` token; the provider registers under a name you choose so an
-operator can tell them apart.
+Both also expose an OpenAI-compatible `/chat/completions` endpoint, so as
+an alternative they can reuse the AIO-007 adapter with an endpoint + key.
+The key travels as a `Bearer` token; the provider registers under a name
+you choose so an operator can tell them apart.
 
 ```bash
 # OpenAI

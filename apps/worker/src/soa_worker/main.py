@@ -30,6 +30,14 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
             model=settings.anthropic_model,
         )
 
+    if settings.gemini_api_key is not None:
+        from soa_worker.gemini_extraction import register_gemini_extraction
+
+        register_gemini_extraction(
+            settings.gemini_api_key.get_secret_value(),
+            model=settings.gemini_model,
+        )
+
     if settings.hosted_openai_api_key is not None and settings.hosted_openai_endpoint:
         from soa_worker.llm_extraction import register_hosted_openai_extraction
 
