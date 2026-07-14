@@ -36,18 +36,19 @@ injection-safe request builder (data delimiters, bounded pages/tokens,
 redaction hook) lands with AIO-010/011 and this adapter switches to it.
 """
 
-import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
 
 from soa_worker.extraction.provider import (
-    EvidenceSpan,
-    ExtractedField,
     ExtractionProviderError,
     ExtractionRequest,
     ExtractionResult,
+)
+from soa_worker.model_extraction_result import (
+    ModelOutputInvalidError,
+    parse_model_extraction,
 )
 from soa_worker.model_request_builder import (
     BuildLimits,
@@ -65,22 +66,6 @@ CAPABILITY_WARNING = (
 _DETERMINISM_SEED = 7
 
 
-class ModelOutputInvalidError(ExtractionProviderError):
-    """The model answered, but not in the documented shape. Retryable —
-    and specifically REPAIRABLE: the AIO-012 policy re-asks with the
-    reason, bounded by attempt and cost ceilings. ``reason`` is safe to
-    send back to the model and to log; ``cost_cents`` is what the
-    failed call cost (failed calls still burn tokens)."""
-
-    def __init__(self, reason: str, *, cost_cents: int = 0) -> None:
-        self.reason = reason
-        self.cost_cents = cost_cents
-        super().__init__(
-            f"the model returned output that does not match the expected shape ({reason})",
-            retryable=True,
-        )
-
-
 class OpenAiCompatibleExtractionProvider:
     """See module docstring. ``client`` is injectable for tests; when
     omitted, a client with the configured timeout is created per call.
@@ -93,6 +78,8 @@ class OpenAiCompatibleExtractionProvider:
         *,
         endpoint: str,
         model: str,
+        name: str = PROVIDER_NAME,
+        api_key: str | None = None,
         timeout_seconds: float = 60.0,
         max_tokens: int = 4000,
         client: httpx.AsyncClient | None = None,
@@ -103,6 +90,16 @@ class OpenAiCompatibleExtractionProvider:
     ) -> None:
         self._endpoint = endpoint
         self._model = model
+        # The registry verifies the instance reports its registered name;
+        # a hosted OpenAI-compatible provider registers under its own
+        # name (so operators can tell OpenAI from Gemini) and passes it
+        # here.
+        self._name = name
+        # No key for a purely local endpoint (Ollama/vLLM/llama.cpp);
+        # a key is required for the hosted OpenAI-compatible providers
+        # (OpenAI, Gemini's OpenAI-compatible endpoint) and travels as a
+        # Bearer token.
+        self._api_key = api_key
         self._timeout = timeout_seconds
         self._max_tokens = max_tokens
         self._client = client
@@ -113,7 +110,7 @@ class OpenAiCompatibleExtractionProvider:
 
     @property
     def name(self) -> str:
-        return PROVIDER_NAME
+        return self._name
 
     def build_payload(self, request: ExtractionRequest) -> tuple[dict[str, Any], BuiltModelRequest]:
         """The exact chat-completions payload, built via the AIO-011
@@ -159,30 +156,31 @@ class OpenAiCompatibleExtractionProvider:
         return self._to_result(request, content, built)
 
     async def _complete(self, payload: dict[str, Any]) -> str:
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         owns_client = self._client is None
         try:
-            response = await client.post(self._endpoint, json=payload)
+            response = await client.post(self._endpoint, json=payload, headers=headers)
         except httpx.TimeoutException:
             raise ExtractionProviderError(
-                f"the local model did not answer within {self._timeout:.0f}s",
+                f"the model did not answer within {self._timeout:.0f}s",
                 retryable=True,
             ) from None
         except httpx.HTTPError:
             raise ExtractionProviderError(
-                "the local model endpoint could not be reached", retryable=True
+                "the model endpoint could not be reached", retryable=True
             ) from None
         finally:
             if owns_client:
                 await client.aclose()
         if response.status_code >= 500 or response.status_code == 429:
             raise ExtractionProviderError(
-                f"the local model endpoint answered with status {response.status_code}",
+                f"the model endpoint answered with status {response.status_code}",
                 retryable=True,
             )
         if response.status_code >= 400:
             raise ExtractionProviderError(
-                f"the local model endpoint refused the request "
+                f"the model endpoint refused the request "
                 f"(status {response.status_code}) — check the endpoint configuration",
                 retryable=False,
             )
@@ -191,86 +189,27 @@ class OpenAiCompatibleExtractionProvider:
             content = body["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionProviderError(
-                "the local model endpoint returned an unexpected response shape",
+                "the model endpoint returned an unexpected response shape",
                 retryable=True,
             ) from None
         if not isinstance(content, str):
-            raise ExtractionProviderError(
-                "the local model returned no text content", retryable=True
-            )
+            raise ExtractionProviderError("the model returned no text content", retryable=True)
         return content
 
     def _to_result(
         self, request: ExtractionRequest, content: str, built: BuiltModelRequest
     ) -> ExtractionResult:
-        # The reasons stay generic on purpose: they go back to the model
-        # as the repair hint and into logs — model output over customer
-        # data never travels with them.
-        try:
-            parsed = json.loads(content)
-        except ValueError:
-            raise ModelOutputInvalidError("the response was not valid JSON") from None
-        if not isinstance(parsed, dict) or "fields" not in parsed:
-            raise ModelOutputInvalidError('the JSON object is missing the "fields" key')
-        entries = parsed["fields"]
-        if not isinstance(entries, list):
-            raise ModelOutputInvalidError('"fields" must be a JSON array')
-
-        requested = {spec.key for spec in request.fields}
-        pages = {page.page_number: page for page in request.pages}
-        warnings = [CAPABILITY_WARNING, *built.warnings]
-        found: dict[tuple[str, int | None], ExtractedField] = {}
-        for entry in entries:
-            if not isinstance(entry, dict) or "key" not in entry:
-                continue
-            key = str(entry["key"])
-            if key not in requested:
-                warnings.append(f"the model returned unrequested field {key!r}; dropped")
-                continue
-            value = entry.get("value")
-            row_index = entry.get("row_index")
-            row = int(row_index) if isinstance(row_index, int) and row_index >= 0 else None
-            if value is None:
-                continue  # absent: handled below with the requested sweep
-            confidence = entry.get("confidence")
-            numeric = float(confidence) if isinstance(confidence, int | float) else 0.5
-            evidence: tuple[EvidenceSpan, ...] = ()
-            page_number = entry.get("page_number")
-            page = pages.get(page_number) if isinstance(page_number, int) else None
-            if page is not None:
-                quote = entry.get("quote")
-                evidence = (
-                    EvidenceSpan(
-                        page_number=page.page_number,
-                        polygon=(
-                            (0.0, 0.0),
-                            (float(page.width_px), 0.0),
-                            (float(page.width_px), float(page.height_px)),
-                            (0.0, float(page.height_px)),
-                        ),
-                        quote=str(quote) if isinstance(quote, str) and quote else None,
-                    ),
-                )
-            found[(key, row)] = ExtractedField(
-                field_key=key,
-                raw_value=str(value),
-                confidence=min(max(numeric, 0.0), 1.0),
-                row_index=row,
-                evidence=evidence,
-            )
-
-        results = list(found.values())
-        answered_keys = {key for key, _ in found}
-        for spec in request.fields:
-            if spec.key not in answered_keys:
-                results.append(ExtractedField(field_key=spec.key, raw_value=None, confidence=0.0))
-        return ExtractionResult(
+        # Shared with the hosted adapters: same documented shape, same
+        # honesty rules, one implementation (AIO-008). The capability
+        # caveat leads the warnings.
+        return parse_model_extraction(
+            request,
+            content,
+            built,
             provider=self.name,
-            fields=tuple(results),
             model=self._model,
             cost_cents=0,
-            warnings=tuple(warnings),
-            instruction_reference=built.instruction_reference,
+            lead_warnings=(CAPABILITY_WARNING,),
         )
 
 
@@ -297,10 +236,54 @@ def register_local_llm_extraction(endpoint: str, model: str) -> None:
     )
 
 
+def register_hosted_openai_extraction(
+    *,
+    name: str,
+    endpoint: str,
+    model: str,
+    api_key: str,
+    region: str,
+) -> None:
+    """Register a HOSTED OpenAI-compatible provider (OpenAI, or Gemini's
+    OpenAI-compatible endpoint) under its own ``name``. Unlike the local
+    profile, this one sends content to a third party — the data policy
+    says so honestly, keyed off the declared ``region``, so tenant policy
+    is enforced against the truth. Call this ONLY when both a key and an
+    endpoint are configured (worker startup does); a missing key means the
+    provider simply does not exist (AIO-006 fail-closed)."""
+    if not api_key:
+        raise ValueError("a hosted OpenAI-compatible provider needs an API key")
+    from soa_worker.providers.capabilities import (
+        ANY_LANGUAGE,
+        Capability,
+        DataPolicy,
+        ProviderInfo,
+        register_provider,
+    )
+
+    register_provider(
+        ProviderInfo(
+            name=name,
+            capability=Capability.FIELD_EXTRACTION,
+            languages=(ANY_LANGUAGE,),
+            data_policy=DataPolicy(
+                processing_region=region,
+                sends_content_to_third_party=True,
+                retains_content=False,
+                uses_content_for_training=False,
+            ),
+        ),
+        lambda: OpenAiCompatibleExtractionProvider(
+            endpoint=endpoint, model=model, name=name, api_key=api_key
+        ),
+    )
+
+
 __all__ = [
     "CAPABILITY_WARNING",
     "PROVIDER_NAME",
     "ModelOutputInvalidError",
     "OpenAiCompatibleExtractionProvider",
+    "register_hosted_openai_extraction",
     "register_local_llm_extraction",
 ]

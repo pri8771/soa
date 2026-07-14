@@ -4,7 +4,7 @@ Values load from ``SOA_WORKER_``-prefixed environment variables. Production
 safety rules (no debug, no dev secrets/credentials) live in ``soa_config``.
 """
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
 
 from soa_config import BaseServiceSettings, Environment
@@ -25,9 +25,31 @@ class WorkerSettings(BaseServiceSettings):
     liveness_file: str | None = None
     liveness_staleness_factor: float = Field(default=3.0, gt=1)
     #: Optional local OpenAI-compatible extraction endpoint (AIO-007).
-    #: Unset (the default) means the profile never registers.
+    #: Unset (the default) means the profile never registers. Point this
+    #: at Ollama/vLLM/llama.cpp; see docs/LLM_PROVIDERS.md.
     local_llm_endpoint: str | None = None
     local_llm_model: str = "local"
+
+    #: Optional BYO hosted Claude key (AIO-008). When set, the hosted
+    #: Claude extraction adapter registers at startup; unset means it
+    #: does not exist (fail-closed, AIO-006). The model/endpoint are
+    #: overridable for pinning or a proxy.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-sonnet-4-5"
+
+    #: Optional BYO hosted OpenAI-compatible key (OpenAI, or Gemini's
+    #: OpenAI-compatible endpoint). Requires both a key and an endpoint;
+    #: reuses the AIO-007 adapter with Bearer auth. Unset means no such
+    #: provider. ``hosted_openai_provider_name`` names it in the registry
+    #: so an operator can tell OpenAI from Gemini.
+    hosted_openai_api_key: SecretStr | None = None
+    hosted_openai_endpoint: str | None = None
+    hosted_openai_model: str = "gpt-4o"
+    hosted_openai_provider_name: str = "hosted-openai-compatible"
+    #: The processing region the hosted OpenAI-compatible provider runs
+    #: in — declared honestly so tenant data policy is enforced against
+    #: the truth (a lowercase region slug, e.g. "us", "eu").
+    hosted_openai_region: str = "us"
 
 
 def load_settings() -> WorkerSettings:

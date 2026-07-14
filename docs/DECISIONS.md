@@ -1,6 +1,6 @@
 # Architecture and Product Decisions
 
-> **Last updated:** 2026-07-10
+> **Last updated:** 2026-07-14
 >
 > **Purpose:** record decisions that implementation agents must treat as constraints, plus unresolved choices that require evidence before selection.
 
@@ -235,10 +235,10 @@ Status values:
 
 ## OPEN-001 — Hosted deployment provider
 
-- **Status:** Deferred
-- **Options:** one cloud stack, or portable combination of managed PostgreSQL, S3-compatible storage, and managed containers/static hosting.
-- **Decision criteria:** customer region, B2B contracts, cost, backups/PITR, private networking, support, local parity, and operational simplicity.
-- **Deadline:** before staging infrastructure work.
+- **Status:** Accepted (2026-07-14) — Google Cloud / Firebase family, **not Firestore**.
+- **Decision:** Deploy on the Firebase/GCP ecosystem: **Cloud SQL for PostgreSQL** (the RLS tenancy model and Postgres job queue require a real Postgres, so Firestore is a wrong fit and was rejected), **Cloud Run** for the API and worker containers (REL-001 images), **Cloud Storage** for artifacts (behind the existing `ObjectStore` interface), **GCP Secret Manager** for secrets and BYO keys (behind the existing `SecretStore` interface, alongside the AWS adapter), **Firebase Auth / Identity Platform** for login (issues OIDC JWTs the TEN-003 adapter already consumes), and **Firebase Hosting** for the web app.
+- **Rationale:** Owner preference for the Firebase ecosystem, satisfied without discarding the Postgres-RLS security model. Two thin adapters (GCS object store, GCP Secret Manager) are the only new code; both sit behind interfaces that already exist. Keeps local parity — the same containers and Postgres run locally.
+- **Consequences:** Staging infrastructure (REL-002) targets Cloud SQL + Cloud Run. Add a `GcsObjectStore` (behind STO-001) and a `GcpSecretManagerStore` (behind SEC-005). Firestore and GCP-proprietary datastores are out of scope for tenant data.
 
 ## OPEN-002 — Production identity provider
 
@@ -255,9 +255,10 @@ Status values:
 
 ## OPEN-004 — First hosted extraction provider and model
 
-- **Status:** Deferred behind provider contract
-- **Decision criteria:** structured output reliability, document/vision quality, retention/training terms, data region, price, latency, and model version controls.
-- **Deadline:** after deterministic mock vertical slice and evaluation runner exist.
+- **Status:** Accepted (2026-07-14) — local-first, with optional BYO hosted keys.
+- **Decision:** Default to **local models** (Qwen2.5-VL-7B-Instruct for vision, Qwen2.5-7B-Instruct for text, via Ollama's OpenAI-compatible endpoint — AIO-007), so no customer data leaves the deployment unless a tenant opts in. Optionally register a **customer-supplied hosted key**: Claude via the dedicated Messages-API adapter (AIO-008), and Gemini/OpenAI via the OpenAI-compatible adapter with Bearer auth. Hosted providers declare third-party processing honestly and are only selected when tenant policy allows it.
+- **Rationale:** Owner direction to run and test locally first and to let customers bring their own Claude/Gemini/OpenAI keys. The provider contract (AIO-001) and router (AIO-013) already make this a configuration choice, and the gold evaluation (AIO-016/017) governs any promotion. See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md).
+- **Consequences:** Hosted keys are fail-closed (no key → no provider). Per-tenant BYO keys via the SEC-005 secret store are the follow-on (tracked with AIO-006); today a deployment-level key applies deployment-wide. Contract/retention terms for any hosted provider are documented before production use.
 
 ## OPEN-005 — First production ERP adapter
 

@@ -23,6 +23,7 @@ from soa_worker.llm_extraction import (
     CAPABILITY_WARNING,
     PROVIDER_NAME,
     OpenAiCompatibleExtractionProvider,
+    register_hosted_openai_extraction,
     register_local_llm_extraction,
 )
 from soa_worker.providers import Capability, provider_info, unregister_provider
@@ -259,3 +260,60 @@ class TestOptionalProfile:
 
         with pytest.raises(UnknownProviderError):
             provider_info(Capability.FIELD_EXTRACTION, PROVIDER_NAME)
+
+
+class TestBearerAuth:
+    async def test_a_configured_key_travels_as_a_bearer_header(self) -> None:
+        seen: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers)
+            return model_answer(DEFAULT_FIELDS)
+
+        provider = OpenAiCompatibleExtractionProvider(
+            endpoint="https://api.openai.com/v1/chat/completions",
+            model="gpt-4o",
+            api_key="sk-openai-test",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        await provider.extract(extraction_request())
+        (headers,) = seen
+        assert headers["Authorization"] == "Bearer sk-openai-test"
+
+    async def test_a_local_endpoint_sends_no_auth_header(self) -> None:
+        seen: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers)
+            return model_answer(DEFAULT_FIELDS)
+
+        await provider_with(handler).extract(extraction_request())
+        (headers,) = seen
+        assert "authorization" not in headers
+
+
+class TestHostedOpenAiProfile:
+    def test_hosted_registration_names_the_provider_and_declares_third_party(self) -> None:
+        register_hosted_openai_extraction(
+            name="hosted-openai-compatible",
+            endpoint="https://api.openai.com/v1/chat/completions",
+            model="gpt-4o",
+            api_key="sk-openai-test",
+            region="us",
+        )
+        try:
+            info = provider_info(Capability.FIELD_EXTRACTION, "hosted-openai-compatible")
+            assert info.data_policy.sends_content_to_third_party is True
+            assert info.data_policy.processing_region == "us"
+        finally:
+            unregister_provider(Capability.FIELD_EXTRACTION, "hosted-openai-compatible")
+
+    def test_a_hosted_registration_without_a_key_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            register_hosted_openai_extraction(
+                name="hosted-openai-compatible",
+                endpoint="https://api.openai.com/v1/chat/completions",
+                model="gpt-4o",
+                api_key="",
+                region="us",
+            )
