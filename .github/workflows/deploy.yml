@@ -1,0 +1,127 @@
+# Deployment workflow (REL-005). Promotes ONE immutable image (built and
+# scanned by CI, REL-001) through an environment: run migrations as a
+# one-shot job, deploy the API and worker to Cloud Run, gate on readiness,
+# smoke-test, and record evidence. A failed readiness or smoke step stops
+# the rollout — the previous revision keeps serving.
+#
+# This is authored ahead of the GCP project; the owner wires the secrets
+# below (Workload Identity Federation is preferred over a key file). It is
+# manual (workflow_dispatch) so a human chooses the environment + digest.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options:
+          - staging
+          - production
+        required: true
+      image_digest:
+        description: Image digest to promote (sha256:...), same for api and worker tags
+        type: string
+        required: true
+
+concurrency:
+  # One deploy per environment at a time; a newer deploy waits rather than
+  # racing the previous one.
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # for Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }} # e.g. REGION-docker.pkg.dev/PROJECT/soa
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve immutable image references
+        id: images
+        run: |
+          echo "api=${AR_REPO}/api@${{ inputs.image_digest }}" >> "$GITHUB_OUTPUT"
+          echo "worker=${AR_REPO}/worker@${{ inputs.image_digest }}" >> "$GITHUB_OUTPUT"
+
+      # Migrations run as a one-shot Cloud Run job BEFORE the new revisions
+      # take traffic. Expand/contract discipline (REL-006) makes this safe:
+      # the currently-serving version still works against the migrated
+      # schema. A migration failure aborts the deploy here.
+      - name: Run database migrations
+        run: |
+          gcloud run jobs deploy soa-${{ inputs.environment }}-migrate \
+            --image="${{ steps.images.outputs.api }}" \
+            --region="${GCP_REGION}" \
+            --command="alembic" --args="upgrade,head" \
+            --vpc-connector="soa-${{ inputs.environment }}-vpcconn" \
+            --set-secrets="SOA_API_DATABASE_URL=soa-${{ inputs.environment }}-database-url:latest" \
+            --quiet
+          gcloud run jobs execute soa-${{ inputs.environment }}-migrate \
+            --region="${GCP_REGION}" --wait
+
+      - name: Deploy worker
+        run: |
+          gcloud run services update soa-${{ inputs.environment }}-worker \
+            --image="${{ steps.images.outputs.worker }}" \
+            --region="${GCP_REGION}" --quiet
+
+      - name: Deploy API (no traffic yet)
+        id: deploy_api
+        run: |
+          gcloud run deploy soa-${{ inputs.environment }}-api \
+            --image="${{ steps.images.outputs.api }}" \
+            --region="${GCP_REGION}" \
+            --no-traffic --tag=candidate --quiet
+          candidate=$(gcloud run services describe soa-${{ inputs.environment }}-api \
+            --region="${GCP_REGION}" \
+            --format='value(status.traffic[?tag=candidate].url)')
+          echo "candidate_url=${candidate}" >> "$GITHUB_OUTPUT"
+
+      # Readiness gate: the candidate revision must report healthy BEFORE
+      # it receives traffic. If this fails the job stops and the live
+      # revision keeps 100% of traffic.
+      - name: Readiness gate
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS "${{ steps.deploy_api.outputs.candidate_url }}/health/ready"; then
+              echo "candidate is ready"; exit 0
+            fi
+            echo "not ready yet (attempt $attempt)"; sleep 5
+          done
+          echo "candidate never became ready — aborting rollout"; exit 1
+
+      - name: Smoke test the candidate
+        run: |
+          curl -fsS "${{ steps.deploy_api.outputs.candidate_url }}/health/live"
+          # Add deeper smoke checks (auth, a read endpoint) as they gain
+          # unauthenticated-safe health surfaces.
+
+      - name: Shift 100% traffic to the new revision
+        run: |
+          gcloud run services update-traffic soa-${{ inputs.environment }}-api \
+            --region="${GCP_REGION}" --to-latest --quiet
+
+      - name: Record deployment evidence
+        if: always()
+        run: |
+          {
+            echo "## Deploy ${{ inputs.environment }}"
+            echo "- image digest: ${{ inputs.image_digest }}"
+            echo "- outcome: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
