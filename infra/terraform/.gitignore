@@ -1,0 +1,12 @@
+# Terraform state and local files — never commit state (it can contain
+# secrets like generated passwords) or provider caches.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# Local override tfvars that may carry secrets; the committed
+# environments/*.tfvars are non-secret sizing only.
+*.auto.tfvars
+override.tf
+override.tf.json
