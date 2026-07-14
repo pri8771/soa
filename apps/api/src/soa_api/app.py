@@ -116,7 +116,17 @@ def create_app(
 
     resolved_store = object_store
     if resolved_store is None:
-        if resolved.storage_endpoint_url:
+        if resolved.storage_backend == "gcs" and resolved.storage_gcs_project:
+            from soa_storage.gcs import GcsObjectStore, GcsSettings
+
+            resolved_store = GcsObjectStore(
+                GcsSettings(
+                    bucket=resolved.storage_bucket,
+                    project=resolved.storage_gcs_project,
+                    kms_key_name=resolved.storage_gcs_kms_key_name,
+                )
+            )
+        elif resolved.storage_backend == "s3" and resolved.storage_endpoint_url:
             resolved_store = S3ObjectStore(
                 S3Settings(
                     endpoint_url=resolved.storage_endpoint_url,

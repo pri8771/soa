@@ -5,7 +5,7 @@ safety rules (no debug, no dev secrets/credentials) live in ``soa_config``;
 API-specific rules (auth configuration) are enforced here.
 """
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -28,9 +28,12 @@ class ApiSettings(WebServiceSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
 
-    # Object storage (STO-002/004). When the endpoint is unset the API
-    # falls back to an in-process memory store outside production; in
-    # production storage must be configured explicitly.
+    # Object storage (STO-002/004). ``storage_backend`` selects the adapter:
+    # "s3" (MinIO/S3-compatible, the default) or "gcs" (Google Cloud
+    # Storage, the GCP deployment — OPEN-001). When neither is configured
+    # the API falls back to an in-process memory store outside production;
+    # in production storage must be configured explicitly.
+    storage_backend: Literal["s3", "gcs"] = "s3"
     storage_endpoint_url: str | None = None
     storage_access_key: str | None = None
     storage_secret_key: str | None = None
@@ -41,6 +44,11 @@ class ApiSettings(WebServiceSettings):
     storage_force_path_style: bool = True
     storage_sse: str | None = None
     storage_sse_kms_key_id: str | None = None
+    # GCS backend (storage_backend="gcs"): the project owning the bucket,
+    # and an optional customer-managed encryption key (a full
+    # projects/.../cryptoKeys/... resource).
+    storage_gcs_project: str | None = None
+    storage_gcs_kms_key_name: str | None = None
     # Signed download URLs are short-lived by design.
     download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 
@@ -102,7 +110,12 @@ class ApiSettings(WebServiceSettings):
                 problems.append("auth_dev_mode must be disabled in production")
             if not (self.oidc_issuer and self.oidc_audience and self.oidc_jwks_url):
                 problems.append("production requires oidc_issuer, oidc_audience, and oidc_jwks_url")
-            if not (
+            if self.storage_backend == "gcs":
+                if not self.storage_gcs_project:
+                    problems.append(
+                        "production with storage_backend='gcs' requires storage_gcs_project"
+                    )
+            elif not (
                 self.storage_endpoint_url and self.storage_access_key and self.storage_secret_key
             ):
                 problems.append(
