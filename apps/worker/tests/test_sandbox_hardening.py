@@ -78,7 +78,7 @@ async def test_lockdown_denies_network_processes_and_pins_limits() -> None:
     memory = 1_073_741_824
     probe = f"""
 import resource, socket, subprocess, os
-from soa_worker.sandbox import lock_down_python_child
+from soa_worker.sandbox import ADDRESS_SPACE_LIMIT_SUPPORTED, lock_down_python_child
 
 lock_down_python_child(30, {memory})
 
@@ -99,13 +99,16 @@ for attempt in (
 assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
 assert resource.getrlimit(resource.RLIMIT_FSIZE) == ({memory}, {memory})
 assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] <= {MAX_OPEN_FILES}
-assert resource.getrlimit(resource.RLIMIT_AS) == ({memory}, {memory})
+# macOS rejects lowering RLIMIT_AS (see sandbox.ADDRESS_SPACE_LIMIT_SUPPORTED);
+# the cap and the allocation ceiling are only enforceable on Linux.
+if ADDRESS_SPACE_LIMIT_SUPPORTED:
+    assert resource.getrlimit(resource.RLIMIT_AS) == ({memory}, {memory})
 
-try:
-    hog = bytearray({memory} * 2)
-    raise SystemExit("ESCAPED: allocated past the address-space limit")
-except MemoryError:
-    pass
+    try:
+        hog = bytearray({memory} * 2)
+        raise SystemExit("ESCAPED: allocated past the address-space limit")
+    except MemoryError:
+        pass
 
 print("LOCKED")
 """
