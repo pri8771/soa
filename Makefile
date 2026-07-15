@@ -37,15 +37,16 @@ verify-artifacts: ## Reconcile artifact records against object storage (STO-005)
 	uv run python -m soa_api.ops.verify_artifacts
 
 .PHONY: seed
-seed: ## Load deterministic demo tenant and sample data
-	@echo "ERROR: soa-fixtures defines the demo tenant, but the database SeedSink is not built yet (arrives with the ING epic's intake fixtures)." && exit 1
+seed: ## Load the demo tenant (org, published process, active stream) for local dev
+	uv run python scripts/seed_local.py
 
 .PHONY: dev
-dev: ## Run web, API, and worker with reload
-	@echo "ERROR: combined dev runner not built yet — run these in separate terminals for now:" && \
-	 echo "  uv run uvicorn soa_api.main:app --reload" && \
-	 echo "  uv run soa-worker" && \
-	 echo "  pnpm --filter @soa/web run dev" && exit 1
+dev: ## Print the commands to run web, API, and worker locally (see docs/LOCAL_DEV.md)
+	@echo "Run these in three terminals (no Docker needed — filesystem storage):" && \
+	 echo "  SOA_API_STORAGE_BACKEND=filesystem SOA_API_CORS_ALLOWED_ORIGINS='[\"http://localhost:5173\"]' uv run uvicorn soa_api.main:app --port 8000" && \
+	 echo "  SOA_WORKER_STORAGE_BACKEND=filesystem uv run soa-worker" && \
+	 echo "  VITE_API_BASE_URL=http://127.0.0.1:8000 pnpm --filter @soa/web run dev" && \
+	 echo "Then open http://localhost:5173/app/northstar/overview (run 'make seed' first). See docs/LOCAL_DEV.md."
 
 .PHONY: lint
 lint: ## Lint Python and TypeScript

@@ -3,7 +3,8 @@
 import asyncio
 
 from soa_config.logging import configure_logging
-from soa_worker.registry import HandlerRegistry
+from soa_db import DatabaseSessions, create_database_engine
+from soa_storage.store import ObjectStore
 from soa_worker.settings import WorkerSettings, load_settings
 from soa_worker.worker import Worker
 
@@ -50,6 +51,37 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
         )
 
 
+def _build_object_store(settings: WorkerSettings) -> ObjectStore:
+    """Build the same object store the API writes to, so the worker reads
+    the originals it uploaded and writes derived artifacts alongside."""
+    if settings.storage_backend == "filesystem":
+        from soa_storage.filesystem import FilesystemObjectStore
+
+        return FilesystemObjectStore(root=settings.storage_filesystem_root)
+    if settings.storage_backend == "gcs" and settings.storage_gcs_project:
+        from soa_storage.gcs import GcsObjectStore, GcsSettings
+
+        return GcsObjectStore(
+            GcsSettings(bucket=settings.storage_bucket, project=settings.storage_gcs_project)
+        )
+    if settings.storage_backend == "s3" and settings.storage_endpoint_url:
+        from soa_storage.s3 import S3ObjectStore, S3Settings
+
+        return S3ObjectStore(
+            S3Settings(
+                endpoint_url=settings.storage_endpoint_url,
+                access_key=settings.storage_access_key or "",
+                secret_key=settings.storage_secret_key or "",
+                bucket=settings.storage_bucket,
+                region=settings.storage_region,
+                force_path_style=settings.storage_force_path_style,
+            )
+        )
+    from soa_storage.memory import MemoryObjectStore
+
+    return MemoryObjectStore()
+
+
 async def _run() -> None:
     settings = load_settings()
     configure_logging(
@@ -58,8 +90,29 @@ async def _run() -> None:
         level="DEBUG" if settings.debug else "INFO",
     )
     _register_extraction_providers(settings)
-    registry = HandlerRegistry()
-    worker = Worker(settings, registry)
+
+    # Assemble the processing pipeline (PRC-003) and turn on the DB-backed
+    # claim loop (JOB-003/004/005). Extraction uses the deterministic mock
+    # provider (PRC-006) — swapping in the AIO provider router is a
+    # follow-on that resolves the per-stream provider policy.
+    from soa_worker.extraction.mock import MockExtractionProvider
+    from soa_worker.job_runner import DbJobProcessor
+    from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
+    from soa_worker.pipeline import build_executors
+
+    engine = create_database_engine(settings.database_url.get_secret_value())
+    db = DatabaseSessions(engine)
+    store = _build_object_store(settings)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    processor = DbJobProcessor(
+        db,
+        {
+            "document.preprocess": orchestrator.handle_preprocess,
+            STAGE_JOB_TYPE: orchestrator.handle_stage,
+        },
+    )
+    registry = processor.build_registry()
+    worker = Worker(settings, registry, fetch_job=processor.fetch_job)
     worker.install_signal_handlers(asyncio.get_running_loop())
     await worker.run()
 

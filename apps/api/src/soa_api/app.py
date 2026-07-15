@@ -39,6 +39,7 @@ from soa_config.logging import correlation_context
 from soa_config.telemetry import Telemetry, configure_telemetry
 from soa_db import DatabaseSessions, create_database_engine
 from soa_storage import MemoryObjectStore, ObjectStore
+from soa_storage.filesystem import FilesystemObjectStore
 from soa_storage.s3 import S3ObjectStore, S3Settings
 from soa_storage.secrets_gcp import build_secret_store
 
@@ -125,6 +126,13 @@ def create_app(
                     project=resolved.storage_gcs_project,
                     kms_key_name=resolved.storage_gcs_kms_key_name,
                 )
+            )
+        elif resolved.storage_backend == "filesystem" and not resolved.is_production:
+            # Development-only: local disk with signed URLs pointing back at
+            # this API's /_local-blobs endpoint (see local_blobs router).
+            resolved_store = FilesystemObjectStore(
+                root=resolved.storage_filesystem_root,
+                base_url=resolved.storage_local_base_url,
             )
         elif resolved.storage_backend == "s3" and resolved.storage_endpoint_url:
             resolved_store = S3ObjectStore(
@@ -233,6 +241,10 @@ def create_app(
 
     register_error_handlers(app, resolved)
     app.include_router(health.router)
+    if isinstance(resolved_store, FilesystemObjectStore):
+        from soa_api.routers import local_blobs
+
+        app.include_router(local_blobs.router)
     app.include_router(me.router)
     app.include_router(organizations.router)
     app.include_router(jobs.router)

@@ -33,7 +33,13 @@ class ApiSettings(WebServiceSettings):
     # Storage, the GCP deployment — OPEN-001). When neither is configured
     # the API falls back to an in-process memory store outside production;
     # in production storage must be configured explicitly.
-    storage_backend: Literal["s3", "gcs"] = "s3"
+    storage_backend: Literal["s3", "gcs", "filesystem"] = "s3"
+    # Filesystem backend (storage_backend="filesystem", development only):
+    # object bytes live under ``storage_filesystem_root`` and signed URLs
+    # point at the API's own ``/_local-blobs`` endpoint so a browser can
+    # upload without MinIO/S3. Never valid in production.
+    storage_filesystem_root: str = ".local-storage"
+    storage_local_base_url: str = "http://127.0.0.1:8000/_local-blobs"
     storage_endpoint_url: str | None = None
     storage_access_key: str | None = None
     storage_secret_key: str | None = None
@@ -110,7 +116,11 @@ class ApiSettings(WebServiceSettings):
                 problems.append("auth_dev_mode must be disabled in production")
             if not (self.oidc_issuer and self.oidc_audience and self.oidc_jwks_url):
                 problems.append("production requires oidc_issuer, oidc_audience, and oidc_jwks_url")
-            if self.storage_backend == "gcs":
+            if self.storage_backend == "filesystem":
+                problems.append(
+                    "storage_backend='filesystem' is development-only and cannot run in production"
+                )
+            elif self.storage_backend == "gcs":
                 if not self.storage_gcs_project:
                     problems.append(
                         "production with storage_backend='gcs' requires storage_gcs_project"

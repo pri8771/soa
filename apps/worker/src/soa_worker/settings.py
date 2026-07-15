@@ -4,6 +4,8 @@ Values load from ``SOA_WORKER_``-prefixed environment variables. Production
 safety rules (no debug, no dev secrets/credentials) live in ``soa_config``.
 """
 
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
 
@@ -16,6 +18,20 @@ class WorkerSettings(BaseServiceSettings):
     model_config = SettingsConfigDict(env_prefix="SOA_WORKER_", frozen=True)
 
     service_name: str = "soa-worker"
+
+    #: Object storage the worker reads originals from and writes derived
+    #: artifacts to — must match the API's store. "s3" (MinIO/S3), "gcs",
+    #: or "filesystem" (development-only local disk shared with the API).
+    storage_backend: Literal["s3", "gcs", "filesystem"] = "s3"
+    storage_filesystem_root: str = ".local-storage"
+    storage_endpoint_url: str | None = None
+    storage_access_key: str | None = None
+    storage_secret_key: str | None = None
+    storage_bucket: str = "soa-artifacts"
+    storage_region: str = "us-east-1"
+    storage_force_path_style: bool = True
+    storage_gcs_project: str | None = None
+
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
     #: Container liveness (REL-001). When set, the heartbeat loop touches
