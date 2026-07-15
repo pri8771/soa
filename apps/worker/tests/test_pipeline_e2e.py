@@ -24,6 +24,7 @@ from soa_db.pages import DocumentPageRepository
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.state_projection import verify_state_projection
+from soa_db.stream_config import stream_versions_read
 from soa_storage.keys import artifact_key
 from soa_storage.memory import MemoryObjectStore
 from soa_storage.store import sha256_hex
@@ -32,6 +33,7 @@ from soa_worker.extraction.mock import (
     MockExtractionProvider,
     MockMode,
 )
+from soa_worker.extraction.provider import ExtractionRequest, ExtractionResult
 from soa_worker.orchestrator import STAGE_SEQUENCE, Orchestrator
 from soa_worker.pipeline import build_executors
 
@@ -39,12 +41,22 @@ ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STREAM = uuid.UUID("33333333-3333-4333-8333-333333333333")
 CONTEXT = OrganizationContext(organization_id=ORG)
 
+#: A REAL digital PDF (the AIO-002 corpus) whose native text the
+#: extracting stage must hand to non-mock providers.
+DIGITAL_PO = (Path(__file__).parent / "fixtures" / "pdfs" / "digital-po.pdf").read_bytes()
+
 
 @pytest.fixture
 async def db(tmp_path: Path) -> DatabaseSessions:
     engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/pipeline.db")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # The worker never imports the API's stream-version model; create
+        # the read-side projection's table for pinned-config tests. The
+        # drop keeps the shape minimal even when another test module in
+        # the same process imported the full model into Base.metadata.
+        await conn.exec_driver_sql("DROP TABLE IF EXISTS stream_versions")
+        await conn.run_sync(stream_versions_read.metadata.create_all)
     return DatabaseSessions(engine)
 
 
@@ -284,3 +296,129 @@ async def test_unrecognized_document_reviews_instead_of_inventing_values(
             (await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id))[0].id
         )
         assert all(f.raw_value is None for f in fields), "nothing was invented"
+
+
+# -- native PDF text for real providers (AIO-002 feeding PRC-006) -----------
+
+
+class _CapturingProvider:
+    """A non-mock-named provider that records the requests the pipeline
+    builds (so the test can see exactly what a real model would) and
+    delegates the answers to the mock."""
+
+    def __init__(self) -> None:
+        self.requests: list[ExtractionRequest] = []
+        self._inner = MockExtractionProvider()
+
+    @property
+    def name(self) -> str:
+        return "capturing-test-provider"
+
+    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+        self.requests.append(request)
+        return await self._inner.extract(request)
+
+
+async def test_non_mock_providers_receive_native_pdf_text(db: DatabaseSessions) -> None:
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store, data=DIGITAL_PO)
+    provider = _CapturingProvider()
+    orchestrator = Orchestrator(db, build_executors(store, provider))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    (request,) = provider.requests
+    assert request.pages, "the extraction request carries the rendered pages"
+    assert all(page.text for page in request.pages), "every page carries its native text"
+    assert "PURCHASE ORDER PO-4711" in (request.pages[0].text or "")
+
+
+async def test_the_mock_provider_never_spawns_native_text(
+    db: DatabaseSessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mock reads nothing from page text — the pipeline must not pay
+    for (or depend on) the native-text sandbox when it runs."""
+
+    def _refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the mock path must never resolve the native-text provider")
+
+    monkeypatch.setattr("soa_worker.pipeline.create_provider", _refuse)
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "approved"
+
+
+# -- duplicate policy at validation (ING-006) --------------------------------
+
+
+async def seed_stream_version(db: DatabaseSessions, *, duplicate_policy: str) -> uuid.UUID:
+    """A published stream version row carrying the pinned policy, as the
+    API's publish flow would have frozen it."""
+    version_id = uuid.uuid4()
+    async with db.session_scope() as session:
+        await session.execute(
+            stream_versions_read.insert().values(
+                id=version_id,
+                organization_id=ORG,
+                resolved_snapshot={"config": {"duplicate_policy": duplicate_policy}},
+            )
+        )
+    return version_id
+
+
+async def mark_duplicate(db: DatabaseSessions, document_id: uuid.UUID) -> None:
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        document.duplicate_of = uuid.uuid4()
+
+
+async def run_duplicate_pipeline(
+    db: DatabaseSessions, *, duplicate_policy: str
+) -> tuple[uuid.UUID, dict[str, Any]]:
+    """Drive the known-good fixture, marked as a duplicate, through a run
+    pinned to the given policy; returns (document_id, routing decision)."""
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    await mark_duplicate(db, document_id)
+    version_id = await seed_stream_version(db, duplicate_policy=duplicate_policy)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    payload = preprocess_payload(document_id)
+    payload["stream_version_id"] = str(version_id)
+    await orchestrator.handle_preprocess(payload)
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        decision = {s.stage: s for s in stages}["validating_data"].output_summary["decision"]
+    return document_id, dict(decision)
+
+
+async def test_allow_policy_processes_a_duplicate_transparently(db: DatabaseSessions) -> None:
+    document_id, decision = await run_duplicate_pipeline(db, duplicate_policy="allow")
+    assert decision["route"] == "approved"
+    assert all(r.get("rule_key") != "duplicates.business_hook" for r in decision["reasons"])
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "approved"
+        # Transparent, not silent: the duplicate marker survives (ING-006).
+        assert document.duplicate_of is not None
+
+
+async def test_flag_policy_still_routes_a_duplicate_to_review(db: DatabaseSessions) -> None:
+    document_id, decision = await run_duplicate_pipeline(db, duplicate_policy="flag")
+    assert decision["route"] == "review_required"
+    assert any(r.get("rule_key") == "duplicates.business_hook" for r in decision["reasons"])
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "review_required"

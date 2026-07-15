@@ -2,7 +2,8 @@
 
 Wires the real pieces into the PRC-003 orchestrator: render (PRC-004,
 sandboxed) -> page rows + page-image artifacts (PRC-005) -> extraction
-via the provider contract (PRC-006, mock today, AIO adapters later) ->
+via the provider contract (PRC-006; the mock or a configured AIO model
+adapter, fed native PDF text per page where AIO-002 can read it) ->
 extracted-field rows with evidence (PRC-007) -> canonical normalization
 (PRC-008) -> rule evaluation (PRC-009/010) -> confidence routing
 (PRC-011). Classification and splitting are honest single-document
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
 from soa_db.documents import Document
+from soa_db.duplicate_policy import DEFAULT_POLICY, DuplicatePolicy, get_duplicate_policy
 from soa_db.extracted_fields import (
     Candidate,
     Evidence,
@@ -39,6 +41,7 @@ from soa_db.pages import DocumentPageRepository, create_page
 from soa_db.repository import OrganizationContext
 from soa_db.review_tasks import route_document_to_review
 from soa_db.runs import ProcessingRun, StageRun
+from soa_db.stream_config import pinned_stream_config
 from soa_normalize import NormalizationContext, NormalizationError, normalize
 from soa_rules import (
     ConfidencePolicy,
@@ -56,6 +59,7 @@ from soa_rules.baseline import (
 )
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
+from soa_worker.extraction.mock import PROVIDER_NAME as MOCK_PROVIDER_NAME
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
 from soa_worker.extraction.provider import (
     ExtractionProvider,
@@ -65,6 +69,8 @@ from soa_worker.extraction.provider import (
     PageInput,
 )
 from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
+from soa_worker.providers import Capability, create_provider
+from soa_worker.providers.native_text import NativeTextError, NativeTextRequest
 from soa_worker.rendering import RenderError, RenderLimits, render_document
 
 ACTOR = "system:pipeline"
@@ -242,12 +248,18 @@ class _Pipeline:
         pages = await DocumentPageRepository(session, context).list_for_run(run.id)
         if not pages:
             raise StageExecutionError("no rendered pages to extract from", retryable=False)
+        text_by_page = await self._native_page_text(session, context, document)
         request = ExtractionRequest(
             document_id=document.id,
             document_sha256=document.content_sha256,
             content_type=document.content_type,
             pages=tuple(
-                PageInput(page_number=p.page_number, width_px=p.width_px, height_px=p.height_px)
+                PageInput(
+                    page_number=p.page_number,
+                    width_px=p.width_px,
+                    height_px=p.height_px,
+                    text=text_by_page.get(p.page_number),
+                )
                 for p in pages
             ),
             fields=self._config.field_specs,
@@ -290,6 +302,48 @@ class _Pipeline:
         return StageOutcome(
             output_summary=summary, cost_cents=result.cost_cents, provider=result.provider
         )
+
+    async def _native_page_text(
+        self, session: AsyncSession, context: OrganizationContext, document: Document
+    ) -> dict[int, str]:
+        """Per-page native PDF text (AIO-002) for the extraction request.
+        Model adapters build their prompts from ``PageInput.text``, so a
+        real provider gets the document's own words; the mock reads
+        nothing and must never spawn the native-text sandbox. A document
+        native text cannot read — a scanned or image original — honestly
+        yields nothing, leaving ``text=None`` on every page."""
+        if self._provider.name == MOCK_PROVIDER_NAME:
+            return {}
+        artifacts = await ArtifactRepository(session, context).list_for_document(document.id)
+        originals = [
+            a
+            for a in artifacts
+            if a.kind == ArtifactKind.ORIGINAL.value and a.content_type == "application/pdf"
+        ]
+        if not originals:
+            return {}
+        original = originals[0]
+        try:
+            data = await self._store.get(original.object_key)
+        except ObjectNotFoundError:
+            return {}
+        reader = create_provider(Capability.NATIVE_TEXT, "pdfium-native-text")
+        try:
+            result = await reader.read(
+                NativeTextRequest(
+                    document_id=document.id,
+                    document_sha256=document.content_sha256,
+                    content_type=original.content_type,
+                    data=data,
+                )
+            )
+        except NativeTextError:
+            return {}
+        return {
+            page.page_number: "\n".join(span.text for span in page.spans)
+            for page in result.pages
+            if page.spans
+        }
 
     # -- normalizing: raw -> canonical, never overwriting raw ------------------
 
@@ -340,7 +394,16 @@ class _Pipeline:
         stage_run: StageRun,
     ) -> StageOutcome:
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
-        data = _evaluation_input(rows, document)
+        # Policy gates read the run's PINNED stream config (CFG-002) —
+        # a run without a pinned version gets the platform default.
+        stream_config = (
+            await pinned_stream_config(session, context, run.stream_version_id)
+            if run.stream_version_id is not None
+            else {}
+        )
+        data = _evaluation_input(
+            rows, document, duplicate_policy=get_duplicate_policy(stream_config)
+        )
         evaluation = evaluate_rule_set(self._config.rules, data)
         signals = [
             FieldSignal(
@@ -392,7 +455,12 @@ class _Pipeline:
         )
 
 
-def _evaluation_input(rows: list[ExtractedField], document: Document) -> EvaluationInput:
+def _evaluation_input(
+    rows: list[ExtractedField],
+    document: Document,
+    *,
+    duplicate_policy: DuplicatePolicy = DEFAULT_POLICY,
+) -> EvaluationInput:
     """PRC-007 rows -> PRC-009 input: canonical value when normalization
     produced one, raw otherwise; table cells grouped into row dicts; the
     ING-006 duplicate flag exposed as meta.duplicate_of."""
@@ -408,7 +476,12 @@ def _evaluation_input(rows: list[ExtractedField], document: Document) -> Evaluat
                 **tables.get(table, {}).get(row.row_index, {}),
                 row.field_key: value,
             }
-    if document.duplicate_of is not None:
+    # An 'allow' policy is processing-transparent: duplicate_of and the
+    # audit event still record the duplicate (never silent), but the
+    # baseline duplicates.business_hook rule must not see the flag and
+    # route to review. When per-stream rules land, reconcile this gate
+    # with duplicates.business_hook itself.
+    if document.duplicate_of is not None and duplicate_policy is not DuplicatePolicy.ALLOW:
         header["meta.duplicate_of"] = str(document.duplicate_of)
     return EvaluationInput(
         header=header,

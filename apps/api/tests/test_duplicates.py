@@ -11,10 +11,12 @@ from sqlalchemy import select
 
 from soa_api.app import create_app
 from soa_api.domain.streams import Stream, StreamVersion
+from soa_api.services.revalidation import revalidate_run
 from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
 from soa_db.documents import Document
+from soa_db.repository import OrganizationContext
 from soa_storage import MemoryObjectStore, sha256_hex
 
 ADMIN = {"X-Dev-User": "user:reviewer"}
@@ -185,3 +187,62 @@ async def test_interleaved_concurrent_sessions_detect_each_other(
             str(d.id): d for d in (await session.execute(select(Document))).scalars().all()
         }
         assert documents[second["document_id"]].duplicate_of == uuid.UUID(first["document_id"])
+
+
+async def _validation_rule_keys(db: DatabaseSessions, document_id: str) -> set[str | None]:
+    """The rule keys validation raises for the document (via the REV-009
+    revalidation path, which shares the worker's duplicate gate)."""
+    async with db.session_scope() as session:
+        document = (
+            await session.execute(select(Document).where(Document.id == uuid.UUID(document_id)))
+        ).scalar_one()
+        result = await revalidate_run(
+            session,
+            OrganizationContext(organization_id=document.organization_id),
+            document=document,
+            run_id=uuid.uuid4(),
+        )
+        return {reason.get("rule_key") for reason in result["decision"]["reasons"]}
+
+
+async def test_allow_policy_is_processing_transparent_but_never_silent(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    seed_stream(client)
+    await set_duplicate_policy(db, "allow")
+    first = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    second = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    assert second["state"] == "queued"
+
+    async with db.session_scope() as session:
+        # Never silent: the marker and the audit event survive the policy.
+        document = (
+            await session.execute(
+                select(Document).where(Document.id == uuid.UUID(second["document_id"]))
+            )
+        ).scalar_one()
+        assert document.duplicate_of == uuid.UUID(first["document_id"])
+        events = (
+            (
+                await session.execute(
+                    select(AuditEvent).where(AuditEvent.action == "document.duplicate_detected")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
+    # Processing-transparent: validation raises no review-routing reason
+    # from duplicates.business_hook under 'allow'.
+    assert "duplicates.business_hook" not in await _validation_rule_keys(db, second["document_id"])
+
+
+async def test_flag_policy_surfaces_the_duplicate_to_validation(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    seed_stream(client)  # no published version — the default policy (flag) applies
+    await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    second = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    assert "duplicates.business_hook" in await _validation_rule_keys(db, second["document_id"])

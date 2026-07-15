@@ -38,7 +38,15 @@ DEMO_ADMIN = "admin@northstar.example"
 PROCESS_SLUG = "purchase-orders"
 STREAM_SLUG = "uploads"
 ACTOR = "system:seed"
-PROCESS_DEFINITION = {"language": "en", "confidence_floor": 0.8, "provider": "default-ocr"}
+PROCESS_DEFINITION = {
+    "language": "en",
+    "confidence_floor": 0.8,
+    "provider": "default-ocr",
+    # Local demos re-upload the same sample PO constantly — process the
+    # repeats (ING-006 "allow": still marked and audited, never reviewed
+    # merely for being a duplicate). Inherited by the demo stream.
+    "duplicate_policy": "allow",
+}
 
 
 async def _seed(db: DatabaseSessions) -> None:

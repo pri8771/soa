@@ -72,6 +72,13 @@ class WorkerSettings(BaseServiceSettings):
     #: the truth (a lowercase region slug, e.g. "us", "eu").
     hosted_openai_region: str = "us"
 
+    #: The AIO-001 registry name of the extraction provider the pipeline
+    #: uses: "mock", "local-openai-compatible", "anthropic-claude",
+    #: "google-gemini", or the configured ``hosted_openai_provider_name``.
+    #: Fail-closed (AIO-006): an unknown or unregistered name aborts
+    #: startup instead of silently falling back to the mock.
+    extraction_provider: str = "mock"
+
 
 def load_settings() -> WorkerSettings:
     """Load and validate settings from the environment."""

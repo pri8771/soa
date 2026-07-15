@@ -27,7 +27,7 @@ from soa_api.dependencies import (
     ObjectStoreDep,
     get_dependencies,
 )
-from soa_api.domain.streams import StreamRepository, StreamStatus, StreamVersionRepository
+from soa_api.domain.streams import StreamRepository, StreamStatus
 from soa_api.domain.uploads import (
     UploadPolicyError,
     UploadSession,
@@ -45,6 +45,7 @@ from soa_api.services.file_limits import (
     resolve_limits,
 )
 from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
+from soa_api.services.stream_config import stream_config_by_id
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import (
     Document,
@@ -114,16 +115,7 @@ async def _stream_config_by_id(
     session: DbSession, authorized: AuthorizedContext, stream_id: uuid.UUID
 ) -> dict[str, object]:
     """The stream's published resolved configuration, or {}."""
-    stream = await StreamRepository(session, authorized.org_context).get(stream_id)
-    if stream is None or stream.active_version_id is None:
-        return {}
-    active = await StreamVersionRepository(session, authorized.org_context).get(
-        stream.active_version_id
-    )
-    if active is None or not active.resolved_snapshot:
-        return {}
-    config = active.resolved_snapshot.get("config")
-    return dict(config) if isinstance(config, dict) else {}
+    return await stream_config_by_id(session, authorized.org_context, stream_id)
 
 
 @router.post(

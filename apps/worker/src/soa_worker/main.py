@@ -1,12 +1,16 @@
 """Worker entry point: ``python -m soa_worker.main`` or ``soa-worker``."""
 
 import asyncio
+import logging
 
 from soa_config.logging import configure_logging
 from soa_db import DatabaseSessions, create_database_engine
 from soa_storage.store import ObjectStore
+from soa_worker.extraction.provider import ExtractionProvider
 from soa_worker.settings import WorkerSettings, load_settings
 from soa_worker.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 
 def _register_extraction_providers(settings: WorkerSettings) -> None:
@@ -51,6 +55,20 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
         )
 
 
+def _build_extraction_provider(settings: WorkerSettings) -> ExtractionProvider:
+    """Resolve the configured extraction provider from the AIO-001
+    registry. Fail-closed (AIO-006): a name that is not registered —
+    misspelled, or whose credentials never registered it — raises
+    :class:`UnknownProviderError` at startup, listing what IS registered,
+    instead of silently running a different provider."""
+    from soa_worker.providers import Capability, create_provider
+
+    provider: ExtractionProvider = create_provider(
+        Capability.FIELD_EXTRACTION, settings.extraction_provider
+    )
+    return provider
+
+
 def _build_object_store(settings: WorkerSettings) -> ObjectStore:
     """Build the same object store the API writes to, so the worker reads
     the originals it uploaded and writes derived artifacts alongside."""
@@ -92,18 +110,23 @@ async def _run() -> None:
     _register_extraction_providers(settings)
 
     # Assemble the processing pipeline (PRC-003) and turn on the DB-backed
-    # claim loop (JOB-003/004/005). Extraction uses the deterministic mock
-    # provider (PRC-006) — swapping in the AIO provider router is a
-    # follow-on that resolves the per-stream provider policy.
-    from soa_worker.extraction.mock import MockExtractionProvider
+    # claim loop (JOB-003/004/005). Extraction uses the worker-level
+    # provider named by ``extraction_provider`` (PRC-006; the deterministic
+    # mock by default) — the AIO-013 per-stream router that resolves each
+    # run's tenant provider policy is the follow-on.
     from soa_worker.job_runner import DbJobProcessor
     from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
     from soa_worker.pipeline import build_executors
 
+    provider = _build_extraction_provider(settings)
+    logger.info(
+        "extraction provider selected",
+        extra={"provider": provider.name},
+    )
     engine = create_database_engine(settings.database_url.get_secret_value())
     db = DatabaseSessions(engine)
     store = _build_object_store(settings)
-    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    orchestrator = Orchestrator(db, build_executors(store, provider))
     processor = DbJobProcessor(
         db,
         {

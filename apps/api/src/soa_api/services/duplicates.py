@@ -8,7 +8,8 @@ Exact duplicates are documents in the same stream with identical bytes
   the original document).
 - ``flag``    — the duplicate proceeds, marked with ``duplicate_of``
   (default: a human decides in review).
-- ``allow``   — the duplicate proceeds, still marked and audited.
+- ``allow``   — the duplicate proceeds and is processing-transparent:
+  still marked and audited, but never routed to review for it.
 
 Whatever the policy, a duplicate is NEVER silent: ``duplicate_of`` is
 recorded and a ``document.duplicate_detected`` audit event is written,
@@ -28,30 +29,27 @@ race matters.
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import Document, DocumentRepository
+
+# The policy enum lives in soa_db so the worker's validation stage can
+# resolve it without importing soa_api; re-exported here for callers.
+from soa_db.duplicate_policy import DEFAULT_POLICY, DuplicatePolicy, get_duplicate_policy
 from soa_db.repository import OrganizationContext
 
-
-class DuplicatePolicy(StrEnum):
-    REJECT = "reject"
-    FLAG = "flag"
-    ALLOW = "allow"
-
-
-DEFAULT_POLICY = DuplicatePolicy.FLAG
-
-
-def get_duplicate_policy(stream_config: Mapping[str, object]) -> DuplicatePolicy:
-    raw = stream_config.get("duplicate_policy")
-    try:
-        return DuplicatePolicy(str(raw))
-    except ValueError:
-        return DEFAULT_POLICY
+__all__ = [
+    "BUSINESS_DUPLICATE_HOOK",
+    "DEFAULT_POLICY",
+    "BusinessDuplicateHook",
+    "DuplicatePolicy",
+    "find_business_duplicate_documents",
+    "find_exact_duplicate",
+    "get_duplicate_policy",
+    "mark_duplicate",
+]
 
 
 async def find_exact_duplicate(

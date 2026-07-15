@@ -51,6 +51,9 @@ ollama pull qwen2.5vl:7b            # vision-language, for scanned/complex pages
 #    local provider). Ollama serves the OpenAI-compatible API on :11434.
 export SOA_WORKER_LOCAL_LLM_ENDPOINT="http://localhost:11434/v1/chat/completions"
 export SOA_WORKER_LOCAL_LLM_MODEL="qwen2.5:7b-instruct"
+
+# 3. Make the pipeline USE it (registering alone does not select it).
+export SOA_WORKER_EXTRACTION_PROVIDER="local-openai-compatible"
 ```
 
 The local provider registers with the **strict local data policy**:
@@ -80,6 +83,7 @@ adapter.
 ```bash
 export SOA_WORKER_ANTHROPIC_API_KEY="sk-ant-..."
 export SOA_WORKER_ANTHROPIC_MODEL="claude-sonnet-4-5"   # default; overridable
+export SOA_WORKER_EXTRACTION_PROVIDER="anthropic-claude"
 ```
 
 ### Gemini (native)
@@ -92,6 +96,7 @@ The key travels as an `x-goog-api-key` header.
 ```bash
 export SOA_WORKER_GEMINI_API_KEY="AIza-..."
 export SOA_WORKER_GEMINI_MODEL="gemini-2.0-flash"   # default; overridable
+export SOA_WORKER_EXTRACTION_PROVIDER="google-gemini"
 ```
 
 ### Gemini and OpenAI (OpenAI-compatible endpoint)
@@ -108,12 +113,14 @@ export SOA_WORKER_HOSTED_OPENAI_ENDPOINT="https://api.openai.com/v1/chat/complet
 export SOA_WORKER_HOSTED_OPENAI_MODEL="gpt-4o"
 export SOA_WORKER_HOSTED_OPENAI_PROVIDER_NAME="hosted-openai"
 export SOA_WORKER_HOSTED_OPENAI_REGION="us"
+export SOA_WORKER_EXTRACTION_PROVIDER="hosted-openai"   # the PROVIDER_NAME you chose
 
 # Gemini (its OpenAI-compatible endpoint) — same knobs, different values
 export SOA_WORKER_HOSTED_OPENAI_API_KEY="AIza..."
 export SOA_WORKER_HOSTED_OPENAI_ENDPOINT="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 export SOA_WORKER_HOSTED_OPENAI_MODEL="gemini-2.0-flash"
 export SOA_WORKER_HOSTED_OPENAI_PROVIDER_NAME="hosted-gemini"
+export SOA_WORKER_EXTRACTION_PROVIDER="hosted-gemini"   # the PROVIDER_NAME you chose
 ```
 
 > The environment-variable keys above are the simplest path for local
@@ -141,9 +148,24 @@ export SOA_WORKER_HOSTED_OPENAI_PROVIDER_NAME="hosted-gemini"
 
 ## How a request picks a provider
 
-The router (AIO-013) chooses among the registered providers by
-capability, language, region, **data policy** (local-only vs
-third-party-allowed), budget, and health — with a deterministic
-explanation. Configure the preference per stream through the CFG-005
-provider policy; the eval promotion gate (AIO-017) guards any change
-before it reaches production.
+Registering a provider does not select it. The pipeline uses the one
+provider named by `SOA_WORKER_EXTRACTION_PROVIDER` — a worker-level
+choice applied to every run. The value is the **registry name**, one of:
+
+- `mock` (default — the deterministic PRC-006 fixture provider)
+- `local-openai-compatible`
+- `anthropic-claude`
+- `google-gemini`
+- whatever `SOA_WORKER_HOSTED_OPENAI_PROVIDER_NAME` is set to
+
+Selection is fail-closed: a name that is not registered (misspelled, or
+its key/endpoint was never configured so the provider does not exist)
+aborts worker startup with an error listing what IS registered — the
+worker never silently falls back to a different model.
+
+The per-stream router (AIO-013) is the follow-on: it will choose among
+the registered providers by capability, language, region, **data
+policy** (local-only vs third-party-allowed), budget, and health — with
+a deterministic explanation. Configure the preference per stream through
+the CFG-005 provider policy; the eval promotion gate (AIO-017) guards
+any change before it reaches production.

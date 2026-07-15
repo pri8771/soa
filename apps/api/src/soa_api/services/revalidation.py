@@ -18,8 +18,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_api.services.stream_config import stream_config_by_id
 from soa_db.corrections import FieldCorrection, FieldCorrectionRepository, latest_corrections
 from soa_db.documents import Document
+from soa_db.duplicate_policy import DuplicatePolicy, get_duplicate_policy
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository, ValidationStatus
 from soa_db.repository import OrganizationContext
 from soa_normalize import NormalizationContext, NormalizationError, normalize
@@ -144,7 +146,16 @@ async def revalidate_run(
             if any(value is not None for value in cells.values())
         }
 
-    if document.duplicate_of is not None:
+    # ING-006 gate, mirroring the worker pipeline: an 'allow' duplicate
+    # policy is processing-transparent, so duplicates.business_hook must
+    # not see the flag and re-route the corrected run to review. The
+    # policy comes from the stream's ACTIVE published config. Reconcile
+    # this gate with the rule itself when per-stream rules land.
+    stream_config = await stream_config_by_id(session, context, document.stream_id)
+    if (
+        document.duplicate_of is not None
+        and get_duplicate_policy(stream_config) is not DuplicatePolicy.ALLOW
+    ):
         header["meta.duplicate_of"] = str(document.duplicate_of)
 
     data = EvaluationInput(
