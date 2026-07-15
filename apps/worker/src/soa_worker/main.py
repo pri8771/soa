@@ -13,12 +13,9 @@ from soa_storage import ObjectStore
 from soa_storage.secrets_gcp import build_secret_store
 from soa_worker.database_queue import DatabaseJobQueue
 from soa_worker.export_orchestrator import execute_export
-from soa_worker.extraction.provider import ExtractionProvider
 from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
-from soa_worker.pipeline import build_executors
-from soa_worker.providers import Capability, create_provider
 from soa_worker.registry import HandlerRegistry, JobEnvelope
-from soa_worker.run_config import verify_run_config
+from soa_worker.run_config import ResolvedExecutorFactory
 from soa_worker.settings import WorkerSettings, load_settings
 from soa_worker.worker import Worker
 
@@ -86,13 +83,10 @@ async def _run() -> None:
         aws_region=settings.secrets_aws_region,
         gcp_project=settings.secrets_gcp_project,
     )
-    provider = create_provider(Capability.FIELD_EXTRACTION, settings.extraction_provider)
-    if not isinstance(provider, ExtractionProvider):
-        raise TypeError(f"provider {settings.extraction_provider!r} does not implement extraction")
     orchestrator = Orchestrator(
         db,
-        build_executors(store, provider),
-        config_verifier=verify_run_config,
+        {},
+        executor_resolver=ResolvedExecutorFactory(store),
     )
     registry = HandlerRegistry()
 

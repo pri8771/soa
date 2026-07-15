@@ -22,6 +22,11 @@ capability. Release claims require runtime wiring and evidence.
   version and recomputes the stored snapshot fingerprint. Missing, mutable,
   cross-tenant, altered, or intake-mismatched configuration fails terminally
   before document processing code executes.
+- The authenticated snapshot now selects the run's pinned schema fields,
+  criticality, field normalizers, authored rules and rule version, languages,
+  locale/currency, and field-extraction provider. Executors are cached only by
+  tenant + stream version + verified fingerprint; deployment-wide extraction
+  defaults are no longer used by the production entry point.
 - Real extraction providers now receive actual per-page document text. Native
   PDF text is preferred; low-coverage/image pages use bounded local OCR. The
   recognized input is retained as a page artifact. Before this remediation,
@@ -64,12 +69,13 @@ capability. Release claims require runtime wiring and evidence.
 
 ### Code and integration blockers
 
-1. **Pinned stream configuration is verified but not executed by the worker.**
-   Intake pins a stream version and fingerprint and each stage now validates
-   both against the immutable tenant-scoped snapshot, but the running pipeline
-   still uses one deployment-wide `PipelineConfig` and extraction provider. Schema, rules,
-   confidence, locale/language, instruction version, provider routing, and
-   tenant credential references must resolve from the run's immutable snapshot.
+1. **The remaining model-call configuration is not fully pinned.** The worker
+   now executes the authenticated snapshot's schema, authored rules,
+   normalizers, language/locale, and field-extraction provider. Published
+   instruction versions can still change after intake and are not stored on the
+   run; confidence policy versions and tenant credential references are not yet
+   resolved into runtime calls. Pin those immutable IDs at intake, construct
+   instruction-aware providers per run, and persist full call provenance.
 2. **Classification and packet splitting are explicit placeholders.** The
    current P0 stream assumes one sales-order document per upload. Either ship a
    validated single-document product constraint or implement and evaluate the
@@ -109,10 +115,10 @@ capability. Release claims require runtime wiring and evidence.
 
 ## Ordered next work
 
-1. Build a worker-owned, immutable `ResolvedRunConfig` loader and provider
-   factory; reject missing/mismatched fingerprints and add historical-version,
-   tenant-isolation, secret-reference, and restart tests.
-2. Wire published instructions and safe request construction into every model
+1. Extend the worker-owned `ResolvedRunConfig` loader with pinned instruction,
+   confidence-policy, data-policy, and credential-reference resolution; add
+   historical-instruction, secret-reference, and restart tests.
+2. Wire the pinned published instructions and safe request construction into every model
    call; persist provider/model/instruction/config provenance on results.
 3. Wire catalog matching, line validation, duplicate-PO validation, confidence,
    and review routing into the validating transaction with deterministic gold

@@ -92,6 +92,10 @@ ConfigVerifier = Callable[
     [AsyncSession, OrganizationContext, ProcessingRun],
     Awaitable[Mapping[str, Any]],
 ]
+ExecutorResolver = Callable[
+    [AsyncSession, OrganizationContext, ProcessingRun],
+    Awaitable[Mapping[str, StageExecutor]],
+]
 
 
 class Orchestrator:
@@ -102,11 +106,13 @@ class Orchestrator:
         *,
         max_stage_attempts: int = 3,
         config_verifier: ConfigVerifier | None = None,
+        executor_resolver: ExecutorResolver | None = None,
     ) -> None:
         self._db = db
         self._executors = dict(executors)
         self._max_stage_attempts = max_stage_attempts
         self._config_verifier = config_verifier
+        self._executor_resolver = executor_resolver
 
     # -- entry: document.preprocess ------------------------------------------
 
@@ -186,7 +192,6 @@ class Orchestrator:
                     actor_id=ACTOR,
                 )
             stage_run = await start_stage(session, context, run=run, stage=stage)
-            executor = self._executors.get(stage)
             started = time.monotonic()
             try:
                 if self._config_verifier is not None:
@@ -194,6 +199,13 @@ class Orchestrator:
                         await self._config_verifier(session, context, run)
                     except ValueError as error:
                         raise StageExecutionError(str(error), retryable=False) from error
+                executors = self._executors
+                if self._executor_resolver is not None:
+                    try:
+                        executors = dict(await self._executor_resolver(session, context, run))
+                    except ValueError as error:
+                        raise StageExecutionError(str(error), retryable=False) from error
+                executor = executors.get(stage)
                 if executor is None:
                     raise StageExecutionError(
                         f"no executor registered for stage {stage!r}", retryable=False

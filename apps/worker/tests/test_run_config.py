@@ -5,15 +5,27 @@ from pathlib import Path
 
 import pytest
 
+from soa_api.domain.policies import PolicyVersion
+from soa_api.domain.rules import RuleSetVersion
+from soa_api.domain.schemas import SchemaVersion
 from soa_api.domain.streams import StreamVersion
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRun
-from soa_worker.run_config import RunConfigError, snapshot_fingerprint, verify_run_config
+from soa_worker.run_config import (
+    RunConfigError,
+    load_resolved_run_config,
+    snapshot_fingerprint,
+    verify_run_config,
+)
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 OTHER_ORG = uuid.UUID("22222222-2222-4222-8222-222222222222")
 VERSION = uuid.UUID("33333333-3333-4333-8333-333333333333")
+SCHEMA = uuid.UUID("44444444-4444-4444-8444-444444444444")
+RULES = uuid.UUID("55555555-5555-4555-8555-555555555555")
+POLICY = uuid.UUID("66666666-6666-4666-8666-666666666666")
+PROCESS = uuid.UUID("77777777-7777-4777-8777-777777777777")
 
 
 @pytest.fixture
@@ -94,3 +106,107 @@ async def test_rejects_cross_tenant_lookup(db: DatabaseSessions) -> None:
                 OrganizationContext(organization_id=OTHER_ORG),
                 _run(str(snapshot["fingerprint"])),
             )
+
+
+async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseSessions) -> None:
+    snapshot: dict[str, object] = {
+        "process_version_id": str(uuid.uuid4()),
+        "process_version_number": 2,
+        "config": {
+            "schema_version_id": str(SCHEMA),
+            "rule_set_version_id": str(RULES),
+            "provider_policy_version_id": str(POLICY),
+            "languages": ["EN", "es"],
+            "locale": "en-GB",
+            "currency": "GBP",
+        },
+    }
+    snapshot["fingerprint"] = snapshot_fingerprint(snapshot)
+    await _seed(db, snapshot)
+    async with db.session_scope() as session:
+        session.add_all(
+            [
+                SchemaVersion(
+                    id=SCHEMA,
+                    organization_id=ORG,
+                    process_id=PROCESS,
+                    version_number=3,
+                    state="superseded",
+                    definition={
+                        "fields": [
+                            {
+                                "key": "po_number",
+                                "label": "PO number",
+                                "type": "text",
+                                "criticality": "critical",
+                                "normalization": "identifier",
+                            },
+                            {
+                                "key": "lines",
+                                "label": "Lines",
+                                "type": "table",
+                                "columns": [
+                                    {
+                                        "key": "sku",
+                                        "label": "SKU",
+                                        "type": "text",
+                                    }
+                                ],
+                            },
+                        ]
+                    },
+                ),
+                RuleSetVersion(
+                    id=RULES,
+                    organization_id=ORG,
+                    process_id=PROCESS,
+                    version_number=5,
+                    state="published",
+                    definition={
+                        "version": "custom-5",
+                        "rules": [
+                            {
+                                "key": "required.po_number",
+                                "severity": "error",
+                                "action": "block",
+                                "condition": {
+                                    "op": "not",
+                                    "arg": {"op": "is_present", "key": "po_number"},
+                                },
+                            }
+                        ],
+                    },
+                ),
+                PolicyVersion(
+                    id=POLICY,
+                    organization_id=ORG,
+                    policy_type="provider",
+                    version_number=1,
+                    state="published",
+                    definition={
+                        "provider_name": "mock",
+                        "capabilities": ["ocr", "field_extraction"],
+                    },
+                ),
+            ]
+        )
+
+    async with db.session_scope() as session:
+        resolved = await load_resolved_run_config(
+            session,
+            OrganizationContext(organization_id=ORG),
+            _run(str(snapshot["fingerprint"])),
+        )
+
+    assert resolved.provider_name == "mock"
+    assert resolved.pipeline.rules_version == "custom-5"
+    assert resolved.pipeline.languages == ("en", "es")
+    assert resolved.pipeline.normalization.locale == "en-GB"
+    assert resolved.pipeline.normalization.currency == "GBP"
+    assert [field.key for field in resolved.pipeline.field_specs] == [
+        "po_number",
+        "lines",
+        "lines.sku",
+    ]
+    assert resolved.pipeline.criticality["po_number"] == "critical"
+    assert resolved.pipeline.normalizer_overrides["po_number"] == "identifier"

@@ -42,8 +42,8 @@ class WorkerSettings(BaseServiceSettings):
     storage_gcs_project: str | None = None
     storage_gcs_kms_key_name: str | None = None
 
-    # Global bootstrap choice until each published stream supplies its
-    # resolved provider policy. Production may never use the fixture mock.
+    # Deprecated development fallback retained for environment compatibility.
+    # Runtime extraction is selected from each run's pinned provider policy.
     extraction_provider: str = "mock"
     export_destination_allowlist: tuple[str, ...] = ()
     #: Optional local OpenAI-compatible extraction endpoint (AIO-007).
@@ -82,8 +82,6 @@ class WorkerSettings(BaseServiceSettings):
     def _validate_runtime_dependencies(self) -> Self:
         if self.is_production:
             problems: list[str] = []
-            if self.extraction_provider == "mock":
-                problems.append("production requires a real extraction_provider")
             if self.storage_backend == "gcs":
                 if not self.storage_gcs_project:
                     problems.append("GCS storage requires storage_gcs_project")
