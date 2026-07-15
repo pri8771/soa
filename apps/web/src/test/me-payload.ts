@@ -34,6 +34,7 @@ export const DEFAULT_ME = {
         "catalogs.activate",
         "integrations.read",
         "integrations.manage",
+        "data.delete",
         "analytics.read",
         "jobs.read",
         "jobs.manage",

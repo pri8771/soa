@@ -347,6 +347,22 @@ export const DEFAULT_DOCUMENTS = [
     received_at: "2026-07-12T09:20:00+00:00",
     duplicate_of: null,
   },
+  {
+    id: "85555555-5555-4555-8555-555555555555",
+    stream_id: "41111111-1111-4111-8111-111111111111",
+    state: "deleted",
+    state_reason: "customer erasure request",
+    source_channel: "upload",
+    original_filename: "po-4709.pdf",
+    content_sha256: "e".repeat(64),
+    size_bytes: 64000,
+    content_type: "application/pdf",
+    client_reference: null,
+    priority: 100,
+    sla_due_at: null,
+    received_at: "2026-07-11T09:00:00+00:00",
+    duplicate_of: null,
+  },
 ];
 
 export const DEFAULT_RUNS = [
@@ -1180,6 +1196,18 @@ export const handlers = [
   http.post("/api/orgs/:slug/documents/:documentId/cancel", ({ params }) =>
     HttpResponse.json({ id: String(params["documentId"]), state: "cancelled" }),
   ),
+  http.post("/api/orgs/:slug/documents/:documentId/deletion", ({ params }) =>
+    HttpResponse.json(
+      {
+        tombstone_id: "d9999999-9999-4999-8999-999999999999",
+        document_id: String(params["documentId"]),
+        object_keys_deleted: 2,
+        category_counts: { artifacts: 2, extracted_fields: 1, processing_runs: 1 },
+        already_complete: false,
+      },
+      { status: 201 },
+    ),
+  ),
   http.get("/api/orgs/:slug/documents/:documentId/runs", ({ params }) => {
     const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
     if (!found) {
@@ -1208,18 +1236,23 @@ export const handlers = [
     }
     return HttpResponse.json({
       document: found,
-      artifacts: [
-        {
-          id: "91111111-1111-4111-8111-111111111111",
-          kind: "original",
-          sha256: found.content_sha256,
-          size_bytes: found.size_bytes,
-          content_type: found.content_type,
-          produced_by_stage: "intake",
-          retention_class: "standard",
-          created_at: found.received_at,
-        },
-      ],
+      // A deleted document has no stored artifacts left — only the row
+      // and its audit trail survive (SEC-010).
+      artifacts:
+        found.state === "deleted"
+          ? []
+          : [
+              {
+                id: "91111111-1111-4111-8111-111111111111",
+                kind: "original",
+                sha256: found.content_sha256,
+                size_bytes: found.size_bytes,
+                content_type: found.content_type,
+                produced_by_stage: "intake",
+                retention_class: "standard",
+                created_at: found.received_at,
+              },
+            ],
       context: {
         stream_id: found.stream_id,
         stream_slug: "email",

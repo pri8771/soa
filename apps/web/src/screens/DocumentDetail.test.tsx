@@ -8,6 +8,7 @@ import { renderApp } from "../test/render";
 const QUEUED = DEFAULT_DOCUMENTS[0];
 const QUARANTINED = DEFAULT_DOCUMENTS[2];
 const FAILED = DEFAULT_DOCUMENTS[3];
+const DELETED = DEFAULT_DOCUMENTS[4];
 
 describe("Document detail (ING-012)", () => {
   it("is a stable deep link with summary, files, honest placeholders, and timeline", async () => {
@@ -68,6 +69,55 @@ describe("Document detail (ING-012)", () => {
     await user.type(within(dialog).getByLabelText(/Reason/), "wrong stream");
     await user.click(confirm);
     await waitFor(() => expect(posted).toEqual({ reason: "wrong stream" }));
+  });
+
+  it("offers delete for a settled document", async () => {
+    await renderApp(`/app/northstar/documents/${QUARANTINED.id}`);
+    await screen.findByRole("heading", { name: "invoice-evil.pdf" });
+    expect(screen.getByRole("button", { name: "Delete document" })).toBeInTheDocument();
+  });
+
+  it("deleting requires a reason and posts it", async () => {
+    const user = userEvent.setup();
+    let posted: unknown = null;
+    server.use(
+      http.post("/api/orgs/northstar/documents/:documentId/deletion", async ({ request }) => {
+        posted = await request.json();
+        return HttpResponse.json(
+          {
+            tombstone_id: "d9999999-9999-4999-8999-999999999999",
+            document_id: QUARANTINED.id,
+            object_keys_deleted: 1,
+            category_counts: { artifacts: 1 },
+            already_complete: false,
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    await renderApp(`/app/northstar/documents/${QUARANTINED.id}`);
+    await screen.findByRole("heading", { name: "invoice-evil.pdf" });
+    await user.click(screen.getByRole("button", { name: "Delete document" }));
+    const dialog = await screen.findByRole("alertdialog");
+    const confirm = within(dialog).getByRole("button", { name: "Delete document" });
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/Reason/), "customer erasure request");
+    await user.click(confirm);
+    await waitFor(() => expect(posted).toEqual({ reason: "customer erasure request" }));
+  });
+
+  it("shows a deleted notice instead of the viewer, with no cancel or delete actions", async () => {
+    await renderApp(`/app/northstar/documents/${DELETED.id}`);
+    await screen.findByRole("heading", { name: "po-4709.pdf" });
+    expect(screen.getByText("This document’s data has been deleted")).toBeInTheDocument();
+    const summary = screen.getByRole("region", { name: "Summary" });
+    expect(within(summary).getByText("customer erasure request")).toBeInTheDocument();
+    const preview = screen.getByRole("region", { name: "Preview" });
+    expect(within(preview).getByText(/No preview/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete document" })).not.toBeInTheDocument();
+    const files = screen.getByRole("region", { name: "Files" });
+    expect(within(files).getByText("No stored files.")).toBeInTheDocument();
   });
 
   it("shows the processing timeline: stages, attempts, provider, latency, warnings, safe errors", async () => {

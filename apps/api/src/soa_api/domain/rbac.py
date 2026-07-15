@@ -67,6 +67,11 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         # (SEC-009) is a sensitive portability/subject-access action —
         # its own grant, separate from documents.read.
         "data.export",
+        # Permanently erasing one document's stored data (SEC-010) is
+        # the erasure counterpart of data.export — its own grant; holding
+        # it constitutes the operator sign-off the deletion workflow
+        # requires.
+        "data.delete",
         "jobs.read",
         "jobs.manage",
         "jobs.admin",
@@ -162,6 +167,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "integrations.read",
             "analytics.read",
             "data.export",
+            "data.delete",
             "jobs.read",
         }
     ),

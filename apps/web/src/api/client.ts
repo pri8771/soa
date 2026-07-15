@@ -649,6 +649,30 @@ export function cancelDocument(
   });
 }
 
+// --- Document data deletion (SEC-010) ---
+
+export interface DocumentDeletionResult {
+  tombstone_id: string;
+  document_id: string;
+  object_keys_deleted: number;
+  category_counts: Record<string, number>;
+  already_complete: boolean;
+}
+
+/** Permanently erase one document's stored data (operator-initiated,
+ * requires data.delete). The document row survives as state "deleted"
+ * alongside a retained audit tombstone. */
+export function deleteDocumentData(
+  organizationSlug: string,
+  documentId: string,
+  reason: string,
+): Promise<DocumentDeletionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/deletion`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 // --- Document detail (ING-011/012) ---
 
 export interface DocumentArtifact {

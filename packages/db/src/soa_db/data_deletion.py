@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import String, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,7 +97,7 @@ class DeletionTombstone(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampM
 #: Minimal object-store surface the workflow needs. ObjectStore
 #: satisfies it; ``head`` is used for reconciliation, ``delete`` for
 #: erasure. Both raise ObjectNotFoundError when the key is absent.
-class ObjectDeleter:  # pragma: no cover - structural typing marker
+class ObjectDeleter(Protocol):  # pragma: no cover - structural typing marker
     async def delete(self, key: str) -> None: ...
     async def head(self, key: str) -> Any: ...
 

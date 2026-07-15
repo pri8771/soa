@@ -29,6 +29,7 @@ import { useState } from "react";
 
 import {
   cancelDocument,
+  deleteDocumentData,
   fetchCanonicalPayload,
   fetchDocumentDetail,
   fetchDocumentRuns,
@@ -75,6 +76,20 @@ const LIVE_STATES = new Set([
 
 const REPROCESSABLE_STATES = new Set(["review_required", "failed_retryable", "failed_terminal"]);
 
+//: States the deletion endpoint accepts (SEC-010): settled or waiting on
+//: a human — never a document still moving through the pipeline.
+const DELETABLE_STATES = new Set([
+  "review_required",
+  "approved",
+  "completed",
+  "rejected",
+  "quarantined",
+  "failed_retryable",
+  "failed_terminal",
+  "cancelled",
+  "archived",
+]);
+
 //: The canonical payload exists once a document was approved (CAN-003).
 const CANONICAL_STATES = new Set(["approved", "exporting", "completed", "archived"]);
 
@@ -91,6 +106,7 @@ const STATE_TONES: Record<
   failed_retryable: "warning",
   failed_terminal: "critical",
   cancelled: "neutral",
+  deleted: "neutral",
 };
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
@@ -136,6 +152,42 @@ function CancelDialog({ onConfirm }: { onConfirm: (reason: string) => void }) {
               }}
             >
               Cancel document
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function DeleteDialog({ onConfirm }: { onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  return (
+    <Dialog title="Delete this document’s data?" alert>
+      {({ close }) => (
+        <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+          <p style={{ margin: 0 }}>
+            The original file, rendered pages, extracted data, review history, and outputs are
+            permanently erased. This cannot be undone.
+          </p>
+          <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+            An audit tombstone recording who deleted what, when, and why is kept, and the document
+            stays listed as deleted.
+          </p>
+          <TextField label="Reason (required)" value={reason} onChange={setReason} isRequired />
+          <div style={{ display: "flex", gap: "var(--soa-space-2)", justifyContent: "flex-end" }}>
+            <Button variant="subtle" onPress={close}>
+              Keep the data
+            </Button>
+            <Button
+              variant="destructive"
+              isDisabled={reason.trim().length < 3}
+              onPress={() => {
+                onConfirm(reason.trim());
+                close();
+              }}
+            >
+              Delete document
             </Button>
           </div>
         </div>
@@ -341,6 +393,14 @@ export function DocumentDetail() {
       void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
     },
   });
+  const deletion = useMutation({
+    mutationFn: (reason: string) => deleteDocumentData(slug, documentId, reason),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
+      void queryClient.invalidateQueries({ queryKey: ["document", slug, documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
+    },
+  });
   const reprocess = useMutation({
     mutationFn: (options: { mode: "retry" | "current_config"; reason: string }) =>
       reprocessDocument(slug, documentId, options),
@@ -382,9 +442,11 @@ export function DocumentDetail() {
   }
 
   const { document, artifacts, context, timeline } = detail.data;
+  const isDeleted = document.state === "deleted";
   const cancellable = canReview && CANCELLABLE_STATES.has(document.state);
   const canReprocess =
     session.permissions.has("documents.reprocess") && REPROCESSABLE_STATES.has(document.state);
+  const deletable = session.permissions.has("data.delete") && DELETABLE_STATES.has(document.state);
   const hasRuns = (runs.data?.runs.length ?? 0) > 0;
 
   return (
@@ -396,11 +458,21 @@ export function DocumentDetail() {
         { label: document.original_filename },
       ]}
       actions={
-        cancellable ? (
-          <DialogTrigger>
-            <Button variant="destructive">Cancel document</Button>
-            <CancelDialog onConfirm={(reason) => cancel.mutate(reason)} />
-          </DialogTrigger>
+        cancellable || deletable ? (
+          <span style={{ display: "inline-flex", gap: "var(--soa-space-2)" }}>
+            {cancellable ? (
+              <DialogTrigger>
+                <Button variant="destructive">Cancel document</Button>
+                <CancelDialog onConfirm={(reason) => cancel.mutate(reason)} />
+              </DialogTrigger>
+            ) : null}
+            {deletable ? (
+              <DialogTrigger>
+                <Button variant="destructive">Delete document</Button>
+                <DeleteDialog onConfirm={(reason) => deletion.mutate(reason)} />
+              </DialogTrigger>
+            ) : null}
+          </span>
         ) : undefined
       }
     >
@@ -408,6 +480,18 @@ export function DocumentDetail() {
         {cancel.isError ? (
           <Banner tone="critical" title="Cancel failed">
             {cancel.error?.message ?? "The document was not changed."}
+          </Banner>
+        ) : null}
+        {deletion.isError ? (
+          <Banner tone="critical" title="Delete failed">
+            {deletion.error?.message ?? "Nothing was deleted."}
+          </Banner>
+        ) : null}
+        {isDeleted ? (
+          <Banner tone="neutral" title="This document’s data has been deleted">
+            The original file, pages, extracted data, review history, and outputs were permanently
+            erased{document.state_reason ? `: ${document.state_reason}` : "."} An audit tombstone of
+            the deletion is retained in the timeline below.
           </Banner>
         ) : null}
         {download.isError ? (
@@ -484,7 +568,13 @@ export function DocumentDetail() {
         </Panel>
 
         <Panel title="Preview">
-          <DocumentViewer organizationSlug={slug} documentId={documentId} />
+          {isDeleted ? (
+            <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+              No preview — the document’s data has been deleted.
+            </p>
+          ) : (
+            <DocumentViewer organizationSlug={slug} documentId={documentId} />
+          )}
         </Panel>
 
         <Panel title="Processing">

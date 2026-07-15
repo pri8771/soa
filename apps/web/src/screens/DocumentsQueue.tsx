@@ -34,6 +34,7 @@ const STATE_OPTIONS = [
   { id: "failed_retryable", label: "Failed (retryable)" },
   { id: "failed_terminal", label: "Failed (terminal)" },
   { id: "cancelled", label: "Cancelled" },
+  { id: "deleted", label: "Deleted" },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -59,6 +60,7 @@ const STATE_TONES: Record<
   failed_terminal: "critical",
   cancelled: "neutral",
   archived: "neutral",
+  deleted: "neutral",
 };
 
 //: States the server's transition map allows to cancel.

@@ -13,12 +13,15 @@ describe("Documents queue (ING-010)", () => {
     expect(await screen.findByText("po-4711.pdf")).toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Documents" });
     // Stream name resolved, not the raw id.
-    expect(within(table).getAllByText("Email intake").length).toBe(4);
-    // Distinct outcomes: queued, queued+duplicate flag, quarantined+reason.
+    expect(within(table).getAllByText("Email intake").length).toBe(5);
+    // Distinct outcomes: queued, queued+duplicate flag, quarantined+reason,
+    // deleted+reason.
     expect(within(table).getAllByText("queued").length).toBe(2);
     expect(within(table).getByText("duplicate")).toBeInTheDocument();
     expect(within(table).getByText("quarantined")).toBeInTheDocument();
     expect(within(table).getByText(/malware detected/)).toBeInTheDocument();
+    expect(within(table).getByText("deleted")).toBeInTheDocument();
+    expect(within(table).getByText(/customer erasure request/)).toBeInTheDocument();
     // Upload entry point.
     expect(screen.getByRole("link", { name: "Upload documents" })).toBeInTheDocument();
   });
@@ -76,5 +79,17 @@ describe("Documents queue (ING-010)", () => {
     await user.click(quarantinedBox);
     await user.click(screen.getByRole("button", { name: "Cancel selected" }));
     await waitFor(() => expect(cancelled).toEqual([DEFAULT_DOCUMENTS[0].id]));
+  });
+
+  it("filters to deleted documents", async () => {
+    const user = userEvent.setup();
+    const { router } = await renderApp(PATH);
+    await screen.findByText("po-4711.pdf");
+    await user.click(screen.getByRole("button", { name: /State/ }));
+    await user.click(await screen.findByRole("option", { name: "Deleted" }));
+
+    await waitFor(() => expect(screen.queryByText("po-4711.pdf")).not.toBeInTheDocument());
+    expect(screen.getByText("po-4709.pdf")).toBeInTheDocument();
+    expect(router.state.location.search).toMatchObject({ docState: "deleted" });
   });
 });

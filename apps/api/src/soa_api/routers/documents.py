@@ -360,6 +360,7 @@ _REPROCESS_PROTECTED = {
     DocumentState.EXPORTING.value: "the document is being exported",
     DocumentState.COMPLETED.value: "the document has been exported",
     DocumentState.ARCHIVED.value: "the document is archived",
+    DocumentState.DELETED.value: "the document's data has been deleted",
 }
 
 

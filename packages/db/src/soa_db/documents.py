@@ -61,6 +61,9 @@ class DocumentState(StrEnum):
     REJECTED = "rejected"
     CANCELLED = "cancelled"
     ARCHIVED = "archived"
+    # The document's data was erased (SEC-010): the row is kept for
+    # attribution, everything else is gone. Terminal — nothing leaves it.
+    DELETED = "deleted"
 
 
 _HAPPY_CHAIN: list[DocumentState] = [
@@ -114,7 +117,7 @@ _allow(DocumentState.FAILED_RETRYABLE, DocumentState.QUEUED, DocumentState.FAILE
 _allow(DocumentState.REVIEW_REQUIRED, DocumentState.QUEUED)
 _allow(DocumentState.FAILED_TERMINAL, DocumentState.QUEUED)
 
-# Settled documents can be archived; archived is the single terminal state.
+# Settled documents can be archived.
 for _state in (
     DocumentState.COMPLETED,
     DocumentState.REJECTED,
@@ -123,6 +126,24 @@ for _state in (
     DocumentState.QUARANTINED,
 ):
     _allow(_state, DocumentState.ARCHIVED)
+
+# Operator-initiated data deletion (SEC-010): every settled or reviewable
+# state may move to deleted once the deletion workflow has erased the
+# data; states still moving through the pipeline may not — cancel first.
+# Deleted is terminal: the data is gone, nothing can resume, re-queue, or
+# archive the husk.
+for _state in (
+    DocumentState.REVIEW_REQUIRED,
+    DocumentState.APPROVED,
+    DocumentState.COMPLETED,
+    DocumentState.REJECTED,
+    DocumentState.CANCELLED,
+    DocumentState.FAILED_RETRYABLE,
+    DocumentState.FAILED_TERMINAL,
+    DocumentState.QUARANTINED,
+    DocumentState.ARCHIVED,
+):
+    _allow(_state, DocumentState.DELETED)
 
 
 class InvalidDocumentTransitionError(Exception):
