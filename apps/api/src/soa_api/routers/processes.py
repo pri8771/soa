@@ -53,6 +53,7 @@ from soa_api.domain.streams import (
     create_stream,
     create_stream_draft,
     publish_stream_draft,
+    resolve_snapshot,
 )
 from soa_api.domain.versioning import (
     ImmutableVersionError,
@@ -67,6 +68,7 @@ from soa_api.services.config_service import (
 )
 from soa_db import CursorRequest
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.evaluation_runs import EvaluationRunRepository
 from soa_db.mixins import VersionConflictError
 
 router = APIRouter(tags=["processes"])
@@ -569,19 +571,39 @@ async def get_stream_simulation(
     authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.read"))],
     session: DbSession,
 ) -> dict[str, Any]:
-    """Simulation comparison for this stream (AIO-018). Honest until
-    evaluation runs are persisted: the runner and promotion gate exist
-    (AIO-016/017), but no run results are stored per configuration
-    version yet, so there is nothing real to compare — the endpoint
-    says so instead of inventing numbers."""
-    await _load_stream(session, authorized, stream_slug)
+    """Return the latest real evaluation and its baseline comparison."""
+    stream = await _load_stream(session, authorized, stream_slug)
+    runs = await EvaluationRunRepository(session, authorized.org_context).latest_for_stream(
+        stream.id
+    )
+    completed = [run for run in runs if run.report is not None]
+    if not completed:
+        return {
+            "available": False,
+            "reason": "No evaluation runs have completed for this stream yet.",
+        }
+    candidate = completed[0]
+    baseline = next(
+        (run for run in completed if run.id == candidate.baseline_run_id),
+        None,
+    )
     return {
-        "available": False,
-        "reason": (
-            "No evaluation runs are recorded for this stream yet. Evaluations "
-            "run a candidate configuration against a published gold dataset; "
-            "results appear here once run storage lands."
+        "available": True,
+        "candidate": {
+            "run_id": str(candidate.id),
+            "fingerprint": candidate.candidate_fingerprint,
+            "report": candidate.report,
+        },
+        "baseline": (
+            {
+                "run_id": str(baseline.id),
+                "fingerprint": baseline.candidate_fingerprint,
+                "report": baseline.report,
+            }
+            if baseline is not None
+            else None
         ),
+        "gate": candidate.gate_result,
     }
 
 
@@ -747,6 +769,21 @@ async def publish_stream_version(
             status_code=status.HTTP_409_CONFLICT,
             detail="The parent process's active version could not be loaded.",
         )
+    candidate_snapshot = resolve_snapshot(process_version, draft.overrides)
+    if stream.active_version_id is not None and bool(
+        process_version.definition.get("evaluation_gate_required", True)
+    ):
+        evidence = await EvaluationRunRepository(
+            session, authorized.org_context
+        ).passed_for_candidate(stream.id, str(candidate_snapshot["fingerprint"]))
+        if evidence is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Promotion blocked: this candidate has no successful gold-set evaluation "
+                    "with a passing regression gate."
+                ),
+            )
     try:
         published = await publish_stream_draft(
             session,

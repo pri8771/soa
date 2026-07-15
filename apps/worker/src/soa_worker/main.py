@@ -21,6 +21,7 @@ from soa_worker.worker import Worker
 
 PREPROCESS_JOB_TYPE = "document.preprocess"
 EXPORT_JOB_TYPE = "export.deliver"
+EVALUATION_JOB_TYPE = "evaluation.run"
 
 
 def _register_extraction_providers(settings: WorkerSettings) -> None:
@@ -120,6 +121,21 @@ async def _run() -> None:
                 )
         if result.outcome == "retryable_error":
             raise RuntimeError("export destination asked for a retry")
+
+    @registry.register(EVALUATION_JOB_TYPE)
+    async def evaluation(job: JobEnvelope) -> None:
+        from soa_db.repository import OrganizationContext
+        from soa_db.tenant_guard import bind_tenant
+        from soa_worker.evaluation_orchestrator import execute_evaluation
+
+        organization_id = uuid.UUID(str(job.payload["organization_id"]))
+        async with db.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            await execute_evaluation(
+                session,
+                OrganizationContext(organization_id=organization_id),
+                uuid.UUID(str(job.payload["evaluation_run_id"])),
+            )
 
     worker_id = f"{socket.gethostname()}:{uuid.uuid4()}"
     queue = DatabaseJobQueue(db, worker_id=worker_id)

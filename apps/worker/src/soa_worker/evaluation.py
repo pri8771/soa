@@ -192,11 +192,13 @@ class EvaluationState:
 
     scores: dict[str, DocumentScore] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
+    by_field: dict[str, FieldScore] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "scores": {sha: vars(score) for sha, score in self.scores.items()},
             "errors": dict(self.errors),
+            "by_field": {key: vars(score) for key, score in self.by_field.items()},
         }
 
     @classmethod
@@ -207,6 +209,7 @@ class EvaluationState:
                 for sha, raw in data.get("scores", {}).items()
             },
             errors=dict(data.get("errors", {})),
+            by_field={key: FieldScore(**raw) for key, raw in data.get("by_field", {}).items()},
         )
 
 
@@ -301,7 +304,7 @@ def build_report(
             round(sum(s.latency_ms for s in scores) / len(scores), 2) if scores else 0.0
         ),
         total_cost_cents=sum(s.cost_cents for s in scores),
-        by_field=dict(by_field or {}),
+        by_field=dict(by_field if by_field is not None else state.by_field),
         by_split={split: metrics.documents for split, metrics in by_cohort.items()},
         by_cohort=by_cohort,
         errors=dict(state.errors),
@@ -331,7 +334,7 @@ async def run_evaluation(
         )
 
     effective_state = state or EvaluationState()
-    field_breakdown: dict[str, FieldScore] = {}
+    field_breakdown = effective_state.by_field
     ordered = sorted(documents, key=lambda doc: doc.document_sha256)
     for document in ordered:
         sha = document.document_sha256
@@ -353,6 +356,8 @@ async def run_evaluation(
                 exact=existing.exact + part.exact,
                 normalized=existing.normalized + part.normalized,
             )
+
+    effective_state.by_field = field_breakdown
 
     return build_report(effective_state, ordered, field_breakdown), effective_state
 

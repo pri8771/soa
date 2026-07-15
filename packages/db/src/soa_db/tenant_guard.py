@@ -60,6 +60,7 @@ RLS_PROTECTED_TABLES = (
     "gold_datasets",  # 0032
     "gold_dataset_versions",  # 0032
     "gold_documents",  # 0032
+    "evaluation_runs",  # 0040
     "catalogs",  # 0033
     "catalog_versions",  # 0033
     "catalog_records",  # 0033

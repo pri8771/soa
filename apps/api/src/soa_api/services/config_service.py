@@ -198,6 +198,7 @@ async def publish_process_draft_checked(
     draft.definition = {
         **draft.definition,
         "input_contract": "single_sales_order",
+        "evaluation_gate_required": bool(draft.definition.get("evaluation_gate_required", True)),
         "schema_version_id": str(schema.id),
         "rule_set_version_id": str(rules.id),
         "provider_policy_version_id": str(provider.id),
