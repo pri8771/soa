@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -38,7 +39,10 @@ from soa_db.catalogs import (
     CatalogRecordRepository,
     CatalogRepository,
     CatalogVersion,
+    CatalogVersionPin,
+    CatalogVersionRepository,
     resolve_catalog_version,
+    validate_catalog_version_pins,
 )
 from soa_db.outbox import PORTABLE_JSON
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
@@ -119,8 +123,10 @@ class CatalogFieldSelection(UuidPrimaryKeyMixin, OrganizationScopedMixin, Timest
 
 @event.listens_for(Session, "before_flush")
 def _refuse_catalog_selection_mutation(session: Session, _ctx: object, _instances: object) -> None:
-    for entity in session.dirty:
-        if isinstance(entity, CatalogFieldSelection) and session.is_modified(entity):
+    for entity in (*session.dirty, *session.deleted):
+        if isinstance(entity, CatalogFieldSelection) and (
+            entity in session.deleted or session.is_modified(entity)
+        ):
             raise ValueError(
                 f"catalog selection {entity.id} is append-only — record a new selection"
             )
@@ -171,6 +177,7 @@ async def resolve_bound_catalog(
     *,
     stream_id: uuid.UUID,
     catalog_type: str,
+    catalog_version_pins: Sequence[CatalogVersionPin] | None = None,
 ) -> tuple[BoundCatalog | None, str | None]:
     """Resolve exactly one bound catalog of ``catalog_type``.
 
@@ -181,21 +188,39 @@ async def resolve_bound_catalog(
     worker before durable identities existed.
     """
 
+    if catalog_version_pins is not None:
+        pins = await validate_catalog_version_pins(session, context, catalog_version_pins)
+        pin_matches = [pin for pin in pins if pin.catalog_type == catalog_type]
+        if not pin_matches:
+            return None, None
+        if len(pin_matches) > 1:
+            return None, (
+                f"the immutable run snapshot has {len(pin_matches)} {catalog_type} catalog pins; "
+                "exactly one is required"
+            )
+        pin = pin_matches[0]
+        catalog = await CatalogRepository(session, context).get(pin.catalog_id)
+        version = await CatalogVersionRepository(session, context).get(pin.catalog_version_id)
+        if catalog is None or version is None:
+            return None, f"the pinned {catalog_type} catalog version is unavailable"
+        records = await CatalogRecordRepository(session, context).list_for_version(version.id)
+        return BoundCatalog(catalog=catalog, version=version, records=tuple(records)), None
+
     bindings = await CatalogBindingRepository(session, context).list_for_stream(stream_id)
     repo = CatalogRepository(session, context)
-    matches: list[tuple[Any, Catalog]] = []
+    binding_matches: list[tuple[Any, Catalog]] = []
     for binding in bindings:
         catalog = await repo.get(binding.catalog_id)
         if catalog is not None and catalog.catalog_type == catalog_type:
-            matches.append((binding, catalog))
-    if not matches:
+            binding_matches.append((binding, catalog))
+    if not binding_matches:
         return None, None
-    if len(matches) > 1:
+    if len(binding_matches) > 1:
         return None, (
-            f"the stream has {len(matches)} {catalog_type} catalogs bound; "
+            f"the stream has {len(binding_matches)} {catalog_type} catalogs bound; "
             "exactly one is required for deterministic identity resolution"
         )
-    binding, catalog = matches[0]
+    binding, catalog = binding_matches[0]
     version = await resolve_catalog_version(session, context, binding=binding)
     if version is None:
         return None, f"the bound {catalog_type} catalog has no activated version"
@@ -291,6 +316,7 @@ async def reconcile_catalog_selection(
     as_of: date,
     selected_by: str,
     selection_source: CatalogSelectionSource,
+    catalog_version_pins: Sequence[CatalogVersionPin] | None = None,
 ) -> CatalogFieldSelection | None:
     """Re-resolve a catalog-backed value after extraction or correction.
 
@@ -304,7 +330,11 @@ async def reconcile_catalog_selection(
     if config is None:
         return None
     bound, error = await resolve_bound_catalog(
-        session, context, stream_id=stream_id, catalog_type=config.catalog_type
+        session,
+        context,
+        stream_id=stream_id,
+        catalog_type=config.catalog_type,
+        catalog_version_pins=catalog_version_pins,
     )
     if error is not None or bound is None:
         return None
@@ -405,6 +435,7 @@ async def resolve_catalog_identities(
     run_id: uuid.UUID,
     values: dict[tuple[str, int | None], Any | None],
     as_of: date,
+    catalog_version_pins: Sequence[CatalogVersionPin] | None = None,
 ) -> CatalogIdentityResolution:
     """Resolve and verify current identities for every catalog-backed value."""
 
@@ -430,6 +461,7 @@ async def resolve_catalog_identities(
                 context,
                 stream_id=stream_id,
                 catalog_type=config.catalog_type,
+                catalog_version_pins=catalog_version_pins,
             )
             loaded, _error = bound_cache[config.catalog_type]
             if loaded is not None:
@@ -475,7 +507,14 @@ async def resolve_catalog_identities(
             )
             continue
 
-        status = CatalogSelectionStatus(selection.status)
+        try:
+            status = CatalogSelectionStatus(selection.status)
+        except ValueError:
+            issue(
+                "selection_status_invalid",
+                "the retained catalog selection has an invalid status",
+            )
+            continue
         if status == CatalogSelectionStatus.CLEARED:
             if value is not None:
                 issue("cleared_value_present", "a cleared catalog resolution now has a value")

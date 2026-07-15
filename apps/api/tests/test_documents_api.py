@@ -2,6 +2,7 @@
 and cursors that refuse to cross tenants or filter combinations."""
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,14 @@ from fastapi.testclient import TestClient
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
-from soa_db.documents import DocumentState, SourceChannel, create_document, transition_document
+from soa_db.data_deletion import DeletionTombstone, TombstoneState
+from soa_db.documents import (
+    DocumentRepository,
+    DocumentState,
+    SourceChannel,
+    create_document,
+    transition_document,
+)
 from soa_db.repository import OrganizationContext
 from soa_storage import MemoryObjectStore
 
@@ -119,6 +127,49 @@ async def test_filters_and_search(harness: tuple[TestClient, DatabaseSessions]) 
     assert len(scoped["items"]) == 5
     missing = client.get("/orgs/northstar/documents?stream=nope", headers=ADMIN)
     assert missing.status_code == 404
+
+
+async def test_unfiltered_list_hides_deleted_documents_but_the_explicit_filter_finds_them(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    ids = await seed(client, db, count=3)
+    # Deletion needs a settled state; cancel it first (received ->
+    # cancelled is an allowed transition).
+    cancelled = client.post(
+        f"/orgs/northstar/documents/{ids[0]}/cancel",
+        json={"reason": "test cleanup"},
+        headers=ADMIN,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    organization_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=organization_id)
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, context).get(uuid.UUID(ids[0]))
+        assert document is not None
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.DELETED,
+            reason="approved erasure completed",
+            actor_id="system:document-deletion",
+        )
+
+    unfiltered = client.get("/orgs/northstar/documents", headers=ADMIN).json()
+    assert ids[0] not in {i["id"] for i in unfiltered["items"]}
+    assert len(unfiltered["items"]) == 2
+
+    deleted_only = client.get(
+        "/orgs/northstar/documents?document_state=deleted", headers=ADMIN
+    ).json()
+    assert [i["id"] for i in deleted_only["items"]] == [ids[0]]
+    deleted_shell = deleted_only["items"][0]
+    assert deleted_shell["stream_id"] == ""
+    assert deleted_shell["original_filename"] == "[deleted]"
+    assert deleted_shell["content_sha256"] == ""
+    assert deleted_shell["source_channel"] == ""
+    assert deleted_shell["client_reference"] is None
 
 
 async def test_field_projection(harness: tuple[TestClient, DatabaseSessions]) -> None:
@@ -280,3 +331,80 @@ async def test_detail_carries_artifacts_context_and_redacted_timeline(
 
     # Cross-tenant invisibility.
     assert client.get(f"/orgs/northstar/documents/{ids[0]}", headers=OUTSIDER).status_code == 404
+
+
+async def test_deleted_detail_is_a_counts_only_tombstone_at_the_api_boundary(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    ids = await seed(client, db, count=1)
+    document_id = uuid.UUID(ids[0])
+    organization_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=organization_id)
+    completed_at = datetime(2026, 7, 15, 12, 5, tzinfo=UTC)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, context).get(document_id)
+        assert document is not None
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.CANCELLED,
+            reason="private customer cancellation reason",
+            actor_id="user:sensitive-requester",
+        )
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.DELETED,
+            reason="private erasure reason",
+            actor_id="system:sensitive-eraser",
+        )
+        session.add(
+            DeletionTombstone(
+                organization_id=organization_id,
+                document_id=document_id,
+                state=TombstoneState.COMPLETED.value,
+                reason="private retained tombstone reason",
+                requested_by="user:sensitive-requester",
+                object_keys_deleted=4,
+                category_counts={"artifacts": 2, "processing_runs": 3},
+                started_at=completed_at,
+                completed_at=completed_at,
+            )
+        )
+
+    response = client.get(f"/orgs/northstar/documents/{document_id}", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body == {
+        "document": {
+            "id": str(document_id),
+            "stream_id": "",
+            "state": "deleted",
+            "state_reason": "document data deleted",
+            "source_channel": "",
+            "original_filename": "[deleted]",
+            "content_sha256": "",
+            "size_bytes": 0,
+            "content_type": "application/octet-stream",
+            "client_reference": None,
+            "priority": 0,
+            "sla_due_at": None,
+            "received_at": completed_at.isoformat(),
+            "duplicate_of": None,
+        },
+        "artifacts": [],
+        "context": {"stream_id": ""},
+        "timeline": [],
+        "deletion_tombstone": {
+            "completed_at": completed_at.isoformat(),
+            "object_keys_deleted": 4,
+            "category_counts": {"artifacts": 2, "processing_runs": 3},
+        },
+    }
+    assert "sensitive" not in response.text
+    assert "private" not in response.text
+    assert "email" not in response.text

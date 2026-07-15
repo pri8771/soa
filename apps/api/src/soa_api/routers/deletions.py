@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
-from soa_api.auth.dependency import require_permission
+from soa_api.auth.dependency import require_any_permission, require_permission
 from soa_api.dependencies import DbSession
 from soa_db.deletion_requests import (
     DeletionLifecycleError,
@@ -143,7 +143,10 @@ async def cancel_deletion_request(
 
 @router.get("/orgs/{organization_slug}/deletion-requests")
 async def list_deletion_requests(
-    authorized: Annotated[AuthorizedContext, Depends(require_permission("data.delete.request"))],
+    authorized: Annotated[
+        AuthorizedContext,
+        Depends(require_any_permission("data.delete.request", "data.delete.approve")),
+    ],
     session: DbSession,
     limit: int = 100,
 ) -> dict[str, list[DeletionRequestResponse]]:
@@ -153,6 +156,23 @@ async def list_deletion_requests(
         limit=limit
     )
     return {"items": [DeletionRequestResponse.from_model(request) for request in requests]}
+
+
+@router.get("/orgs/{organization_slug}/documents/{document_id}/deletion-request")
+async def get_document_deletion_request(
+    document_id: uuid.UUID,
+    authorized: Annotated[
+        AuthorizedContext,
+        Depends(require_any_permission("data.delete.request", "data.delete.approve")),
+    ],
+    session: DbSession,
+) -> DeletionRequestResponse:
+    request = await DeletionRequestRepository(session, authorized.org_context).get_for_document(
+        document_id
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Deletion request not found.")
+    return DeletionRequestResponse.from_model(request)
 
 
 @router.post(

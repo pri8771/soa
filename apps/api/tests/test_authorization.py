@@ -138,6 +138,28 @@ async def test_active_member_with_permission_is_allowed(db: DatabaseSessions) ->
     await db.dispose()
 
 
+async def test_any_permission_accepts_one_grant_and_fails_closed_on_unknown_candidates(
+    db: DatabaseSessions,
+) -> None:
+    world = await seed_world(db)
+    async with db.session_scope() as session:
+        ctx = await AuthorizationService(session).authorize_any(
+            world["active"],  # type: ignore[arg-type]
+            organization_slug="org-a",
+            required_permissions=("roles.manage", "documents.review"),
+        )
+        assert "documents.review" in ctx.permissions
+
+    async with db.session_scope() as session:
+        with pytest.raises(UnknownPermissionError, match=r"documents\.obliterate"):
+            await AuthorizationService(session).authorize_any(
+                world["active"],  # type: ignore[arg-type]
+                organization_slug="org-a",
+                required_permissions=("documents.review", "documents.obliterate"),
+            )
+    await db.dispose()
+
+
 async def test_member_without_permission_is_denied(db: DatabaseSessions) -> None:
     world = await seed_world(db)
     # reviewer template lacks roles.manage

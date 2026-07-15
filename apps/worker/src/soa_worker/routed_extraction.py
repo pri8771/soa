@@ -48,9 +48,14 @@ from soa_worker.provider_router import (
     route,
 )
 from soa_worker.providers import Capability
+from soa_worker.runtime_provenance import runtime_fingerprint, safe_adapter_provenance
 
 ACTOR = "system:provider-router"
 MAX_RUNTIME_PROVIDER_CHAIN = 8
+
+
+class _CallProvenancePersistenceError(Exception):
+    """The call must not start when its durable evidence cannot be written."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,9 @@ class RoutedExtractionProvider:
         self._selected_provenance: ContextVar[dict[str, Any] | None] = ContextVar(
             f"provider-routing-provenance-{id(self)}", default=None
         )
+        self._attempt_provenance: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+            f"provider-routing-attempt-provenance-{id(self)}", default=()
+        )
 
     @property
     def name(self) -> str:
@@ -116,6 +124,8 @@ class RoutedExtractionProvider:
     def runtime_provenance(self) -> dict[str, Any]:
         return {
             "router": "pinned-provider-chain-v1",
+            "configured_chain": list(self._providers),
+            "attempts": [dict(attempt) for attempt in self._attempt_provenance.get()],
             **(self._selected_provenance.get() or {}),
         }
 
@@ -136,6 +146,7 @@ class RoutedExtractionProvider:
             )
         )
         provenance_token = self._selected_provenance.set(None)
+        attempts_token = self._attempt_provenance.set(())
         try:
             yield
         finally:
@@ -143,10 +154,13 @@ class RoutedExtractionProvider:
             # the selected provider identity scoped to this execution so a
             # later failed run cannot inherit stale provenance from an earlier
             # successful run in the same async task.
+            self._attempt_provenance.reset(attempts_token)
             self._selected_provenance.reset(provenance_token)
             self._execution.reset(execution_token)
 
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+        self._selected_provenance.set(None)
+        self._attempt_provenance.set(())
         execution = self._execution.get()
         health: dict[str, str] = {}
         quality: dict[str, float] = {}
@@ -221,12 +235,24 @@ class RoutedExtractionProvider:
                 )
                 continue
             provider = configured.provider
-            if execution is not None:
-                # Persist routing/previous-attempt evidence and release the
-                # connection before the provider's network latency. Queue and
-                # stage leases, not an idle SQL transaction, fence this call.
-                await execution.session.commit()
             started = time.monotonic()
+
+            async def persist_provider_attempt(
+                provider_attempt: int,
+                bound_provider: object = provider,
+                bound_name: str = name,
+                bound_fallback: bool = is_fallback,
+                bound_route_attempt: int = attempt_index + 1,
+            ) -> None:
+                await self._persist_call_provenance(
+                    execution,
+                    provider=bound_provider,
+                    provider_name=bound_name,
+                    fallback=bound_fallback,
+                    route_attempt=bound_route_attempt,
+                    provider_attempt=provider_attempt,
+                )
+
             try:
                 if getattr(provider, "supports_repair", False):
                     default_repair = RepairPolicy()
@@ -253,10 +279,24 @@ class RoutedExtractionProvider:
                             max_attempts=repair_attempts,
                             max_cost_cents=remaining_budget,
                         ),
+                        before_attempt=persist_provider_attempt,
                     )
                     result = repair.result
                 else:
+                    await self._persist_call_provenance(
+                        execution,
+                        provider=provider,
+                        provider_name=name,
+                        fallback=is_fallback,
+                        route_attempt=attempt_index + 1,
+                        provider_attempt=1,
+                    )
                     result = await provider.extract(request)
+            except _CallProvenancePersistenceError:
+                raise ExtractionProviderError(
+                    "provider call provenance could not be persisted",
+                    retryable=True,
+                ) from None
             except ExtractionProviderError as error:
                 latency_ms = max(0, int((time.monotonic() - started) * 1000))
                 raw_failure_cost = getattr(error, "cost_cents", 0)
@@ -470,11 +510,10 @@ class RoutedExtractionProvider:
                 cost_cents=result.cost_cents,
                 mean_quality=self._mean_confidence(result),
             )
-            declared = getattr(provider, "runtime_provenance", {})
             self._selected_provenance.set(
                 {
-                    "selected_adapter": (dict(declared) if isinstance(declared, dict) else {}),
-                    "configured_chain": list(self._providers),
+                    "selected_provider": name,
+                    "selected_adapter": safe_adapter_provenance(provider),
                 }
             )
             if failed_attempt_cost > 0 or failed_attempt_had_usage:
@@ -558,6 +597,56 @@ class RoutedExtractionProvider:
             mean_quality=mean_quality,
             failure_class=failure_class,
         )
+
+    async def _persist_call_provenance(
+        self,
+        execution: RoutingExecutionContext | None,
+        *,
+        provider: object,
+        provider_name: str,
+        fallback: bool,
+        route_attempt: int,
+        provider_attempt: int,
+    ) -> None:
+        """Commit safe evidence before an adapter can make a network call."""
+
+        runtime = safe_adapter_provenance(provider)
+        record = {
+            "provider": provider_name,
+            "fallback": fallback,
+            "route_attempt": route_attempt,
+            "provider_attempt": provider_attempt,
+            "runtime_provenance": runtime,
+            "runtime_fingerprint": runtime_fingerprint(
+                {"provider": provider_name, "runtime_provenance": runtime}
+            ),
+        }
+        attempts = (*self._attempt_provenance.get(), record)
+        if execution is not None:
+            try:
+                summary = dict(execution.stage_run.output_summary or {})
+                summary["provider_call_attempts"] = [dict(attempt) for attempt in attempts]
+                execution.stage_run.output_summary = summary
+                # Audit redaction intentionally treats any ``*token*`` key as
+                # potentially credential-bearing. Use a semantically explicit
+                # safe alias there while the stage/run descriptor retains the
+                # normalized adapter key ``max_tokens``.
+                audit_runtime = {
+                    ("max_output_units" if key == "max_tokens" else key): value
+                    for key, value in runtime.items()
+                }
+                await self._audit(
+                    execution,
+                    action="provider.call_started",
+                    summary={**record, "runtime_provenance": audit_runtime},
+                )
+                # This commit is the call fence: route/attempt evidence is
+                # durable and the connection is released before network I/O.
+                await execution.session.commit()
+            except Exception:
+                await execution.session.rollback()
+                raise _CallProvenancePersistenceError from None
+        self._attempt_provenance.set(attempts)
 
     async def _audit(
         self,

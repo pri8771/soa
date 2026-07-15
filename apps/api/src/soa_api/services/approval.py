@@ -30,10 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.services.canonical import build_canonical_order, persist_canonical_order
 from soa_api.services.export_orchestration import schedule_exports_on_approval
-from soa_api.services.revalidation import revalidate_run
+from soa_api.services.revalidation import load_revalidation_config, revalidate_run
 from soa_canonical.mapping import CanonicalMappingError
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import Document, DocumentState, transition_document
+from soa_db.duplicate_po import DuplicateOverride
 from soa_db.outbox import enqueue_event
 from soa_db.repository import OrganizationContext
 from soa_db.review_tasks import ReviewTask, ReviewTaskState, complete_task, release_task
@@ -117,13 +118,33 @@ async def approve_document(
             f"The document is {document.state}; only documents in review can be approved."
         )
 
-    # Final validation NOW, over the effective (corrected) values.
-    revalidation = await revalidate_run(session, context, document=document, run_id=task.run_id)
+    # Final validation NOW, over the effective (corrected) values and exact
+    # immutable configuration/catalog versions pinned to this run.
+    run_config = await load_revalidation_config(
+        session,
+        context,
+        document=document,
+        run_id=task.run_id,
+    )
+    duplicate_override = (
+        DuplicateOverride(actor_id=actor, reason=override_reason.strip())
+        if can_override and override_reason is not None and override_reason.strip()
+        else None
+    )
+    revalidation = await revalidate_run(
+        session,
+        context,
+        document=document,
+        run_id=task.run_id,
+        config=run_config,
+        duplicate_override=duplicate_override,
+    )
     evaluation = revalidation["evaluation"]
     decision = revalidation["decision"]
     remaining: list[dict[str, Any]] = decision.get("reasons", [])
 
-    override_used = False
+    business_override = revalidation["business_validation"].get("override")
+    override_used = business_override is not None
     if evaluation.get("blocking"):
         blocker_keys = sorted(
             {r["rule_key"] for r in remaining if r.get("rule_key")}
@@ -172,7 +193,13 @@ async def approve_document(
     # the approval is refused with every problem named and the task
     # stays in progress — never an approved document without a payload.
     try:
-        order = await build_canonical_order(session, context, document=document, run_id=task.run_id)
+        order = await build_canonical_order(
+            session,
+            context,
+            document=document,
+            run_id=task.run_id,
+            catalog_version_pins=run_config.catalog_version_pins,
+        )
     except CanonicalMappingError as exc:
         raise ApprovalStateError(
             f"Approval blocked — the canonical order cannot be built: {'; '.join(exc.errors)}"
@@ -230,6 +257,12 @@ async def approve_document(
             ],
             "override_used": override_used,
             **({"override_reason": override_reason} if override_used else {}),
+            **({"business_override": business_override} if business_override else {}),
+            "validation_summary": evaluation,
+            "decision_summary": {
+                "route": decision.get("route"),
+                "reason_count": len(remaining),
+            },
             **(
                 {"first_approved_by": task.first_approved_by}
                 if task.first_approved_by and task.first_approved_by != actor

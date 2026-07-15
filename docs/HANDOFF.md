@@ -1,13 +1,33 @@
 # Engineering handoff
 
 **Updated:** 2026-07-15
-**Working branch:** `codex/production-remediation`
+**Integration branch:** `dev`
 **Release decision:** not production-approved; see
 [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md).
 
 This document is a resume guide, not a historical task diary. The Git history,
 Jira, and Notion retain project history; the production-readiness audit states
 what is currently proven and what still needs external evidence.
+
+## Integration status
+
+The cross-audit reconciliation described here was locally validated for
+integration into `dev` on 2026-07-15. The remote `dev` head and its CI results
+are the source of truth; confirm both before using this handoff as release
+evidence. Local validation does not replace the staging and live-environment
+evidence listed below.
+
+## Validation checkpoint
+
+- Python: Ruff, formatting, mypy, and the complete 1,850-test collection
+  exited successfully.
+- Web: formatting, lint, typecheck, production build, all 372 unit tests, and
+  all three accessibility E2E tests passed; E2E passed twice consecutively.
+- Docs, dependency/security scanning, and all 12 performance checks passed.
+  The security subset recorded 61 passes and 15 PostgreSQL-only skips.
+- PostgreSQL/RLS, container, and Terraform validation still require CI or a
+  workstation with the corresponding services and Terraform 1.12.2. They are
+  not represented as locally proven gates.
 
 ## Product and launch boundary
 

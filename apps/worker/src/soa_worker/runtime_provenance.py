@@ -11,11 +11,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 RUNTIME_PROVENANCE_SCHEMA = 1
+
+_SAFE_TEXT_FIELDS = ("adapter", "api_version", "model")
+_SAFE_NUMBER_FIELDS = ("timeout_seconds", "temperature")
+_SAFE_INTEGER_FIELDS = ("max_tokens", "seed")
+_SAFE_PRICING_FIELDS = (
+    "reference",
+    "input_cents_per_million",
+    "output_cents_per_million",
+)
 
 
 def package_version(distribution: str) -> str:
@@ -41,6 +52,59 @@ def endpoint_fingerprint(endpoint: str) -> str:
         )
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def safe_adapter_provenance(provider: object) -> dict[str, Any]:
+    """Return the allowlisted, JSON-safe provenance declared by an adapter.
+
+    Runtime provenance is durable audit material, so an extension adapter
+    cannot add an arbitrary key such as ``api_key`` and accidentally persist a
+    secret.  New safe runtime knobs must be deliberately added to this
+    allowlist.  Endpoint identity is accepted only as a SHA-256 digest.
+    """
+
+    declared = getattr(provider, "runtime_provenance", {})
+    if not isinstance(declared, Mapping):
+        return {}
+
+    safe: dict[str, Any] = {}
+    for key in _SAFE_TEXT_FIELDS:
+        value = declared.get(key)
+        if isinstance(value, str):
+            safe[key] = value
+
+    endpoint_sha256 = declared.get("endpoint_sha256")
+    if (
+        isinstance(endpoint_sha256, str)
+        and len(endpoint_sha256) == 64
+        and all(character in "0123456789abcdef" for character in endpoint_sha256.lower())
+    ):
+        safe["endpoint_sha256"] = endpoint_sha256.lower()
+
+    for key in _SAFE_NUMBER_FIELDS:
+        value = declared.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            safe[key] = value
+
+    for key in _SAFE_INTEGER_FIELDS:
+        value = declared.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            safe[key] = value
+
+    pricing = declared.get("pricing")
+    if isinstance(pricing, Mapping):
+        safe_pricing = {
+            key: value
+            for key in _SAFE_PRICING_FIELDS
+            if (value := pricing.get(key)) is not None
+            and (
+                isinstance(value, str)
+                or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+            )
+        }
+        if safe_pricing:
+            safe["pricing"] = safe_pricing
+    return safe
 
 
 def renderer_provenance(content_type: str) -> dict[str, Any]:
@@ -82,4 +146,5 @@ __all__ = [
     "package_version",
     "renderer_provenance",
     "runtime_fingerprint",
+    "safe_adapter_provenance",
 ]

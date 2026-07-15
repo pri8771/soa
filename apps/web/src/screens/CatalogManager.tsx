@@ -162,29 +162,31 @@ function ImportWizard({
             {result.preview.deactivated.length}, unchanged {result.preview.unchanged}
           </p>
           {result.issues.length > 0 ? (
-            <table style={{ borderCollapse: "collapse" }}>
-              <caption style={{ textAlign: "left", fontWeight: 600 }}>
-                Failed rows — fix these in the file or import partially (explicit)
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col" style={{ textAlign: "left" }}>
-                    Row
-                  </th>
-                  <th scope="col" style={{ textAlign: "left" }}>
-                    Problem
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.issues.map((issue) => (
-                  <tr key={`${issue.row_number}:${issue.message}`}>
-                    <td>{issue.row_number}</td>
-                    <td>{issue.message}</td>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse" }}>
+                <caption style={{ textAlign: "left", fontWeight: 600 }}>
+                  Failed rows — fix these in the file or import partially (explicit)
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col" style={{ textAlign: "left" }}>
+                      Row
+                    </th>
+                    <th scope="col" style={{ textAlign: "left" }}>
+                      Problem
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {result.issues.map((issue) => (
+                    <tr key={`${issue.row_number}:${issue.message}`}>
+                      <td>{issue.row_number}</td>
+                      <td>{issue.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : null}
           {result.status === "draft_created" && result.version ? (
             <Banner tone="success" title={`Draft v${result.version.version_number} created`}>
@@ -224,46 +226,48 @@ function RecordBrowser({
       </label>
       {records.status === "pending" ? <Skeleton height="6rem" /> : null}
       {records.status === "success" ? (
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <caption style={{ textAlign: "left", fontWeight: 600 }}>
-            Records in the selected version
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col" style={{ textAlign: "left" }}>
-                Source ID
-              </th>
-              <th scope="col" style={{ textAlign: "left" }}>
-                Name
-              </th>
-              <th scope="col" style={{ textAlign: "left" }}>
-                Aliases
-              </th>
-              <th scope="col" style={{ textAlign: "left" }}>
-                Effective
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.data.items.map((record) => (
-              <tr key={record.id} style={{ borderTop: "1px solid var(--soa-border)" }}>
-                <th scope="row" style={{ textAlign: "left", fontWeight: 500 }}>
-                  {record.source_id}
-                </th>
-                <td>{record.display_name}</td>
-                <td>{record.aliases.join(", ") || "—"}</td>
-                <td>
-                  {record.effective_from ?? "…"} → {record.effective_to ?? "…"}
-                </td>
-              </tr>
-            ))}
-            {records.data.items.length === 0 ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <caption style={{ textAlign: "left", fontWeight: 600 }}>
+              Records in the selected version
+            </caption>
+            <thead>
               <tr>
-                <td colSpan={4}>No records match.</td>
+                <th scope="col" style={{ textAlign: "left" }}>
+                  Source ID
+                </th>
+                <th scope="col" style={{ textAlign: "left" }}>
+                  Name
+                </th>
+                <th scope="col" style={{ textAlign: "left" }}>
+                  Aliases
+                </th>
+                <th scope="col" style={{ textAlign: "left" }}>
+                  Effective
+                </th>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {records.data.items.map((record) => (
+                <tr key={record.id} style={{ borderTop: "1px solid var(--soa-border)" }}>
+                  <th scope="row" style={{ textAlign: "left", fontWeight: 500 }}>
+                    {record.source_id}
+                  </th>
+                  <td>{record.display_name}</td>
+                  <td>{record.aliases.join(", ") || "—"}</td>
+                  <td>
+                    {record.effective_from ?? "…"} → {record.effective_to ?? "…"}
+                  </td>
+                </tr>
+              ))}
+              {records.data.items.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>No records match.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       ) : null}
     </section>
   );

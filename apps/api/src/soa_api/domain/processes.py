@@ -26,6 +26,14 @@ from soa_api.domain.versioning import (
 )
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.duplicate_po import (
+    DuplicatePoPolicyValidationError,
+    validate_po_duplicate_policy,
+)
+from soa_db.duplicate_policy import (
+    DuplicatePolicyValidationError,
+    validate_duplicate_policy,
+)
 from soa_db.outbox import PORTABLE_JSON
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
 from soa_db.types import GUID, UTCDateTime, utcnow
@@ -36,10 +44,32 @@ class ProcessStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class ProcessDefinitionError(ValueError):
+    """A process default is invalid and cannot enter the version lifecycle."""
+
+    def __init__(self, field: str, message: str) -> None:
+        self.field = field
+        super().__init__(message)
+
+
+def validate_process_definition(definition: dict[str, Any]) -> None:
+    """Validate process-level defaults shared by every child stream."""
+
+    try:
+        validate_duplicate_policy(definition)
+    except DuplicatePolicyValidationError as exc:
+        raise ProcessDefinitionError("duplicate_policy", str(exc)) from None
+    try:
+        validate_po_duplicate_policy(definition)
+    except DuplicatePoPolicyValidationError as exc:
+        raise ProcessDefinitionError("business_duplicate_policy", str(exc)) from None
+
+
 __all__ = [
     "ImmutableVersionError",
     "InvalidVersionStateError",
     "Process",
+    "ProcessDefinitionError",
     "ProcessRepository",
     "ProcessStatus",
     "ProcessVersion",
@@ -49,6 +79,7 @@ __all__ = [
     "create_process",
     "publish_draft",
     "set_active_version",
+    "validate_process_definition",
 ]
 
 
@@ -166,13 +197,15 @@ async def create_draft(
 ) -> ProcessVersion:
     """Add the next draft version. Content may seed from any prior version;
     the version number always increases monotonically."""
+    effective_definition = dict(definition or {})
+    validate_process_definition(effective_definition)
     versions = await ProcessVersionRepository(session, context).list_for_process(process.id)
     next_number = (versions[-1].version_number + 1) if versions else 1
     draft = ProcessVersionRepository(session, context).add(
         ProcessVersion(
             process_id=process.id,
             version_number=next_number,
-            definition=dict(definition or {}),
+            definition=effective_definition,
             change_summary=change_summary,
         )
     )
@@ -206,6 +239,10 @@ async def publish_draft(
         raise InvalidVersionStateError(f"only drafts publish; this version is {draft.state!r}")
     if draft.process_id != process.id:
         raise InvalidVersionStateError("draft belongs to a different process")
+    # Revalidate at the sealing boundary. This catches legacy or directly
+    # imported drafts that predate strict validation without altering how old
+    # published snapshots are read at runtime.
+    validate_process_definition(draft.definition)
     current = now or utcnow()
     repo = ProcessVersionRepository(session, context)
     previous = await repo.get_published(process.id)

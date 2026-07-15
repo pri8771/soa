@@ -23,7 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_db import commit_unit_of_work
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
+from soa_db.catalog_business import merge_business_validation, validate_order_business_data
 from soa_db.documents import Document
+from soa_db.duplicate_policy import (
+    DEFAULT_POLICY,
+    EXACT_DUPLICATE_RULE_KEY,
+    DuplicatePolicy,
+    exact_duplicate_review_reason,
+    get_duplicate_policy,
+)
 from soa_db.external_cleanup import (
     ExternalResourceType,
     register_external_resource_rollback,
@@ -61,7 +69,6 @@ from soa_rules.baseline import (
 )
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
-from soa_worker.catalog_business import validate_order_business_data
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
 from soa_worker.extraction.provider import (
     ExtractionProvider,
@@ -820,7 +827,12 @@ class _Pipeline:
         stage_run: StageRun,
     ) -> StageOutcome:
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
-        data = _evaluation_input(rows, document)
+        duplicate_policy = get_duplicate_policy(self._config.stream_config)
+        data = _evaluation_input(
+            rows,
+            document,
+            duplicate_policy=duplicate_policy,
+        )
         evaluation = evaluate_rule_set(self._config.rules, data)
         signals = [
             FieldSignal(
@@ -847,9 +859,33 @@ class _Pipeline:
             stream_config=self._config.stream_config,
         )
         decision_json = decision.to_json()
-        if business.findings:
+        exact_reason_added = False
+        if (
+            document.duplicate_of is not None
+            and duplicate_policy is DuplicatePolicy.FLAG
+            and not any(
+                reason.get("rule_key") == EXACT_DUPLICATE_RULE_KEY
+                for reason in decision_json["reasons"]
+            )
+        ):
+            # ``flag`` is a platform ingestion invariant. It cannot become
+            # processing-transparent merely because a custom tenant rule set
+            # omitted the stock duplicate hook.
             decision_json["route"] = "review_required"
-            decision_json["reasons"].extend(business.findings)
+            decision_json["reasons"].append(exact_duplicate_review_reason())
+            exact_reason_added = True
+
+        evaluation_summary, decision_json = merge_business_validation(
+            evaluation.summary(), decision_json, business
+        )
+        if exact_reason_added:
+            triggered = evaluation_summary["triggered_by_severity"]
+            triggered["warning"] = int(triggered.get("warning", 0)) + 1
+        # The stored summary is consumed as the compact answer to "did this
+        # validation stage require review?" Keep it aligned with the final
+        # decision after platform duplicate policy, confidence routing, and
+        # business validation have all had their say.
+        evaluation_summary["review_required"] = decision_json["route"] == "review_required"
 
         flagged = {
             (reason["field_key"], reason.get("row_index"))
@@ -871,14 +907,14 @@ class _Pipeline:
                 run_id=run.id,
                 reasons=decision_json["reasons"],
                 priority=document.priority,
-                blocking=evaluation.blocking,
+                blocking=bool(evaluation_summary["blocking"]),
                 sla_due_at=document.sla_due_at,
                 actor_id=ACTOR,
             )
         return StageOutcome(
             output_summary={
                 "rules_version": self._config.rules_version,
-                "evaluation": evaluation.summary(),
+                "evaluation": evaluation_summary,
                 "decision": decision_json,
                 "business_validation": {
                     "catalog_versions": business.catalog_versions,
@@ -891,7 +927,12 @@ class _Pipeline:
         )
 
 
-def _evaluation_input(rows: list[ExtractedField], document: Document) -> EvaluationInput:
+def _evaluation_input(
+    rows: list[ExtractedField],
+    document: Document,
+    *,
+    duplicate_policy: DuplicatePolicy = DEFAULT_POLICY,
+) -> EvaluationInput:
     """PRC-007 rows -> PRC-009 input: canonical value when normalization
     produced one, raw otherwise; table cells grouped into row dicts; the
     ING-006 duplicate flag exposed as meta.duplicate_of."""
@@ -907,7 +948,12 @@ def _evaluation_input(rows: list[ExtractedField], document: Document) -> Evaluat
                 **tables.get(table, {}).get(row.row_index, {}),
                 row.field_key: value,
             }
-    if document.duplicate_of is not None:
+    # An 'allow' policy is processing-transparent: duplicate_of and the
+    # audit event still record the duplicate (never silent), but the
+    # baseline duplicates.business_hook rule must not see the flag and
+    # route to review. When per-stream rules land, reconcile this gate
+    # with duplicates.business_hook itself.
+    if document.duplicate_of is not None and duplicate_policy is not DuplicatePolicy.ALLOW:
         header["meta.duplicate_of"] = str(document.duplicate_of)
     return EvaluationInput(
         header=header,

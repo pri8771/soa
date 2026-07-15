@@ -18,6 +18,7 @@ from soa_storage import MemoryObjectStore
 
 ADMIN = {"X-Dev-User": "user:admin"}
 APPROVER = {"X-Dev-User": "user:supervisor"}
+APPROVE_ONLY = {"X-Dev-User": "user:integration-admin"}
 REVIEWER = {"X-Dev-User": "user:reviewer"}
 
 
@@ -41,8 +42,21 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
         ).status_code
         == 201
     )
+    assert (
+        client.post(
+            "/orgs/northstar/roles",
+            json={
+                "name": "Deletion approver",
+                "slug": "deletion-approver",
+                "permissions": ["data.delete.approve"],
+            },
+            headers=ADMIN,
+        ).status_code
+        == 201
+    )
     for headers, email, role in (
         (APPROVER, "supervisor@northstar.example", "org-admin"),
+        (APPROVE_ONLY, "integrations@northstar.example", "deletion-approver"),
         (REVIEWER, "reviewer@northstar.example", "reviewer"),
     ):
         assert (
@@ -106,13 +120,26 @@ async def test_request_and_approval_are_permissioned_and_two_person(
     client, db = harness
     document_id = await _settled_document(client, db)
     path = f"/orgs/northstar/documents/{document_id}/deletion-requests"
+    status_path = f"/orgs/northstar/documents/{document_id}/deletion-request"
 
     assert (
         client.post(path, json={"reason": "verified request"}, headers=REVIEWER).status_code == 403
     )
+    assert (
+        client.post(path, json={"reason": "verified request"}, headers=APPROVE_ONLY).status_code
+        == 403
+    )
+    assert client.get(status_path, headers=REVIEWER).status_code == 403
+    assert client.get(status_path, headers=APPROVE_ONLY).status_code == 404
     created = client.post(path, json={"reason": "verified request"}, headers=ADMIN)
     assert created.status_code == 202, created.text
     request_id = created.json()["id"]
+    status_response = client.get(status_path, headers=APPROVE_ONLY)
+    assert status_response.status_code == 200, status_response.text
+    assert status_response.json()["id"] == request_id
+    approver_list = client.get("/orgs/northstar/deletion-requests", headers=APPROVE_ONLY)
+    assert approver_list.status_code == 200, approver_list.text
+    assert [item["id"] for item in approver_list.json()["items"]] == [request_id]
     copied_export = client.post(
         f"/orgs/northstar/documents/{document_id}/data-exports", headers=ADMIN
     )
@@ -125,7 +152,7 @@ async def test_request_and_approval_are_permissioned_and_two_person(
     approved = client.post(
         approve_path,
         json={"reason": "authority and scope independently verified"},
-        headers=APPROVER,
+        headers=APPROVE_ONLY,
     )
     assert approved.status_code == 202, approved.text
     assert approved.json()["state"] == DeletionRequestState.APPROVED.value

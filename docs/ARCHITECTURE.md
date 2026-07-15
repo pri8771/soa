@@ -162,6 +162,9 @@ Keeping these boundaries explicit allows future regional, private-cloud, or cust
 - `EvidenceRegion`
 - `ValidationResult`
 - `ConfidenceResult`
+- `DeletionRequest`
+- `LegalHold`
+- `DeletionTombstone`
 
 ### Review and delivery
 
@@ -227,6 +230,36 @@ archived
 ```
 
 The current state is a projection of immutable or append-oriented workflow events. State changes must record actor/system, timestamp, reason, version context, and correlation ID.
+
+`deleted` is a separate terminal erasure outcome, not another name for
+`archived`:
+
+```text
+completed | rejected | cancelled | failed_terminal | quarantined | archived
+→ pending deletion request
+→ independently approved durable deletion job
+→ reconciled erasure
+→ deleted
+```
+
+The intermediate deletion states belong to `DeletionRequest`; the `Document`
+remains in its settled state until the reconciled erasure transaction moves it
+directly to `deleted`.
+
+The requester and approver must be different authorized principals. An active
+legal hold is an absolute veto at approval and execution; placing a hold before
+erasure commits revokes unexecuted approval, and releasing it never resumes the
+workflow automatically. Lifecycle mutations and worker execution serialize on
+the tenant/document boundary so cancellation, holds, approval, and erasure have
+a deterministic winner. Stale queue deliveries and retries are idempotent.
+
+Successful erasure removes content and derived data, verifies every external
+object is absent, invalidates copied exports and evaluation evidence, and
+anonymizes the retained document row. The request, hold history, counts-only
+audit evidence, and one tombstone remain as attributable proof. The document
+then has state `deleted`, with no outgoing transition. Default document lists
+hide these terminal shells; authorized callers can retrieve them with the
+explicit `?document_state=deleted` filter.
 
 ## 8. Storage model
 

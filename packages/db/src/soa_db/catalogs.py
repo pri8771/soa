@@ -22,13 +22,29 @@ Audit events record counts and identifiers, never record contents
 """
 
 import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import Date, Index, String, UniqueConstraint, cast, func, or_, text
+from sqlalchemy import (
+    Date,
+    Index,
+    String,
+    UniqueConstraint,
+    cast,
+    event,
+    func,
+    or_,
+    select,
+    text,
+)
+from sqlalchemy import (
+    inspect as sa_inspect,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
@@ -38,12 +54,14 @@ from soa_db.repository import OrganizationContext, OrganizationScopedMixin, Scop
 from soa_db.types import GUID, UTCDateTime, utcnow
 from soa_db.versioning import (
     ImmutablePublishedVersionMixin,
+    ImmutableVersionError,
     InvalidVersionStateError,
     VersionState,
 )
 
 CATALOG_TYPES = frozenset({"customers", "products", "price_lists", "units", "custom"})
 CATALOG_SOURCES = frozenset({"csv_import", "xlsx_import", "api", "manual"})
+CATALOG_VERSION_PINS_KEY = "catalog_version_pins"
 
 
 class CatalogBindingMode(StrEnum):
@@ -55,6 +73,54 @@ class CatalogBindingMode(StrEnum):
 
 class CatalogError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class CatalogVersionPin:
+    """One stream binding resolved to an exact immutable catalog version."""
+
+    binding_id: uuid.UUID
+    catalog_id: uuid.UUID
+    catalog_type: str
+    catalog_version_id: uuid.UUID
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "binding_id": str(self.binding_id),
+            "catalog_id": str(self.catalog_id),
+            "catalog_type": self.catalog_type,
+            "catalog_version_id": str(self.catalog_version_id),
+        }
+
+
+def parse_catalog_version_pins(raw: object) -> tuple[CatalogVersionPin, ...] | None:
+    """Parse authenticated snapshot pins; ``None`` marks a legacy snapshot."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise CatalogError("catalog_version_pins must be a list")
+    pins: list[CatalogVersionPin] = []
+    seen_types: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise CatalogError("catalog_version_pins contains an invalid entry")
+        try:
+            pin = CatalogVersionPin(
+                binding_id=uuid.UUID(str(item["binding_id"])),
+                catalog_id=uuid.UUID(str(item["catalog_id"])),
+                catalog_type=str(item["catalog_type"]),
+                catalog_version_id=uuid.UUID(str(item["catalog_version_id"])),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise CatalogError("catalog_version_pins contains an invalid entry") from error
+        if pin.catalog_type not in CATALOG_TYPES:
+            raise CatalogError(f"catalog pin has unknown type {pin.catalog_type!r}")
+        if pin.catalog_type in seen_types:
+            raise CatalogError(f"catalog pins contain more than one {pin.catalog_type} catalog")
+        seen_types.add(pin.catalog_type)
+        pins.append(pin)
+    return tuple(sorted(pins, key=lambda pin: (pin.catalog_type, pin.catalog_id.hex)))
 
 
 class Catalog(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base):
@@ -130,6 +196,54 @@ class CatalogBinding(
     created_by: Mapped[str] = mapped_column(String(200), nullable=False)
 
     __table_args__ = (UniqueConstraint("stream_id", "catalog_id"),)
+
+
+@event.listens_for(Session, "before_flush")
+def _freeze_records_in_immutable_catalog_versions(
+    session: Session, _ctx: object, _instances: object
+) -> None:
+    """Published catalog versions include their records, not only the header row."""
+
+    changed = {
+        record
+        for record in (*session.new, *session.dirty, *session.deleted)
+        if isinstance(record, CatalogRecord)
+        and (
+            record in session.new
+            or record in session.deleted
+            or session.is_modified(record, include_collections=True)
+        )
+    }
+    for record in changed:
+        inspected = sa_inspect(record)
+        version_history = inspected.attrs.catalog_version_id.history
+        organization_history = inspected.attrs.organization_id.history
+        prior_version = (
+            version_history.deleted[0]
+            if version_history.has_changes() and version_history.deleted
+            else record.catalog_version_id
+        )
+        prior_organization = (
+            organization_history.deleted[0]
+            if organization_history.has_changes() and organization_history.deleted
+            else record.organization_id
+        )
+        # Authenticate both sides of a reparent. Looking only at the new FK
+        # would let a caller move a record out of immutable history and into a
+        # draft, silently changing the published version's contents.
+        version_scopes = {
+            (record.catalog_version_id, record.organization_id),
+            (prior_version, prior_organization),
+        }
+        for version_id, organization_id in version_scopes:
+            state = session.execute(
+                select(CatalogVersion.state).where(
+                    CatalogVersion.id == version_id,
+                    CatalogVersion.organization_id == organization_id,
+                )
+            ).scalar_one_or_none()
+            if state in (VersionState.PUBLISHED.value, VersionState.SUPERSEDED.value):
+                raise ImmutableVersionError(version_id, str(state))
 
 
 class CatalogRepository(ScopedRepository[Catalog]):
@@ -446,15 +560,83 @@ async def resolve_catalog_version(
 ) -> CatalogVersion | None:
     """The version a stream actually uses under its binding."""
     repo = CatalogVersionRepository(session, context)
-    if binding.mode == CatalogBindingMode.PINNED:
-        assert binding.pinned_version_id is not None
+    try:
+        mode = CatalogBindingMode(binding.mode)
+    except ValueError as error:
+        raise CatalogError(f"catalog binding {binding.id} has an invalid mode") from error
+    if mode is CatalogBindingMode.PINNED:
+        if binding.pinned_version_id is None:
+            raise CatalogError(f"pinned catalog binding {binding.id} has no catalog version")
         return await repo.get(binding.pinned_version_id)
+    if binding.pinned_version_id is not None:
+        raise CatalogError(
+            f"rolling catalog binding {binding.id} unexpectedly pins a catalog version"
+        )
     return await repo.get_active(binding.catalog_id)
+
+
+async def materialize_catalog_version_pins(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    stream_id: uuid.UUID,
+) -> tuple[CatalogVersionPin, ...]:
+    """Resolve every live binding for publication into deterministic exact pins."""
+
+    pins: list[CatalogVersionPin] = []
+    seen_types: set[str] = set()
+    catalogs = CatalogRepository(session, context)
+    for binding in await CatalogBindingRepository(session, context).list_for_stream(stream_id):
+        catalog = await catalogs.get(binding.catalog_id)
+        version = await resolve_catalog_version(session, context, binding=binding)
+        if catalog is None:
+            raise CatalogError(f"catalog binding {binding.id} references a missing catalog")
+        if version is None or version.catalog_id != catalog.id:
+            raise CatalogError(f"catalog binding {binding.id} resolves to no usable version")
+        if version.state not in (VersionState.PUBLISHED.value, VersionState.SUPERSEDED.value):
+            raise CatalogError(f"catalog binding {binding.id} resolves to a mutable version")
+        if catalog.catalog_type in seen_types:
+            raise CatalogError(
+                f"the stream has more than one {catalog.catalog_type} catalog bound; "
+                "publish requires one deterministic version per catalog type"
+            )
+        seen_types.add(catalog.catalog_type)
+        pins.append(
+            CatalogVersionPin(
+                binding_id=binding.id,
+                catalog_id=catalog.id,
+                catalog_type=catalog.catalog_type,
+                catalog_version_id=version.id,
+            )
+        )
+    return tuple(sorted(pins, key=lambda pin: (pin.catalog_type, pin.catalog_id.hex)))
+
+
+async def validate_catalog_version_pins(
+    session: AsyncSession,
+    context: OrganizationContext,
+    pins: Sequence[CatalogVersionPin],
+) -> tuple[CatalogVersionPin, ...]:
+    """Authenticate referenced immutable rows without consulting today's bindings."""
+
+    catalog_repo = CatalogRepository(session, context)
+    version_repo = CatalogVersionRepository(session, context)
+    for pin in pins:
+        catalog = await catalog_repo.get(pin.catalog_id)
+        version = await version_repo.get(pin.catalog_version_id)
+        if catalog is None or catalog.catalog_type != pin.catalog_type:
+            raise CatalogError(f"pinned {pin.catalog_type} catalog is missing or inconsistent")
+        if version is None or version.catalog_id != catalog.id:
+            raise CatalogError(f"pinned {pin.catalog_type} catalog version is missing")
+        if version.state not in (VersionState.PUBLISHED.value, VersionState.SUPERSEDED.value):
+            raise CatalogError(f"pinned {pin.catalog_type} catalog version is mutable")
+    return tuple(pins)
 
 
 __all__ = [
     "CATALOG_SOURCES",
     "CATALOG_TYPES",
+    "CATALOG_VERSION_PINS_KEY",
     "Catalog",
     "CatalogBinding",
     "CatalogBindingMode",
@@ -464,11 +646,15 @@ __all__ = [
     "CatalogRecordRepository",
     "CatalogRepository",
     "CatalogVersion",
+    "CatalogVersionPin",
     "CatalogVersionRepository",
     "activate_catalog_version",
     "add_catalog_record",
     "bind_catalog_to_stream",
     "create_catalog",
     "create_catalog_version",
+    "materialize_catalog_version_pins",
+    "parse_catalog_version_pins",
     "resolve_catalog_version",
+    "validate_catalog_version_pins",
 ]

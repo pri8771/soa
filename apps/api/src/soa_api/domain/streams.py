@@ -12,6 +12,7 @@ resolver with fingerprints is CFG-006; this merge is its storage contract.)
 import hashlib
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -28,6 +29,19 @@ from soa_api.domain.versioning import (
 )
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.catalogs import (
+    CATALOG_VERSION_PINS_KEY,
+    CatalogVersionPin,
+    materialize_catalog_version_pins,
+)
+from soa_db.duplicate_po import (
+    DuplicatePoPolicyValidationError,
+    validate_po_duplicate_policy,
+)
+from soa_db.duplicate_policy import (
+    DuplicatePolicyValidationError,
+    validate_duplicate_policy,
+)
 from soa_db.outbox import PORTABLE_JSON
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
 from soa_db.types import GUID, UTCDateTime, utcnow
@@ -51,6 +65,7 @@ _PROCESS_PIN_KEYS = frozenset(
         "confidence_policy_version_id",
         "input_contract",
         "evaluation_gate_required",
+        CATALOG_VERSION_PINS_KEY,
     }
 )
 _POSITIVE_INTEGER_OVERRIDES = frozenset(
@@ -86,6 +101,11 @@ def validate_stream_overrides(overrides: dict[str, Any]) -> None:
             and all(isinstance(language, str) and language.strip() for language in languages)
         ):
             raise StreamOverrideError("stream override 'languages' must be a non-empty string list")
+    try:
+        validate_duplicate_policy(overrides)
+        validate_po_duplicate_policy(overrides)
+    except (DuplicatePolicyValidationError, DuplicatePoPolicyValidationError) as exc:
+        raise StreamOverrideError(str(exc)) from None
 
 
 class Stream(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base):
@@ -164,14 +184,26 @@ class StreamVersionRepository(ScopedRepository[StreamVersion]):
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
 
-def resolve_snapshot(process_version: ProcessVersion, overrides: dict[str, Any]) -> dict[str, Any]:
+def resolve_snapshot(
+    process_version: ProcessVersion,
+    overrides: dict[str, Any],
+    *,
+    catalog_version_pins: Sequence[CatalogVersionPin] = (),
+) -> dict[str, Any]:
     """Merge process defaults with explicit stream overrides (top-level keys;
     the provenance-aware deep resolver is CFG-006)."""
     validate_stream_overrides(overrides)
+    config = {**process_version.definition, **overrides}
+    config[CATALOG_VERSION_PINS_KEY] = [pin.to_json() for pin in catalog_version_pins]
+    try:
+        validate_duplicate_policy(config)
+        validate_po_duplicate_policy(config)
+    except (DuplicatePolicyValidationError, DuplicatePoPolicyValidationError) as exc:
+        raise StreamOverrideError(f"resolved stream configuration is invalid: {exc}") from None
     snapshot = {
         "process_version_id": str(process_version.id),
         "process_version_number": process_version.version_number,
-        "config": {**process_version.definition, **overrides},
+        "config": config,
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
     snapshot["fingerprint"] = hashlib.sha256(encoded.encode()).hexdigest()
@@ -247,6 +279,7 @@ async def publish_stream_draft(
     draft: StreamVersion,
     process_version: ProcessVersion,
     actor_id: str,
+    catalog_version_pins: Sequence[CatalogVersionPin] | None = None,
     now: datetime | None = None,
 ) -> StreamVersion:
     """Publish a stream draft against a PUBLISHED (or superseded — i.e.
@@ -263,13 +296,22 @@ async def publish_stream_draft(
     if process_version.process_id != stream.process_id:
         raise InvalidVersionStateError("process version belongs to a different process")
     current = now or utcnow()
+    effective_catalog_pins = (
+        tuple(catalog_version_pins)
+        if catalog_version_pins is not None
+        else await materialize_catalog_version_pins(session, context, stream_id=stream.id)
+    )
     previous = await StreamVersionRepository(session, context).get_published(stream.id)
     if previous is not None:
         previous.state = VersionState.SUPERSEDED
         # Flush the supersede before publishing: the single-published
         # unique index must never see two published rows mid-flush.
         await session.flush()
-    draft.resolved_snapshot = resolve_snapshot(process_version, draft.overrides)
+    draft.resolved_snapshot = resolve_snapshot(
+        process_version,
+        draft.overrides,
+        catalog_version_pins=effective_catalog_pins,
+    )
     draft.pinned_process_version_id = process_version.id
     draft.state = VersionState.PUBLISHED
     draft.published_at = current

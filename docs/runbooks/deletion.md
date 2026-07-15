@@ -5,8 +5,10 @@
 
 ## Detection
 
-- A deletion request arrives for a document, a set, or a whole
-  organization, with the authority to make it (verify the requester).
+- A deletion request arrives for one or more documents with the authority to
+  make it (verify the requester). A set- or organization-wide request must be
+  expanded into a persisted lifecycle for each document; the durable approval
+  and erasure unit is one document.
 
 ## Containment
 
@@ -30,6 +32,32 @@
   `POST /orgs/{org}/deletion-requests/{request_id}/approve` successfully;
   an independent principal with `data.delete.approve` must do so. Approval
   commits the `document.delete` job in the same transaction.
+- Repeating a request is idempotent: an existing non-cancelled lifecycle is
+  returned instead of creating a competing approval, while a cancelled
+  lifecycle is reopened as `pending_approval`. Repeating cancellation, hold
+  placement, or hold release also returns the already-reached state.
+
+### Holds, cancellation, and races
+
+- Request, approval, cancellation, legal-hold mutation, and worker execution
+  serialize on the same tenant/document lifecycle lock and lock the relevant
+  rows. Whichever safety decision commits first governs the next transition;
+  there is no approval/hold check-then-act window.
+- An active hold blocks approval and execution. A hold placed before erasure
+  commits clears any approval, including a `running` transition between worker
+  transactions. If erasure commits first, the terminal deleted document cannot
+  subsequently be placed on hold.
+- A queued delivery made stale before execution by cancellation or a hold
+  safely returns without erasing when it sees `cancelled` or
+  `pending_approval`. If a hold lands after the worker records `running` but
+  before the erasure transaction, that transaction rejects the cleared
+  approval. Releasing a hold does not revive the stale delivery or restore its
+  approval; a different authorized principal must explicitly approve the
+  pending request again.
+- Cancellation can win while a request is `pending_approval`, `approved`, or
+  `failed`. While the current worker attempt is `running`, and after it is
+  `completed`, cancellation is rejected; retries resume the same durable
+  request rather than opening a new lifecycle.
 
 ## Recovery
 
@@ -41,8 +69,18 @@
   jobs/outbox payloads, unlinks document/run identifiers
   from the immutable financial usage ledger without changing billed facts,
   clears duplicate links, and reduces the retained document row to an
-  archived non-content shell. Every external key is tenant-fenced and its
-  absence is reconciled before completion.
+  anonymized non-content shell in the terminal `deleted` state. `deleted` is
+  not an alias for `archived`: the shell cannot resume, reprocess, export, or
+  transition again. Every external key is tenant-fenced and its absence is
+  reconciled before completion.
+- Deleted shells are hidden from the default document list. An authorized
+  operator must use the explicit `?document_state=deleted` filter to list
+  them; normal active-work queues must not surface them.
+- The explicit deleted listing and document-detail endpoint return sanitized
+  shells and counts-only tombstone evidence. Stream association, original
+  intake time, actors, reasons, artifacts, and historical timeline entries are
+  not retransmitted through the general document API after erasure; privileged
+  evidence remains in its dedicated audit/deletion ledgers.
 - A retained **request**, legal-hold history, **tombstone**, anonymized
   document shell, financial totals, and counts-only completion audit remain
   for proof. Historical append-only audit evidence has its own access and
@@ -61,9 +99,15 @@
 - The objects and derived rows are gone (reconcile with STO-005 — deleted
   artifacts and invalidated export bundles must have no orphan objects); the
   request is `completed`; the tombstone and completion audit exist; the
-  document filename/hash/source metadata/client reference are anonymized;
-  usage rows have no document/run link; a redelivery is a safe no-op. Inspect
-  requests with `GET /orgs/{org}/deletion-requests`.
+  document is `deleted`; its filename/hash/source metadata/client reference
+  are anonymized; it is absent from the default list and present only when the
+  explicit deleted-state filter is used; usage rows have no document/run link;
+  a redelivery is a safe no-op. Inspect requests with
+  `GET /orgs/{org}/deletion-requests`.
+- A failed attempt remains on the same request with a safe error. Retrying
+  reconciles every external key again, treats already-absent objects and
+  already-erased rows as success, and completes the same unique tombstone.
+  Never report completion while an object survives reconciliation.
 
 ## Communication
 

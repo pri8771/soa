@@ -6,12 +6,70 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AuthProvider } from "../auth/AuthContext";
 import { AppShell, NAV_ITEMS } from "./AppShell";
 import { ShellSessionProvider, type ShellSession } from "./ShellContext";
+
+function viewport(width: number) {
+  let currentWidth = width;
+  const records: Array<{
+    query: string;
+    matches: boolean;
+    listeners: Set<(event: MediaQueryListEvent) => void>;
+  }> = [];
+  const matches = (query: string) => {
+    const maximum = /max-width:\s*(\d+)px/.exec(query)?.[1];
+    return maximum === undefined ? false : currentWidth <= Number(maximum);
+  };
+
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => {
+      const record = {
+        query,
+        matches: matches(query),
+        listeners: new Set<(event: MediaQueryListEvent) => void>(),
+      };
+      records.push(record);
+      const add = (listener: (event: MediaQueryListEvent) => void) => {
+        record.listeners.add(listener);
+      };
+      const remove = (listener: (event: MediaQueryListEvent) => void) => {
+        record.listeners.delete(listener);
+      };
+      return {
+        get matches() {
+          return record.matches;
+        },
+        media: query,
+        onchange: null,
+        addListener: add,
+        removeListener: remove,
+        addEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) =>
+          add(listener),
+        removeEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) =>
+          remove(listener),
+        dispatchEvent: () => true,
+      } as unknown as MediaQueryList;
+    }),
+  );
+
+  return {
+    resize(nextWidth: number) {
+      currentWidth = nextWidth;
+      for (const record of records) {
+        const next = matches(record.query);
+        if (next === record.matches) continue;
+        record.matches = next;
+        const event = { matches: next, media: record.query } as MediaQueryListEvent;
+        for (const listener of record.listeners) listener(event);
+      }
+    },
+  };
+}
 
 function makeSession(permissions: string[]): ShellSession {
   return {
@@ -54,6 +112,10 @@ describe("AppShell", () => {
     localStorage.clear();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("shows only navigation items the principal is permitted to use", async () => {
     await renderShell(["organization.read", "documents.read", "documents.review"]);
     await screen.findByRole("navigation", { name: "Primary" });
@@ -87,6 +149,33 @@ describe("AppShell", () => {
     await user.click(toggle);
     await waitFor(() => expect(localStorage.getItem("soa.nav.collapsed")).toBe("true"));
     expect(screen.getByRole("button", { name: /Expand navigation/ })).toBeInTheDocument();
+  });
+
+  it("tracks compact viewport changes until the user chooses a preference", async () => {
+    const view = viewport(1440);
+    const rendered = await renderShell(["organization.read"]);
+    const shell = rendered.container.querySelector(".soa-shell");
+    expect(shell).toHaveAttribute("data-nav-collapsed", "false");
+
+    act(() => view.resize(1100));
+    await waitFor(() => expect(shell).toHaveAttribute("data-nav-collapsed", "true"));
+    expect(screen.getByRole("button", { name: /Expand navigation/ })).toBeInTheDocument();
+
+    act(() => view.resize(1440));
+    await waitFor(() => expect(shell).toHaveAttribute("data-nav-collapsed", "false"));
+  });
+
+  it("forces a desktop expanded preference closed only on narrow viewports", async () => {
+    localStorage.setItem("soa.nav.collapsed", "false");
+    const view = viewport(900);
+    const rendered = await renderShell(["organization.read"]);
+    const shell = rendered.container.querySelector(".soa-shell");
+    expect(shell).toHaveAttribute("data-nav-collapsed", "true");
+    expect(screen.queryByRole("button", { name: /Expand navigation/ })).not.toBeInTheDocument();
+
+    act(() => view.resize(1100));
+    await waitFor(() => expect(shell).toHaveAttribute("data-nav-collapsed", "false"));
+    expect(screen.getByRole("button", { name: /Collapse navigation/ })).toBeInTheDocument();
   });
 
   it("renders breadcrumbs and page title", async () => {

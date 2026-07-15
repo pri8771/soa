@@ -15,19 +15,23 @@ from soa_db.audit import AuditEvent
 from soa_db.canonical_payloads import record_canonical_payload
 from soa_db.catalog_selections import CatalogFieldSelection
 from soa_db.data_deletion import (
+    DeletionBlockedError,
     DeletionNotApprovedError,
     DeletionTombstone,
     delete_document_data,
 )
 from soa_db.documents import (
     DocumentRepository,
+    DocumentState,
     SourceChannel,
     create_document,
+    transition_document,
 )
 from soa_db.extracted_fields import ExtractedField, create_extracted_field
 from soa_db.repository import OrganizationContext
 from soa_db.retention import DeletionState
 from soa_db.runs import start_run
+from soa_db.state_projection import verify_state_projection
 from soa_storage import MemoryObjectStore, ObjectNotFoundError, sha256_hex
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
@@ -120,6 +124,20 @@ async def seed(db: DatabaseSessions, store: MemoryObjectStore) -> uuid.UUID:
             payload={"identifiers": {"po_number": "PO-100042"}},
             actor_id="user:test",
         )
+        await transition_document(
+            session,
+            CONTEXT,
+            document=document,
+            to_state=DocumentState.VALIDATING_FILE,
+            actor_id="worker:test",
+        )
+        await transition_document(
+            session,
+            CONTEXT,
+            document=document,
+            to_state=DocumentState.QUARANTINED,
+            actor_id="worker:test",
+        )
         return document.id
 
 
@@ -155,7 +173,11 @@ async def test_complete_deletion_erases_objects_rows_and_leaves_a_tombstone(
         fields = (await session.execute(select(ExtractedField))).scalars().all()
         assert fields == []
         # ...the document row and the audit trail are KEPT (attributable).
-        assert await DocumentRepository(session, CONTEXT).get(document_id) is not None
+        retained = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert retained is not None
+        assert retained.state == DocumentState.DELETED.value
+        projection = await verify_state_projection(session, CONTEXT, retained)
+        assert projection.state == DocumentState.DELETED.value
         tombstones = (await session.execute(select(DeletionTombstone))).scalars().all()
         assert len(tombstones) == 1
         assert tombstones[0].state == "completed"
@@ -195,6 +217,35 @@ async def test_deletion_requires_approval(db: DatabaseSessions) -> None:
                 )
     # Nothing was deleted.
     assert len(store._objects) == 3  # type: ignore[attr-defined]
+
+
+async def test_approved_deletion_still_requires_a_settled_document(
+    db: DatabaseSessions,
+) -> None:
+    store = MemoryObjectStore()
+    async with db.session_scope() as session:
+        document = await create_document(
+            session,
+            CONTEXT,
+            stream_id=STREAM,
+            source_channel=SourceChannel.API,
+            original_filename="active.pdf",
+            content_sha256="c" * 64,
+            size_bytes=10,
+            content_type="application/pdf",
+            actor_id="user:test",
+        )
+        with pytest.raises(DeletionBlockedError, match="settled terminal state"):
+            await delete_document_data(
+                session,
+                store,
+                CONTEXT,
+                document_id=document.id,
+                deletion_state=DeletionState.APPROVED,
+                reason="stale approval",
+                actor_id="user:admin",
+            )
+        assert document.state == DocumentState.RECEIVED.value
 
 
 async def test_second_run_is_an_idempotent_no_op(db: DatabaseSessions) -> None:

@@ -11,13 +11,20 @@
  * exceptional states carry their safe reason inline.
  */
 
-import { Badge, Button, Select, TextField } from "@soa/design-system";
+import { Badge, Banner, Button, Select, Skeleton, TextField } from "@soa/design-system";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 
-import { cancelDocument, fetchDocuments, fetchStreams, type DocumentSummary } from "../api/client";
+import {
+  cancelDocument,
+  fetchDocumentDeletionRequests,
+  fetchDocuments,
+  fetchStreams,
+  type DocumentSummary,
+} from "../api/client";
+import { liveQueryOptions, QUEUE_POLL_MS } from "../app/liveQuery";
 import { DataTable } from "../components/table/DataTable";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -33,6 +40,7 @@ const STATE_OPTIONS = [
   { id: "failed_retryable", label: "Failed (retryable)" },
   { id: "failed_terminal", label: "Failed (terminal)" },
   { id: "cancelled", label: "Cancelled" },
+  { id: "deleted", label: "Deleted" },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -58,6 +66,7 @@ const STATE_TONES: Record<
   failed_terminal: "critical",
   cancelled: "neutral",
   archived: "neutral",
+  deleted: "neutral",
 };
 
 //: States the server's transition map allows to cancel.
@@ -81,10 +90,19 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+function formatAge(requestedAt: string): string {
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(requestedAt)) / 60_000));
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const hours = Math.floor(elapsedMinutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export function DocumentsQueue() {
   const session = useShellSession();
   const slug = session.organization.slug;
   const canReview = session.permissions.has("documents.review");
+  const canApproveDeletion = session.permissions.has("data.delete.approve");
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as {
@@ -110,6 +128,15 @@ export function DocumentsQueue() {
 
   const streams = useQuery({ queryKey: ["streams", slug], queryFn: () => fetchStreams(slug) });
   const streamNames = new Map((streams.data ?? []).map((s) => [s.id, s.name]));
+  const deletionRequests = useQuery({
+    queryKey: ["deletion-requests", slug, "latest-200"],
+    queryFn: () => fetchDocumentDeletionRequests(slug, 200),
+    enabled: canApproveDeletion,
+    ...liveQueryOptions(QUEUE_POLL_MS),
+  });
+  const pendingDeletionRequests = (deletionRequests.data?.items ?? []).filter(
+    (request) => request.state === "pending_approval",
+  );
 
   const documents = useInfiniteQuery({
     queryKey: ["documents", slug, stateFilter, channelFilter, searchText],
@@ -122,6 +149,7 @@ export function DocumentsQueue() {
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : null),
+    ...liveQueryOptions(QUEUE_POLL_MS),
   });
   const rows = documents.data?.pages.flatMap((page) => page.items) ?? [];
 
@@ -185,6 +213,63 @@ export function DocumentsQueue() {
       }
     >
       <div style={{ display: "grid", gap: "var(--soa-space-5)" }}>
+        {canApproveDeletion ? (
+          <section
+            aria-label="Deletion approvals"
+            style={{
+              border: "1px solid var(--soa-border)",
+              borderRadius: "var(--soa-radius-panel)",
+              background: "var(--soa-surface)",
+              padding: "var(--soa-space-4)",
+              display: "grid",
+              gap: "var(--soa-space-3)",
+            }}
+          >
+            <h2 style={{ margin: 0, font: "var(--soa-font-heading-sm)" }}>Deletion approvals</h2>
+            {deletionRequests.status === "pending" ? (
+              <Skeleton height="3rem" />
+            ) : deletionRequests.status === "error" ? (
+              <Banner
+                tone="critical"
+                title="Couldn’t load deletion approvals"
+                action={
+                  <Button size="sm" onPress={() => void deletionRequests.refetch()}>
+                    Try again
+                  </Button>
+                }
+              >
+                Open a known document directly if an approval needs urgent review.
+              </Banner>
+            ) : pendingDeletionRequests.length === 0 ? (
+              <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+                No deletion requests are waiting for independent approval.
+              </p>
+            ) : (
+              <ul style={{ margin: 0, paddingLeft: "1.2rem", display: "grid", gap: "0.5rem" }}>
+                {pendingDeletionRequests.map((request) => (
+                  <li key={request.id}>
+                    <Link
+                      to="/app/$organizationSlug/documents/$documentId"
+                      params={{ organizationSlug: slug, documentId: request.document_id }}
+                    >
+                      Document {request.document_id}
+                    </Link>{" "}
+                    <span style={{ color: "var(--soa-text-muted)" }}>
+                      requested by {request.requested_by} · {formatAge(request.requested_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(deletionRequests.data?.items.length ?? 0) >= 200 ? (
+              <Banner tone="warning" title="Approval list may be incomplete">
+                Only the latest 200 deletion requests are checked here. Use the deletion ledger or a
+                direct document link for older pending requests.
+              </Banner>
+            ) : null}
+          </section>
+        ) : null}
+
         <div
           style={{
             display: "flex",

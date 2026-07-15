@@ -53,8 +53,13 @@ from soa_db.canonical_payloads import CanonicalPayload
 from soa_db.catalog_selections import CatalogFieldSelection
 from soa_db.corrections import FieldCorrection
 from soa_db.data_export_jobs import DataExportJob, DataExportState
-from soa_db.deletion_requests import LegalHold, LegalHoldState
-from soa_db.documents import Document
+from soa_db.deletion_requests import (
+    DELETION_SETTLED_STATES,
+    DOCUMENT_DELETION_LIFECYCLE_LOCK,
+    LegalHold,
+    LegalHoldState,
+)
+from soa_db.documents import Document, DocumentState, transition_document
 from soa_db.evaluation_runs import EvaluationRun, EvaluationRunState
 from soa_db.exports import DeliveryAttempt, ExportJob
 from soa_db.external_cleanup import (
@@ -85,6 +90,7 @@ __all__ = [
     "DeletionResult",
     "DeletionTombstone",
     "ObjectDeleter",
+    "TombstoneState",
     "assert_document_reference_policy_complete",
     "delete_document_data",
 ]
@@ -340,7 +346,7 @@ async def delete_document_data(
     organization_id = context.organization_id
     current = now or utcnow()
     await transaction_advisory_lock(
-        session, "document-deletion-lifecycle", organization_id, document_id
+        session, DOCUMENT_DELETION_LIFECYCLE_LOCK, organization_id, document_id
     )
 
     tombstone = (
@@ -373,14 +379,20 @@ async def delete_document_data(
 
     document = (
         await session.execute(
-            select(Document).where(
+            select(Document)
+            .where(
                 Document.organization_id == organization_id,
                 Document.id == document_id,
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if document is None:
         raise DeletionBlockedError("document does not exist in the deletion request tenant")
+    if document.state not in DELETION_SETTLED_STATES:
+        raise DeletionBlockedError(
+            "document must remain in a settled terminal state until deletion completes"
+        )
 
     counts: dict[str, int] = {}
 
@@ -700,13 +712,20 @@ async def delete_document_data(
         organization_id,
         {"duplicate_of": None, "updated_at": current},
     )
+    await transition_document(
+        session,
+        context,
+        document=document,
+        to_state=DocumentState.DELETED,
+        reason="document data deleted",
+        actor_id=actor_id,
+    )
     counts["document_shell_anonymized"] = await _update_by(
         session,
         Document,
         Document.id == document_id,
         organization_id,
         {
-            "state": "archived",
             "original_filename": "[deleted]",
             "content_sha256": "0" * 64,
             "size_bytes": 0,

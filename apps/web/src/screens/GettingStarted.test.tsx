@@ -1,7 +1,7 @@
 import { HttpResponse, http } from "msw";
 import { screen, waitFor } from "@testing-library/react";
 
-import { server } from "../test/msw";
+import { DEFAULT_ME, server } from "../test/msw";
 import { renderApp } from "../test/render";
 
 describe("Getting started checklist (GTM-003)", () => {
@@ -50,5 +50,47 @@ describe("Getting started checklist (GTM-003)", () => {
     await waitFor(() => {
       expect(screen.getAllByText("to do").length).toBeGreaterThanOrEqual(5);
     });
+  });
+
+  it("does not fetch or link setup areas the principal cannot read", async () => {
+    const requested: string[] = [];
+    const refuse = (path: string, label: string) =>
+      http.get(path, () => {
+        requested.push(label);
+        return HttpResponse.json({}, { status: 403 });
+      });
+    server.use(
+      http.get("/api/me", () =>
+        HttpResponse.json({
+          ...DEFAULT_ME,
+          memberships: [
+            {
+              ...DEFAULT_ME.memberships[0],
+              permissions: ["organization.read"],
+            },
+          ],
+        }),
+      ),
+      refuse("/api/orgs/:slug/processes", "processes"),
+      refuse("/api/orgs/:slug/streams", "streams"),
+      refuse("/api/orgs/:slug/catalogs", "catalogs"),
+      refuse("/api/orgs/:slug/integrations", "integrations"),
+      refuse("/api/orgs/:slug/documents", "documents"),
+    );
+
+    await renderApp("/app/northstar/getting-started");
+
+    expect(await screen.findByText("Some setup steps need additional access")).toBeInTheDocument();
+    expect(screen.getAllByText("not available")).toHaveLength(5);
+    expect(screen.queryByRole("link", { name: "Open Processes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Streams" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Catalogs" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Upload a document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Integrations" })).not.toBeInTheDocument();
+
+    // Give any accidentally enabled query a chance to reach MSW. A correct
+    // permission gate leaves every handler untouched, including its interval.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(requested).toEqual([]);
   });
 });

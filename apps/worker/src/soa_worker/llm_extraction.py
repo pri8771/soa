@@ -71,6 +71,7 @@ CAPABILITY_WARNING = (
 )
 
 _DETERMINISM_SEED = 7
+_TEMPERATURE = 0
 
 
 class OpenAiCompatibleExtractionProvider:
@@ -131,6 +132,10 @@ class OpenAiCompatibleExtractionProvider:
             "adapter": "openai-compatible-chat-completions-v1",
             "model": self._model,
             "endpoint_sha256": endpoint_fingerprint(self._endpoint),
+            "timeout_seconds": self._timeout,
+            "max_tokens": self._max_tokens,
+            "temperature": _TEMPERATURE,
+            "seed": _DETERMINISM_SEED,
         }
         if self._pricing is not None:
             provenance["pricing"] = self._pricing.as_dict()
@@ -150,7 +155,7 @@ class OpenAiCompatibleExtractionProvider:
         payload = {
             "model": self._model,
             "messages": list(built.messages),
-            "temperature": 0,
+            "temperature": _TEMPERATURE,
             "seed": _DETERMINISM_SEED,
             "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
@@ -262,7 +267,9 @@ class OpenAiCompatibleExtractionProvider:
         )
 
 
-def register_local_llm_extraction(endpoint: str, model: str) -> None:
+def register_local_llm_extraction(
+    endpoint: str, model: str, *, timeout_seconds: float = 60.0
+) -> None:
     """Register the optional local profile. Call this ONLY when the
     deployment configured an endpoint (worker startup does); an
     unconfigured deployment simply has no such provider."""
@@ -286,6 +293,7 @@ def register_local_llm_extraction(endpoint: str, model: str) -> None:
             model=model,
             instructions=runtime.get("instructions"),
             instruction_reference=runtime.get("instruction_reference"),
+            timeout_seconds=timeout_seconds,
         ),
     )
 

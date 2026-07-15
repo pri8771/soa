@@ -88,6 +88,40 @@ async def test_checked_publish_succeeds_with_clean_report(db: DatabaseSessions) 
         assert process.active_version_id == published.id
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("duplicate_policy", "silent-fallback"),
+        ("business_duplicate_policy", "silent-fallback"),
+    ],
+)
+async def test_checked_publish_rejects_legacy_drafts_with_invalid_duplicate_policies(
+    db: DatabaseSessions,
+    field: str,
+    value: str,
+) -> None:
+    process_id = await seed_ready_process(db)
+    async with db.session_scope() as session:
+        process = await ProcessRepository(session, ORG_A).get(process_id)
+        assert process is not None
+        draft = await create_draft(session, ORG_A, process=process, actor_id=ACTOR)
+        # Simulate a draft persisted before strict write validation existed.
+        draft.definition = {field: value}
+
+        report = await validate_process_draft(session, ORG_A, process=process, draft=draft)
+        assert not report.is_publishable
+        assert any(finding.path == field for finding in report.findings)
+        with pytest.raises(DraftNotPublishableError):
+            await publish_process_draft_checked(
+                session,
+                ORG_A,
+                process=process,
+                draft=draft,
+                actor_id=ACTOR,
+            )
+        assert draft.state == VersionState.DRAFT
+
+
 async def test_missing_provider_policy_blocks_publish_with_clear_report(
     db: DatabaseSessions,
 ) -> None:

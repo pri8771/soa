@@ -25,16 +25,25 @@ import {
 } from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
+  approveDocumentDeletion,
+  cancelDocumentDeletionRequest,
   cancelDocument,
   fetchCanonicalPayload,
+  fetchDocumentDeletionRequest,
   fetchDocumentDetail,
+  fetchDocumentLegalHolds,
   fetchDocumentRuns,
+  placeDocumentLegalHold,
   reprocessDocument,
+  releaseDocumentLegalHold,
   requestArtifactDownload,
+  requestDocumentDeletion,
   type DocumentArtifact,
+  type DocumentDeletionRequest,
+  type DocumentLegalHold,
   type ProcessingRunEntry,
   type StageRunEntry,
 } from "../api/client";
@@ -75,6 +84,41 @@ const LIVE_STATES = new Set([
 
 const REPROCESSABLE_STATES = new Set(["review_required", "failed_retryable", "failed_terminal"]);
 
+//: The approval-gated deletion lifecycle accepts settled terminal records.
+//: A request alone never erases data; another principal must approve it.
+const DELETION_REQUEST_STATES = new Set([
+  "completed",
+  "rejected",
+  "quarantined",
+  "failed_terminal",
+  "cancelled",
+  "archived",
+]);
+
+const DELETION_TERMINAL_STATES = new Set<DocumentDeletionRequest["state"]>([
+  "failed",
+  "completed",
+  "cancelled",
+]);
+const DELETION_CANCELLABLE_STATES = new Set<DocumentDeletionRequest["state"]>([
+  "pending_approval",
+  "approved",
+  "failed",
+]);
+const DELETION_POLL_MS = 4000;
+
+const DELETION_STATE_TONES: Record<
+  DocumentDeletionRequest["state"],
+  "neutral" | "accent" | "success" | "warning" | "critical" | "info"
+> = {
+  pending_approval: "warning",
+  approved: "accent",
+  running: "info",
+  failed: "critical",
+  completed: "success",
+  cancelled: "neutral",
+};
+
 //: The canonical payload exists once a document was approved (CAN-003).
 const CANONICAL_STATES = new Set(["approved", "exporting", "completed", "archived"]);
 
@@ -91,6 +135,7 @@ const STATE_TONES: Record<
   failed_retryable: "warning",
   failed_terminal: "critical",
   cancelled: "neutral",
+  deleted: "neutral",
 };
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
@@ -142,6 +187,159 @@ function CancelDialog({ onConfirm }: { onConfirm: (reason: string) => void }) {
       )}
     </Dialog>
   );
+}
+
+function DeletionRequestDialog({ onConfirm }: { onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  return (
+    <Dialog title="Request deletion of this document’s data?" alert>
+      {({ close }) => (
+        <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+          <p style={{ margin: 0 }}>
+            This records an erasure request. A different authorized principal must review and
+            approve it before the durable worker can permanently delete any data.
+          </p>
+          <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+            An active legal hold blocks approval. If approved and completed, a counts-only audit
+            tombstone remains and the document stays listed as deleted.
+          </p>
+          <TextField label="Reason (required)" value={reason} onChange={setReason} isRequired />
+          <div style={{ display: "flex", gap: "var(--soa-space-2)", justifyContent: "flex-end" }}>
+            <Button variant="subtle" onPress={close}>
+              Cancel request
+            </Button>
+            <Button
+              variant="destructive"
+              isDisabled={reason.trim().length < 3}
+              onPress={() => {
+                onConfirm(reason.trim());
+                close();
+              }}
+            >
+              Request deletion
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function DeletionDecisionDialog({
+  decision,
+  onConfirm,
+}: {
+  decision: "approve" | "cancel";
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const approving = decision === "approve";
+  return (
+    <Dialog
+      title={approving ? "Approve permanent document deletion?" : "Cancel deletion request?"}
+      alert
+    >
+      {({ close }) => (
+        <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+          <p style={{ margin: 0 }}>
+            {approving
+              ? "Approval queues durable erasure of the original file, derived data, review history, and outputs. This cannot be undone after execution starts."
+              : "Cancellation stops a pending or approved request before execution starts. The cancellation and its reason remain audited."}
+          </p>
+          {approving ? (
+            <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+              Two-person approval is enforced by the server: the requester cannot approve their own
+              request, and an active legal hold blocks approval.
+            </p>
+          ) : null}
+          <TextField label="Reason (required)" value={reason} onChange={setReason} isRequired />
+          <div style={{ display: "flex", gap: "var(--soa-space-2)", justifyContent: "flex-end" }}>
+            <Button variant="subtle" onPress={close}>
+              Keep request
+            </Button>
+            {approving ? (
+              <Button
+                variant="destructive"
+                isDisabled={reason.trim().length < 3}
+                onPress={() => {
+                  onConfirm(reason.trim());
+                  close();
+                }}
+              >
+                Approve deletion
+              </Button>
+            ) : (
+              <Button
+                isDisabled={reason.trim().length < 3}
+                onPress={() => {
+                  onConfirm(reason.trim());
+                  close();
+                }}
+              >
+                Cancel deletion request
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function LegalHoldDialog({
+  action,
+  onConfirm,
+}: {
+  action: "place" | "release";
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const placing = action === "place";
+  return (
+    <Dialog title={placing ? "Place legal hold?" : "Release legal hold?"} alert>
+      {({ close }) => (
+        <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+          <p style={{ margin: 0 }}>
+            {placing
+              ? "An active legal hold blocks document erasure and clears any unexecuted deletion approval."
+              : "Releasing the hold ends this preservation block. It does not resume deletion automatically; independent approval is required again."}
+          </p>
+          <TextField label="Reason (required)" value={reason} onChange={setReason} isRequired />
+          <div style={{ display: "flex", gap: "var(--soa-space-2)", justifyContent: "flex-end" }}>
+            <Button variant="subtle" onPress={close}>
+              Keep current hold state
+            </Button>
+            <Button
+              variant={placing ? undefined : "destructive"}
+              isDisabled={reason.trim().length < 3}
+              onPress={() => {
+                onConfirm(reason.trim());
+                close();
+              }}
+            >
+              {placing ? "Place legal hold" : "Release legal hold"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function sameVisiblePrincipal(requestedBy: string, userId: string): boolean {
+  return requestedBy === userId || requestedBy === `user:${userId}`;
+}
+
+function containsDocumentReference(
+  value: unknown,
+  documentId: string,
+  seen = new WeakSet<object>(),
+): boolean {
+  if (value === documentId) return true;
+  if (value === null || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value).some((child) => containsDocumentReference(child, documentId, seen));
 }
 
 function ReprocessDialog({
@@ -317,20 +515,77 @@ export function DocumentDetail() {
   const session = useShellSession();
   const slug = session.organization.slug;
   const canReview = session.permissions.has("documents.review");
+  const canReadDeletionStatus =
+    session.permissions.has("data.delete.request") ||
+    session.permissions.has("data.delete.approve");
+  const canManageRetention = session.permissions.has("data.retention.manage");
   const { documentId } = useParams({ strict: false }) as { documentId: string };
   const queryClient = useQueryClient();
+  const detailQueryKey = useMemo(() => ["document", slug, documentId] as const, [slug, documentId]);
+  const deletionQueryKey = useMemo(
+    () => ["document-deletion-request", slug, documentId] as const,
+    [slug, documentId],
+  );
+  const legalHoldsQueryKey = useMemo(
+    () => ["document-legal-holds", slug, documentId] as const,
+    [slug, documentId],
+  );
 
   const detail = useQuery({
-    queryKey: ["document", slug, documentId],
+    queryKey: detailQueryKey,
     queryFn: () => fetchDocumentDetail(slug, documentId),
+    // Live refresh while the pipeline is moving, so the summary state and
+    // timeline track the runs panel below instead of freezing at load time.
+    // A durable deletion request also drives this poll until it settles; a
+    // completed request gets one final convergence loop until the API returns
+    // the deleted tombstone rather than stale pre-erasure detail.
+    refetchInterval: (query) => {
+      const request = queryClient.getQueryData<DocumentDeletionRequest | null>(deletionQueryKey);
+      const deletionInFlight =
+        request !== undefined && request !== null
+          ? !DELETION_TERMINAL_STATES.has(request.state)
+          : false;
+      const awaitingTombstone =
+        request?.state === "completed" && query.state.data?.document.state !== "deleted";
+      return (query.state.data && LIVE_STATES.has(query.state.data.document.state)) ||
+        deletionInFlight ||
+        awaitingTombstone
+        ? DELETION_POLL_MS
+        : false;
+    },
+    refetchOnWindowFocus: true,
+  });
+  const deletionStatus = useQuery({
+    queryKey: deletionQueryKey,
+    queryFn: () => fetchDocumentDeletionRequest(slug, documentId),
+    enabled:
+      canReadDeletionStatus &&
+      detail.data !== undefined &&
+      detail.data.document.state !== "deleted",
+    refetchInterval: (query) => {
+      const request = query.state.data;
+      return request && !DELETION_TERMINAL_STATES.has(request.state) ? DELETION_POLL_MS : false;
+    },
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+  const legalHolds = useQuery({
+    queryKey: legalHoldsQueryKey,
+    queryFn: () => fetchDocumentLegalHolds(slug, documentId),
+    enabled:
+      canManageRetention && detail.data !== undefined && detail.data.document.state !== "deleted",
+    refetchOnWindowFocus: true,
+    retry: false,
   });
   const runs = useQuery({
     queryKey: ["document-runs", slug, documentId],
     queryFn: () => fetchDocumentRuns(slug, documentId),
+    enabled: detail.data !== undefined && detail.data.document.state !== "deleted",
     // Live refresh while the pipeline is moving: data refreshes in place
     // (no remount), so scroll position and open dialogs are preserved.
     refetchInterval: (query) =>
       query.state.data && LIVE_STATES.has(query.state.data.state) ? 4000 : false,
+    refetchOnWindowFocus: true,
   });
 
   const canonical = useQuery({
@@ -341,13 +596,67 @@ export function DocumentDetail() {
   });
 
   const cancel = useMutation({
+    mutationKey: ["cancel-document", slug, documentId],
     mutationFn: (reason: string) => cancelDocument(slug, documentId, reason),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["document", slug, documentId] });
       void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
     },
   });
+  const deletionRequest = useMutation({
+    mutationKey: ["request-document-deletion", slug, documentId],
+    mutationFn: (reason: string) => requestDocumentDeletion(slug, documentId, reason),
+    onSuccess: (request) => {
+      queryClient.setQueryData(deletionQueryKey, request);
+      void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
+      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
+      void queryClient.invalidateQueries({ queryKey: ["document-runs", slug, documentId] });
+    },
+  });
+  const approveDeletion = useMutation({
+    mutationKey: ["approve-document-deletion", slug, documentId],
+    mutationFn: ({ requestId, reason }: { requestId: string; reason: string }) =>
+      approveDocumentDeletion(slug, requestId, reason),
+    onSuccess: (request) => {
+      queryClient.setQueryData(deletionQueryKey, request);
+      void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
+      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
+    },
+  });
+  const cancelDeletion = useMutation({
+    mutationKey: ["cancel-document-deletion", slug, documentId],
+    mutationFn: ({ requestId, reason }: { requestId: string; reason: string }) =>
+      cancelDocumentDeletionRequest(slug, requestId, reason),
+    onSuccess: (request) => {
+      queryClient.setQueryData(deletionQueryKey, request);
+      void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
+      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
+    },
+  });
+  const placeLegalHold = useMutation({
+    mutationKey: ["place-document-legal-hold", slug, documentId],
+    mutationFn: (reason: string) => placeDocumentLegalHold(slug, documentId, reason),
+    onSuccess: (hold) => {
+      queryClient.setQueryData<{ items: DocumentLegalHold[] }>(legalHoldsQueryKey, (current) => ({
+        items: [hold, ...(current?.items.filter((item) => item.id !== hold.id) ?? [])],
+      }));
+      void queryClient.invalidateQueries({ queryKey: deletionQueryKey });
+      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
+    },
+  });
+  const releaseLegalHold = useMutation({
+    mutationKey: ["release-document-legal-hold", slug, documentId],
+    mutationFn: ({ holdId, reason }: { holdId: string; reason: string }) =>
+      releaseDocumentLegalHold(slug, holdId, reason),
+    onSuccess: (hold) => {
+      queryClient.setQueryData<{ items: DocumentLegalHold[] }>(legalHoldsQueryKey, (current) => ({
+        items: current?.items.map((item) => (item.id === hold.id ? hold : item)) ?? [hold],
+      }));
+      void queryClient.invalidateQueries({ queryKey: deletionQueryKey });
+    },
+  });
   const reprocess = useMutation({
+    mutationKey: ["reprocess-document", slug, documentId],
     mutationFn: (options: { mode: "retry" | "current_config"; reason: string }) =>
       reprocessDocument(slug, documentId, options),
     onSettled: () => {
@@ -356,11 +665,38 @@ export function DocumentDetail() {
     },
   });
   const download = useMutation({
+    mutationKey: ["download-document-artifact", slug, documentId],
     mutationFn: (artifactId: string) => requestArtifactDownload(slug, artifactId),
     onSuccess: (signed) => {
       window.open(signed.url, "_blank", "noopener");
     },
   });
+
+  const deletedDataUpdatedAt = detail.data?.document.state === "deleted" ? detail.dataUpdatedAt : 0;
+  useEffect(() => {
+    if (deletedDataUpdatedAt === 0) return;
+
+    // Keep only the already-sanitized tombstone query. Evict exact keyed
+    // children (runs/pages/canonical/deliveries) and any broader list or
+    // workspace whose cached JSON still references this document.
+    queryClient.removeQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        const isCurrentTombstone =
+          key.length === detailQueryKey.length &&
+          key.every((part, index) => part === detailQueryKey[index]);
+        if (isCurrentTombstone) return false;
+        return key.includes(documentId) || containsDocumentReference(query.state.data, documentId);
+      },
+    });
+
+    // Signed download URLs and action responses live in the mutation cache,
+    // not the query cache. Mutation keys make them attributable and purgeable.
+    const mutationCache = queryClient.getMutationCache();
+    for (const mutation of mutationCache.getAll()) {
+      if (mutation.options.mutationKey?.includes(documentId)) mutationCache.remove(mutation);
+    }
+  }, [deletedDataUpdatedAt, detailQueryKey, documentId, queryClient]);
 
   if (detail.status === "pending") {
     return (
@@ -388,9 +724,89 @@ export function DocumentDetail() {
   }
 
   const { document, artifacts, context, timeline } = detail.data;
+  const isDeleted = document.state === "deleted";
+  if (isDeleted) {
+    const tombstone = detail.data.deletion_tombstone;
+    const recordsCleared = Object.values(tombstone?.category_counts ?? {}).reduce(
+      (total, count) => total + count,
+      0,
+    );
+    return (
+      <AppShell
+        title="Deleted document"
+        breadcrumbs={[
+          { label: session.organization.name },
+          { label: "Documents", to: "/app/$organizationSlug/documents" },
+          { label: "Deleted document" },
+        ]}
+      >
+        <div style={{ display: "grid", gap: "var(--soa-space-5)", maxWidth: "56rem" }}>
+          <Banner tone="neutral" title="This document’s data has been deleted">
+            The file and all document-scoped derived data are permanently unavailable. Only this
+            counts-only deletion tombstone remains in the browser.
+          </Banner>
+          <Panel title="Deletion tombstone">
+            <dl
+              style={{
+                display: "grid",
+                gridTemplateColumns: "12rem minmax(0, 1fr)",
+                gap: "0.5rem",
+                margin: 0,
+              }}
+            >
+              <dt>Document ID</dt>
+              <dd style={{ margin: 0 }}>
+                <code>{document.id}</code>
+              </dd>
+              <dt>State</dt>
+              <dd style={{ margin: 0 }}>
+                <Badge tone="neutral">deleted</Badge>
+              </dd>
+              <dt>Completed</dt>
+              <dd style={{ margin: 0 }}>
+                {tombstone?.completed_at
+                  ? new Date(tombstone.completed_at).toLocaleString()
+                  : "Retained in the deletion ledger"}
+              </dd>
+              {tombstone?.object_keys_deleted !== null &&
+              tombstone?.object_keys_deleted !== undefined ? (
+                <>
+                  <dt>Stored objects erased</dt>
+                  <dd style={{ margin: 0 }}>{tombstone.object_keys_deleted}</dd>
+                </>
+              ) : null}
+              {recordsCleared > 0 ? (
+                <>
+                  <dt>Scoped records cleared</dt>
+                  <dd style={{ margin: 0 }}>{recordsCleared}</dd>
+                </>
+              ) : null}
+            </dl>
+          </Panel>
+        </div>
+      </AppShell>
+    );
+  }
+
+  const durableDeletion = deletionStatus.data ?? null;
+  const activeLegalHold = legalHolds.data?.items.find((hold) => hold.state === "active") ?? null;
+  const legalHoldStatusUnverified = canManageRetention && legalHolds.status !== "success";
   const cancellable = canReview && CANCELLABLE_STATES.has(document.state);
   const canReprocess =
     session.permissions.has("documents.reprocess") && REPROCESSABLE_STATES.has(document.state);
+  const canRequestDeletion =
+    session.permissions.has("data.delete.request") &&
+    DELETION_REQUEST_STATES.has(document.state) &&
+    deletionStatus.status === "success" &&
+    (durableDeletion === null || durableDeletion.state === "cancelled");
+  const selfRequestedDeletion =
+    durableDeletion !== null && sameVisiblePrincipal(durableDeletion.requested_by, session.userId);
+  const canApproveDeletion =
+    durableDeletion?.state === "pending_approval" && session.permissions.has("data.delete.approve");
+  const canCancelDeletion =
+    durableDeletion !== null &&
+    session.permissions.has("data.delete.request") &&
+    DELETION_CANCELLABLE_STATES.has(durableDeletion.state);
   const hasRuns = (runs.data?.runs.length ?? 0) > 0;
 
   return (
@@ -402,11 +818,21 @@ export function DocumentDetail() {
         { label: document.original_filename },
       ]}
       actions={
-        cancellable ? (
-          <DialogTrigger>
-            <Button variant="destructive">Cancel document</Button>
-            <CancelDialog onConfirm={(reason) => cancel.mutate(reason)} />
-          </DialogTrigger>
+        cancellable || canRequestDeletion ? (
+          <span style={{ display: "inline-flex", gap: "var(--soa-space-2)" }}>
+            {cancellable ? (
+              <DialogTrigger>
+                <Button variant="destructive">Cancel document</Button>
+                <CancelDialog onConfirm={(reason) => cancel.mutate(reason)} />
+              </DialogTrigger>
+            ) : null}
+            {canRequestDeletion ? (
+              <DialogTrigger>
+                <Button variant="destructive">Request deletion</Button>
+                <DeletionRequestDialog onConfirm={(reason) => deletionRequest.mutate(reason)} />
+              </DialogTrigger>
+            ) : null}
+          </span>
         ) : undefined
       }
     >
@@ -416,15 +842,247 @@ export function DocumentDetail() {
             {cancel.error?.message ?? "The document was not changed."}
           </Banner>
         ) : null}
+        {deletionRequest.isError ? (
+          <Banner tone="critical" title="Deletion request failed">
+            {deletionRequest.error?.message ?? "No deletion request was created."}
+          </Banner>
+        ) : null}
+        {deletionRequest.isSuccess ? (
+          <Banner tone="success" title="Deletion request submitted">
+            No data has been deleted. A different authorized principal must approve the request
+            before the durable deletion worker can run.
+          </Banner>
+        ) : null}
         {download.isError ? (
           <Banner tone="critical" title="Download refused">
             {download.error?.message ?? "No file was downloaded."}
           </Banner>
         ) : null}
 
+        {canManageRetention ? (
+          <Panel title="Legal hold">
+            {legalHolds.status === "pending" ? (
+              <Skeleton height="4rem" />
+            ) : legalHolds.status === "error" ? (
+              <Banner
+                tone="critical"
+                title="Couldn’t load legal holds"
+                action={
+                  <Button size="sm" onPress={() => void legalHolds.refetch()}>
+                    Try again
+                  </Button>
+                }
+              >
+                Preservation controls stay unavailable until the legal-hold ledger can be read.
+              </Banner>
+            ) : activeLegalHold ? (
+              <div style={{ display: "grid", gap: "var(--soa-space-3)" }}>
+                <Banner tone="warning" title="Active legal hold">
+                  Deletion approval and execution are blocked while this hold remains active.
+                </Banner>
+                <dl
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "12rem minmax(0, 1fr)",
+                    gap: "0.5rem",
+                    margin: 0,
+                  }}
+                >
+                  <dt>Reason</dt>
+                  <dd style={{ margin: 0 }}>{activeLegalHold.reason}</dd>
+                  <dt>Placed by</dt>
+                  <dd style={{ margin: 0 }}>{activeLegalHold.placed_by}</dd>
+                  <dt>Placed</dt>
+                  <dd style={{ margin: 0 }}>
+                    {new Date(activeLegalHold.placed_at).toLocaleString()}
+                  </dd>
+                </dl>
+                {releaseLegalHold.isError ? (
+                  <Banner tone="critical" title="Hold release refused">
+                    {releaseLegalHold.error?.message ?? "The legal hold remains active."}
+                  </Banner>
+                ) : null}
+                <div>
+                  <DialogTrigger>
+                    <Button variant="destructive">Release legal hold</Button>
+                    <LegalHoldDialog
+                      action="release"
+                      onConfirm={(reason) =>
+                        releaseLegalHold.mutate({ holdId: activeLegalHold.id, reason })
+                      }
+                    />
+                  </DialogTrigger>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: "var(--soa-space-3)" }}>
+                <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+                  No active legal hold. Previously released holds remain in the server ledger.
+                </p>
+                {placeLegalHold.isError ? (
+                  <Banner tone="critical" title="Couldn’t place legal hold">
+                    {placeLegalHold.error?.message ?? "No legal hold was created."}
+                  </Banner>
+                ) : null}
+                <div>
+                  <DialogTrigger>
+                    <Button>Place legal hold</Button>
+                    <LegalHoldDialog
+                      action="place"
+                      onConfirm={(reason) => placeLegalHold.mutate(reason)}
+                    />
+                  </DialogTrigger>
+                </div>
+              </div>
+            )}
+          </Panel>
+        ) : null}
+
+        {canReadDeletionStatus ? (
+          <Panel title="Deletion request">
+            {deletionStatus.status === "pending" ? (
+              <Skeleton height="4rem" />
+            ) : deletionStatus.status === "error" ? (
+              <Banner
+                tone="critical"
+                title="Couldn’t load deletion status"
+                action={
+                  <Button size="sm" onPress={() => void deletionStatus.refetch()}>
+                    Try again
+                  </Button>
+                }
+              >
+                Deletion controls stay unavailable until the durable request ledger can be read.
+              </Banner>
+            ) : durableDeletion === null ? (
+              <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+                No deletion request has been recorded for this document.
+              </p>
+            ) : (
+              <div style={{ display: "grid", gap: "var(--soa-space-3)" }}>
+                <dl
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "12rem minmax(0, 1fr)",
+                    gap: "0.5rem",
+                    margin: 0,
+                  }}
+                >
+                  <dt>State</dt>
+                  <dd style={{ margin: 0 }}>
+                    <Badge tone={DELETION_STATE_TONES[durableDeletion.state]}>
+                      {durableDeletion.state.replace(/_/g, " ")}
+                    </Badge>
+                  </dd>
+                  <dt>Reason</dt>
+                  <dd style={{ margin: 0 }}>{durableDeletion.reason}</dd>
+                  <dt>Requested by</dt>
+                  <dd style={{ margin: 0 }}>{durableDeletion.requested_by}</dd>
+                  <dt>Requested</dt>
+                  <dd style={{ margin: 0 }}>
+                    {new Date(durableDeletion.requested_at).toLocaleString()}
+                  </dd>
+                  {durableDeletion.safe_error ? (
+                    <>
+                      <dt>Safe error</dt>
+                      <dd style={{ margin: 0 }}>{durableDeletion.safe_error}</dd>
+                    </>
+                  ) : null}
+                </dl>
+
+                {durableDeletion.state === "pending_approval" ? (
+                  <Banner
+                    tone="warning"
+                    title={
+                      activeLegalHold
+                        ? "Legal hold blocks deletion"
+                        : "Independent approval required"
+                    }
+                  >
+                    {activeLegalHold
+                      ? "An active preservation hold prevents approval and erasure. Releasing it does not resume deletion automatically."
+                      : selfRequestedDeletion
+                        ? "You submitted this request, so you cannot approve it. Ask a different authorized principal."
+                        : "The server enforces two-person approval: the principal who submitted this request cannot approve it."}
+                  </Banner>
+                ) : durableDeletion.state === "approved" ? (
+                  <Banner tone="info" title="Deletion approved">
+                    The durable worker is queued. This page will keep refreshing until erasure
+                    starts and the request reaches a terminal state.
+                  </Banner>
+                ) : durableDeletion.state === "running" ? (
+                  <Banner tone="info" title="Deletion in progress">
+                    Document detail is refreshing until the counts-only tombstone is available.
+                  </Banner>
+                ) : durableDeletion.state === "failed" ? (
+                  <Banner tone="critical" title="Deletion attempt failed">
+                    The durable job may retry. An authorized requester can cancel the lifecycle if
+                    execution is not running.
+                  </Banner>
+                ) : durableDeletion.state === "cancelled" ? (
+                  <Banner tone="neutral" title="Deletion request cancelled">
+                    No deletion is in progress. A corrected request can be submitted if needed.
+                  </Banner>
+                ) : null}
+
+                {approveDeletion.isError ? (
+                  <Banner tone="critical" title="Approval refused">
+                    {approveDeletion.error?.message ?? "The deletion request was not approved."}
+                  </Banner>
+                ) : null}
+                {cancelDeletion.isError ? (
+                  <Banner tone="critical" title="Cancellation refused">
+                    {cancelDeletion.error?.message ?? "The deletion request was not cancelled."}
+                  </Banner>
+                ) : null}
+
+                {canApproveDeletion || canCancelDeletion ? (
+                  <div style={{ display: "flex", gap: "var(--soa-space-2)", flexWrap: "wrap" }}>
+                    {canApproveDeletion ? (
+                      selfRequestedDeletion ||
+                      activeLegalHold !== null ||
+                      legalHoldStatusUnverified ? (
+                        <Button variant="destructive" isDisabled>
+                          Approve deletion
+                        </Button>
+                      ) : (
+                        <DialogTrigger>
+                          <Button variant="destructive">Approve deletion</Button>
+                          <DeletionDecisionDialog
+                            decision="approve"
+                            onConfirm={(reason) =>
+                              approveDeletion.mutate({ requestId: durableDeletion.id, reason })
+                            }
+                          />
+                        </DialogTrigger>
+                      )
+                    ) : null}
+                    {canCancelDeletion ? (
+                      <DialogTrigger>
+                        <Button variant="subtle">Cancel deletion request</Button>
+                        <DeletionDecisionDialog
+                          decision="cancel"
+                          onConfirm={(reason) =>
+                            cancelDeletion.mutate({ requestId: durableDeletion.id, reason })
+                          }
+                        />
+                      </DialogTrigger>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </Panel>
+        ) : null}
+
         <Panel title="Summary">
           <dl
-            style={{ display: "grid", gridTemplateColumns: "12rem 1fr", gap: "0.5rem", margin: 0 }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "12rem minmax(0, 1fr)",
+              gap: "0.5rem",
+              margin: 0,
+            }}
           >
             <dt>State</dt>
             <dd style={{ margin: 0, display: "flex", gap: "var(--soa-space-1)" }}>

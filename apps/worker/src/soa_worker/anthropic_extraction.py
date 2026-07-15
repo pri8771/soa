@@ -77,6 +77,8 @@ CAPABILITY_WARNING = (
     "page-level only — review gates apply"
 )
 
+_TEMPERATURE = 0
+
 
 class AnthropicExtractionProvider:
     """Claude Messages-API extraction. ``api_key`` is required (the
@@ -128,6 +130,9 @@ class AnthropicExtractionProvider:
             "api_version": self._api_version,
             "model": self._model,
             "endpoint_sha256": endpoint_fingerprint(self._endpoint),
+            "timeout_seconds": self._timeout,
+            "max_tokens": self._max_tokens,
+            "temperature": _TEMPERATURE,
             "pricing": self._pricing.as_dict(),
         }
 
@@ -148,7 +153,7 @@ class AnthropicExtractionProvider:
             "model": self._model,
             "system": system,
             "messages": [{"role": "user", "content": user}],
-            "temperature": 0,
+            "temperature": _TEMPERATURE,
             "max_tokens": self._max_tokens,
         }
         return payload, built

@@ -13,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_api.domain.policies import PolicyVersionRepository
 from soa_api.domain.streams import StreamVersionRepository
 from soa_config import SecretReference
+from soa_db.catalogs import (
+    CATALOG_VERSION_PINS_KEY,
+    CatalogError,
+    materialize_catalog_version_pins,
+    parse_catalog_version_pins,
+)
 from soa_db.instructions import InstructionVersionRepository
 from soa_db.repository import OrganizationContext
 
@@ -150,12 +156,33 @@ async def resolve_runtime_pins(
     snapshot = version.resolved_snapshot
     if not isinstance(snapshot, dict):
         raise RuntimePinError("the active stream version has no resolved snapshot")
-    return await _resolve_snapshot_pins(
+    pins = await _resolve_snapshot_pins(
         session,
         context,
         stream_version_id=stream_version_id,
         snapshot=dict(snapshot),
     )
+    if CATALOG_VERSION_PINS_KEY not in pins.config:
+        raise RuntimePinError(
+            "the stream snapshot predates immutable catalog pins; republish it before processing"
+        )
+    try:
+        pinned_catalogs = parse_catalog_version_pins(pins.config[CATALOG_VERSION_PINS_KEY])
+        if pinned_catalogs is None:
+            raise CatalogError("catalog version pins cannot be null")
+        live_catalogs = await materialize_catalog_version_pins(
+            session,
+            context,
+            stream_id=version.stream_id,
+        )
+    except CatalogError as error:
+        raise RuntimePinError(f"the catalog binding contract is invalid: {error}") from error
+    if pinned_catalogs != live_catalogs:
+        raise RuntimePinError(
+            "catalog bindings changed after stream publication; publish a new stream "
+            "version before processing more documents"
+        )
+    return pins
 
 
 async def resolve_evaluation_runtime_pins(

@@ -62,7 +62,35 @@ class DuplicatePoPolicy(StrEnum):
 DEFAULT_PO_POLICY = DuplicatePoPolicy.WARN
 
 
+class DuplicatePoPolicyValidationError(ValueError):
+    """A newly-authored business-duplicate policy is not part of the contract."""
+
+
+def validate_po_duplicate_policy(stream_config: Mapping[str, object]) -> DuplicatePoPolicy:
+    """Strictly validate policy configuration at draft/publish boundaries.
+
+    The runtime reader remains defensive for snapshots written before validation
+    existed; new configuration may not silently fall back to ``warn``.
+    """
+
+    if "business_duplicate_policy" not in stream_config:
+        return DEFAULT_PO_POLICY
+    raw = stream_config["business_duplicate_policy"]
+    if not isinstance(raw, str):
+        raise DuplicatePoPolicyValidationError(
+            "business_duplicate_policy must be one of: warn, block, allow"
+        )
+    try:
+        return DuplicatePoPolicy(raw)
+    except ValueError as exc:
+        raise DuplicatePoPolicyValidationError(
+            "business_duplicate_policy must be one of: warn, block, allow"
+        ) from exc
+
+
 def get_po_duplicate_policy(stream_config: Mapping[str, object]) -> DuplicatePoPolicy:
+    """Read a persisted policy, falling back for legacy invalid snapshots only."""
+
     raw = stream_config.get("business_duplicate_policy")
     try:
         return DuplicatePoPolicy(str(raw))
@@ -106,6 +134,9 @@ class PoDuplicateCandidate:
     customer_matched: bool | None
     #: Same for the order date.
     order_date_matched: bool | None
+    #: Exact-content transparency needs every same-byte sibling, not only
+    #: the intake marker's first/original document.
+    content_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -305,6 +336,7 @@ async def find_po_duplicates(
                 po_number=po_number,
                 customer_matched=customer_matched,
                 order_date_matched=order_date_matched,
+                content_sha256=document.content_sha256,
             )
         )
     return PoDuplicateSearch(candidates=tuple(candidates), notes=tuple(notes))
@@ -393,10 +425,12 @@ __all__ = [
     "DuplicateOverride",
     "DuplicateOverrideError",
     "DuplicatePoPolicy",
+    "DuplicatePoPolicyValidationError",
     "PoDuplicateAssessment",
     "PoDuplicateCandidate",
     "PoDuplicateSearch",
     "assess_po_duplicates",
     "find_po_duplicates",
     "get_po_duplicate_policy",
+    "validate_po_duplicate_policy",
 ]

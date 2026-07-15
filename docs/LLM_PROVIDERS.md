@@ -54,6 +54,10 @@ ollama pull qwen2.5:7b-instruct
 #    local provider). Ollama serves the OpenAI-compatible API on :11434.
 export SOA_WORKER_LOCAL_LLM_ENDPOINT="http://localhost:11434/v1/chat/completions"
 export SOA_WORKER_LOCAL_LLM_MODEL="qwen2.5:7b-instruct"
+
+# 3. Optional: raise the per-call answer budget (default 60s). Local
+#    models on shared hardware can need minutes on a long document.
+export SOA_WORKER_LOCAL_LLM_TIMEOUT_SECONDS="240"
 ```
 
 The local provider registers with the **strict local data policy**: content
@@ -121,6 +125,31 @@ export SOA_WORKER_HOSTED_OPENAI_MODEL="gemini-2.0-flash"
 export SOA_WORKER_HOSTED_OPENAI_PROVIDER_NAME="hosted-gemini"
 ```
 
+These variables register deployment capabilities. Provider selection is part
+of the published stream policy (`provider_name` plus any pinned fallback chain
+and tenant credential references), so a deployment variable cannot silently
+select a different provider for a run. The adapter endpoint, model, timeout,
+and token budget are deployment-runtime inputs rather than control-plane pins;
+a worker restart can change them for a queued retry. All three model-adapter
+shapes declare a normalized, credential-free descriptor containing adapter,
+model, endpoint SHA-256, timeout, maximum output tokens, and temperature.
+OpenAI-compatible calls additionally record their fixed seed; Anthropic does
+not expose a seed, and the native Gemini adapter does not currently send one.
+Hosted descriptors also retain the configured rate card, while Anthropic
+retains its API version.
+
+Before every routed adapter invocation, including a bounded repair attempt,
+the worker commits that safe descriptor and its fingerprint to the running
+extraction stage and appends a `provider.call_started` audit event. A call
+therefore cannot begin without durable evidence. The event is intentionally a
+call-start intent, not proof that the vendor received the request: a process
+can crash after the commit and before HTTP I/O. A successful run's runtime
+provenance and fingerprint include the complete attempted provider chain and
+the selected adapter. If every provider fails, the failed stage retains the
+pre-call descriptors even though the run has no successful extraction runtime
+fingerprint. Reproducibility checks must compare successful runtime provenance
+as well as the immutable execution pin.
+
 > The environment-variable keys above are the simplest path for local
 > testing (one deployment-level key). Production stream policies pin
 > **per-tenant** BYO keys through the SEC-005 secret store
@@ -159,9 +188,9 @@ plus output. The immutable extracting-stage summary retains the full breakdown,
 and the usage ledger records one row per provider call with
 `billed_unit=tokens` and the reported total. Repair attempts and routed
 fallbacks retain separate provider/model/rate-card attribution; terminal calls
-are still ledgered before the stage fails. Local OpenAI-compatible responses
-may report the same facts, but their provider cost remains zero; the
-deterministic mock remains a zero-cost call.
+are still ledgered before the stage fails when the adapter can report their
+usage. Local OpenAI-compatible responses may report the same facts, but their
+provider cost remains zero; the deterministic mock remains a zero-cost call.
 
 Cost is an estimate, separate from those facts. Each worker deployment pins a
 named rate card and integer cents per one million input/output tokens. The
@@ -261,8 +290,10 @@ cannot stand in for measured accuracy; a candidate without a pinned evaluated
 score is excluded when a quality floor applies.
 
 Routing explanations and selected/fallback providers are append-only audit
-events. Each attempt also atomically updates tenant-scoped health, latency,
-confidence, safe failure-class, fallback, and cost aggregates shared by all
-worker replicas and shown in the provider administration API. No document
-content, vendor response, credential value, or raw error is stored in those
-metrics.
+events. Each call-start event contains only the allowlisted adapter descriptor;
+unknown adapter keys are dropped so an extension cannot add a credential to
+durable provenance accidentally. After an outcome, each provider attempt also
+updates tenant-scoped health, latency, confidence, safe failure-class,
+fallback, and cost aggregates shared by all worker replicas and shown in the
+provider administration API. No document content, vendor response, credential
+value, or raw error is stored in those metrics.

@@ -287,37 +287,39 @@ export function ProcessVersions() {
               The two versions have identical configuration.
             </p>
           ) : (
-            <table style={{ borderCollapse: "collapse", textAlign: "left" }}>
-              <caption style={{ position: "absolute", clip: "rect(0 0 0 0)" }}>
-                Configuration differences
-              </caption>
-              <thead>
-                <tr>
-                  <th style={{ padding: "var(--soa-space-2)" }}>Setting</th>
-                  <th style={{ padding: "var(--soa-space-2)" }}>Change</th>
-                  <th style={{ padding: "var(--soa-space-2)" }}>From</th>
-                  <th style={{ padding: "var(--soa-space-2)" }}>To</th>
-                </tr>
-              </thead>
-              <tbody>
-                {diffRows.map((row) => (
-                  <tr key={row.key} style={{ borderTop: "1px solid var(--soa-border)" }}>
-                    <td style={{ padding: "var(--soa-space-2)" }}>
-                      <code>{row.key}</code>
-                    </td>
-                    <td style={{ padding: "var(--soa-space-2)" }}>
-                      <Badge tone={KIND_TONE[row.kind]}>{row.kind}</Badge>
-                    </td>
-                    <td style={{ padding: "var(--soa-space-2)" }}>
-                      {row.kind === "added" ? "—" : displayValue(row.key, row.from)}
-                    </td>
-                    <td style={{ padding: "var(--soa-space-2)" }}>
-                      {row.kind === "removed" ? "—" : displayValue(row.key, row.to)}
-                    </td>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse", textAlign: "left" }}>
+                <caption style={{ position: "absolute", clip: "rect(0 0 0 0)" }}>
+                  Configuration differences
+                </caption>
+                <thead>
+                  <tr>
+                    <th style={{ padding: "var(--soa-space-2)" }}>Setting</th>
+                    <th style={{ padding: "var(--soa-space-2)" }}>Change</th>
+                    <th style={{ padding: "var(--soa-space-2)" }}>From</th>
+                    <th style={{ padding: "var(--soa-space-2)" }}>To</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {diffRows.map((row) => (
+                    <tr key={row.key} style={{ borderTop: "1px solid var(--soa-border)" }}>
+                      <td style={{ padding: "var(--soa-space-2)" }}>
+                        <code>{row.key}</code>
+                      </td>
+                      <td style={{ padding: "var(--soa-space-2)" }}>
+                        <Badge tone={KIND_TONE[row.kind]}>{row.kind}</Badge>
+                      </td>
+                      <td style={{ padding: "var(--soa-space-2)", overflowWrap: "anywhere" }}>
+                        {row.kind === "added" ? "—" : displayValue(row.key, row.from)}
+                      </td>
+                      <td style={{ padding: "var(--soa-space-2)", overflowWrap: "anywhere" }}>
+                        {row.kind === "removed" ? "—" : displayValue(row.key, row.to)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       </div>

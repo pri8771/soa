@@ -161,6 +161,53 @@ def test_draft_lifecycle_with_optimistic_concurrency_and_clone(client: TestClien
     assert cloned.json()["definition"] == {"language": "de"}
 
 
+def test_duplicate_policies_are_validated_on_process_and_stream_drafts(
+    client: TestClient,
+) -> None:
+    make_org(client)
+    make_process(client)
+
+    for field in ("duplicate_policy", "business_duplicate_policy"):
+        refused = client.post(
+            "/orgs/northstar/processes/purchase-orders/versions",
+            json={"definition": {field: "silent-fallback"}},
+            headers=ADMIN,
+        )
+        assert refused.status_code == 422
+        assert field in refused.json()["error"]["message"]
+
+    draft = client.post(
+        "/orgs/northstar/processes/purchase-orders/versions",
+        json={"definition": {"duplicate_policy": "flag"}},
+        headers=ADMIN,
+    )
+    assert draft.status_code == 201, draft.text
+    refused_update = client.patch(
+        f"/orgs/northstar/processes/purchase-orders/versions/{draft.json()['id']}",
+        json={"definition": {"business_duplicate_policy": "silent-fallback"}},
+        headers=ADMIN,
+    )
+    assert refused_update.status_code == 422
+    assert "business_duplicate_policy" in refused_update.json()["error"]["message"]
+
+    assert (
+        client.post(
+            "/orgs/northstar/processes/purchase-orders/streams",
+            json={"name": "Email intake", "slug": "email"},
+            headers=ADMIN,
+        ).status_code
+        == 201
+    )
+    for field in ("duplicate_policy", "business_duplicate_policy"):
+        refused = client.post(
+            "/orgs/northstar/streams/email/versions",
+            json={"overrides": {field: "silent-fallback"}},
+            headers=ADMIN,
+        )
+        assert refused.status_code == 422
+        assert field in refused.json()["error"]["message"]
+
+
 def test_validate_and_publish_report_flow(client: TestClient) -> None:
     make_org(client)
     make_process(client)

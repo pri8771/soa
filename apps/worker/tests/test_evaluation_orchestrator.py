@@ -157,6 +157,7 @@ async def test_server_evaluation_executes_pinned_candidate_without_business_writ
             "schema_version_id": str(schema_id),
             "rule_set_version_id": str(rules_id),
             "provider_policy_version_id": str(policy_id),
+            "catalog_version_pins": [],
             "languages": ["en"],
             "input_contract": "single_sales_order",
         },

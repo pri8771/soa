@@ -977,6 +977,130 @@ export function cancelDocument(
   });
 }
 
+// --- Approval-gated document data deletion (SEC-010) ---
+
+export interface DocumentDeletionRequest {
+  id: string;
+  document_id: string;
+  state: "pending_approval" | "approved" | "running" | "failed" | "completed" | "cancelled";
+  reason: string;
+  requested_by: string;
+  requested_at: string;
+  approved_by: string | null;
+  approval_reason: string | null;
+  approved_at: string | null;
+  completed_at: string | null;
+  cancelled_by: string | null;
+  cancellation_reason: string | null;
+  cancelled_at: string | null;
+  safe_error: string | null;
+  version: number;
+}
+
+export interface DocumentDeletionRequests {
+  items: DocumentDeletionRequest[];
+}
+
+/** Request erasure. A different principal must approve before the durable
+ * worker can delete any object or row; legal holds remain an absolute veto. */
+export function requestDocumentDeletion(
+  organizationSlug: string,
+  documentId: string,
+  reason: string,
+): Promise<DocumentDeletionRequest> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/deletion-requests`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+/** Read the durable deletion lifecycle for one document. A missing lifecycle
+ * is normal for settled documents and is represented as null, not an error. */
+export async function fetchDocumentDeletionRequest(
+  organizationSlug: string,
+  documentId: string,
+): Promise<DocumentDeletionRequest | null> {
+  try {
+    return await apiFetch<DocumentDeletionRequest>(
+      `/orgs/${organizationSlug}/documents/${documentId}/deletion-request`,
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export function fetchDocumentDeletionRequests(
+  organizationSlug: string,
+  limit = 200,
+): Promise<DocumentDeletionRequests> {
+  return apiFetch(`/orgs/${organizationSlug}/deletion-requests?limit=${limit}`);
+}
+
+export function approveDocumentDeletion(
+  organizationSlug: string,
+  requestId: string,
+  reason: string,
+): Promise<DocumentDeletionRequest> {
+  return apiFetch(`/orgs/${organizationSlug}/deletion-requests/${requestId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function cancelDocumentDeletionRequest(
+  organizationSlug: string,
+  requestId: string,
+  reason: string,
+): Promise<DocumentDeletionRequest> {
+  return apiFetch(`/orgs/${organizationSlug}/deletion-requests/${requestId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export interface DocumentLegalHold {
+  id: string;
+  document_id: string;
+  state: "active" | "released";
+  reason: string;
+  placed_by: string;
+  placed_at: string;
+  released_by: string | null;
+  release_reason: string | null;
+  released_at: string | null;
+  version: number;
+}
+
+export function fetchDocumentLegalHolds(
+  organizationSlug: string,
+  documentId: string,
+): Promise<{ items: DocumentLegalHold[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/legal-holds`);
+}
+
+export function placeDocumentLegalHold(
+  organizationSlug: string,
+  documentId: string,
+  reason: string,
+): Promise<DocumentLegalHold> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/legal-holds`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function releaseDocumentLegalHold(
+  organizationSlug: string,
+  holdId: string,
+  reason: string,
+): Promise<DocumentLegalHold> {
+  return apiFetch(`/orgs/${organizationSlug}/legal-holds/${holdId}/release`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 // --- Document detail (ING-011/012) ---
 
 export interface DocumentArtifact {
@@ -1011,13 +1135,77 @@ export interface DocumentDetail {
     pinned_process_version_id?: string | null;
   };
   timeline: TimelineEntry[];
+  deletion_tombstone?: {
+    completed_at: string | null;
+    object_keys_deleted: number | null;
+    category_counts: Record<string, number>;
+  };
 }
 
-export function fetchDocumentDetail(
+function deletedDocumentTombstone(detail: DocumentDetail): DocumentDetail {
+  const completion = [...detail.timeline]
+    .reverse()
+    .find(
+      (entry) =>
+        entry.action === "document.deletion_completed" || entry.action === "document.data_deleted",
+    );
+  const explicitTombstone = detail.deletion_tombstone;
+  const rawCounts = explicitTombstone?.category_counts ?? completion?.summary["category_counts"];
+  const categoryCounts =
+    rawCounts && typeof rawCounts === "object" && !Array.isArray(rawCounts)
+      ? Object.fromEntries(
+          Object.entries(rawCounts).filter(
+            (entry): entry is [string, number] =>
+              typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0,
+          ),
+        )
+      : {};
+  const rawObjectCount =
+    explicitTombstone?.object_keys_deleted ?? completion?.summary["object_keys_deleted"];
+  const objectKeysDeleted =
+    typeof rawObjectCount === "number" && Number.isFinite(rawObjectCount) && rawObjectCount >= 0
+      ? rawObjectCount
+      : null;
+
+  // A deleted response can still carry retained document-shell and historical
+  // audit fields. Reduce it before it reaches React Query so the browser never
+  // caches filename, hash, stream, actor, reason, artifact, or timeline data.
+  return {
+    document: {
+      id: detail.document.id,
+      stream_id: "",
+      state: "deleted",
+      state_reason: "document data deleted",
+      source_channel: "",
+      original_filename: "[deleted]",
+      content_sha256: "",
+      size_bytes: 0,
+      content_type: "application/octet-stream",
+      client_reference: null,
+      priority: 0,
+      sla_due_at: null,
+      received_at: explicitTombstone?.completed_at ?? completion?.occurred_at ?? "",
+      duplicate_of: null,
+    },
+    artifacts: [],
+    context: { stream_id: "" },
+    timeline: [],
+    deletion_tombstone: {
+      completed_at: explicitTombstone?.completed_at ?? completion?.occurred_at ?? null,
+      object_keys_deleted: objectKeysDeleted,
+      category_counts: categoryCounts,
+    },
+  };
+}
+
+export async function fetchDocumentDetail(
   organizationSlug: string,
   documentId: string,
 ): Promise<DocumentDetail> {
-  return apiFetch<DocumentDetail>(`/orgs/${organizationSlug}/documents/${documentId}`);
+  const detail = await apiFetch<DocumentDetail>(
+    `/orgs/${organizationSlug}/documents/${documentId}`,
+  );
+  return detail.document.state === "deleted" ? deletedDocumentTombstone(detail) : detail;
 }
 
 export function requestArtifactDownload(

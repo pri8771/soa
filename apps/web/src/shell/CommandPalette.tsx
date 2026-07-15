@@ -13,7 +13,8 @@ import { useShellSession } from "./ShellContext";
 export function CommandPaletteTrigger({ onOpen }: { onOpen: () => void }) {
   return (
     <button type="button" className="soa-palette-trigger" onClick={onOpen}>
-      <span>Search or jump to…</span>
+      {/* The label hides at narrow widths (shell.css); the kbd hint stays. */}
+      <span className="soa-palette-trigger-label">Search or jump to…</span>
       <kbd className="soa-palette-kbd">Ctrl K</kbd>
     </button>
   );

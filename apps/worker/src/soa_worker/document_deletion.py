@@ -7,10 +7,13 @@ from soa_db.advisory import transaction_advisory_lock
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.data_deletion import DeletionBlockedError, delete_document_data
 from soa_db.deletion_requests import (
+    DELETION_SETTLED_STATES,
+    DOCUMENT_DELETION_LIFECYCLE_LOCK,
     DeletionRequestRepository,
     DeletionRequestState,
     LegalHoldRepository,
 )
+from soa_db.documents import DocumentRepository
 from soa_db.repository import OrganizationContext
 from soa_db.retention import DeletionState
 from soa_db.tenant_guard import bind_tenant
@@ -43,7 +46,10 @@ async def execute_document_deletion(
         if candidate is None:
             raise ValueError("document deletion request does not exist")
         await transaction_advisory_lock(
-            session, "document-deletion-lifecycle", organization_id, candidate.document_id
+            session,
+            DOCUMENT_DELETION_LIFECYCLE_LOCK,
+            organization_id,
+            candidate.document_id,
         )
         request = await repository.get(deletion_request_id, for_update=True)
         if request is None:
@@ -71,6 +77,18 @@ async def execute_document_deletion(
             request.approved_at = None
             request.safe_error = "approval cleared because an active legal hold blocks deletion"
             return request.state
+        document = await DocumentRepository(session, context).get(
+            request.document_id, for_update=True
+        )
+        if document is None or document.state not in DELETION_SETTLED_STATES:
+            request.state = DeletionRequestState.PENDING_APPROVAL.value
+            request.approved_by = None
+            request.approval_reason = None
+            request.approved_at = None
+            request.safe_error = (
+                "approval cleared because the document is no longer in a settled terminal state"
+            )
+            return request.state
         request.state = DeletionRequestState.RUNNING.value
         request.safe_error = None
         await record_audit_event(
@@ -92,7 +110,10 @@ async def execute_document_deletion(
             if candidate is None:
                 raise ValueError("document deletion request disappeared")
             await transaction_advisory_lock(
-                session, "document-deletion-lifecycle", organization_id, candidate.document_id
+                session,
+                DOCUMENT_DELETION_LIFECYCLE_LOCK,
+                organization_id,
+                candidate.document_id,
             )
             request = await repository.get(deletion_request_id, for_update=True)
             if request is None:
@@ -144,7 +165,10 @@ async def execute_document_deletion(
             if candidate is None:
                 raise
             await transaction_advisory_lock(
-                session, "document-deletion-lifecycle", organization_id, candidate.document_id
+                session,
+                DOCUMENT_DELETION_LIFECYCLE_LOCK,
+                organization_id,
+                candidate.document_id,
             )
             failed = await repository.get(deletion_request_id, for_update=True)
             if failed is not None and failed.state == DeletionRequestState.RUNNING.value:

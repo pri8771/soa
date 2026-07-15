@@ -26,9 +26,11 @@ from soa_api.domain.policies import (
 )
 from soa_api.domain.processes import (
     Process,
+    ProcessDefinitionError,
     ProcessVersion,
     publish_draft,
     set_active_version,
+    validate_process_definition,
 )
 from soa_api.domain.rules import RuleExpressionError, RuleSetVersionRepository, validate_rule_set
 from soa_api.domain.schemas import (
@@ -88,6 +90,17 @@ async def validate_process_draft(
     their own.
     """
     findings: list[ValidationFinding] = []
+
+    try:
+        validate_process_definition(draft.definition)
+    except ProcessDefinitionError as exc:
+        findings.append(
+            ValidationFinding(
+                level="error",
+                path=exc.field,
+                message=str(exc),
+            )
+        )
 
     input_contract = draft.definition.get("input_contract", "single_sales_order")
     if input_contract != "single_sales_order":

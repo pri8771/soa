@@ -4,17 +4,25 @@ a silent second delivery."""
 
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from soa_api.app import create_app
+from soa_api.domain.streams import StreamVersionRepository
+from soa_api.services import duplicates as duplicate_service
+from soa_api.services import ingestion as ingestion_service
+from soa_api.services.revalidation import load_revalidation_config, revalidate_run
+from soa_api.services.runtime_pins import resolve_runtime_pins
 from soa_api.settings import ApiSettings, Environment
 from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
 from soa_db.documents import Document
+from soa_db.repository import OrganizationContext
+from soa_db.runs import start_run
 from soa_storage import MemoryObjectStore, sha256_hex
 
 ADMIN = {"X-Dev-User": "user:reviewer"}
@@ -35,7 +43,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions, MemoryO
 
 async def seed_stream(
     client: TestClient, db: DatabaseSessions, *, duplicate_policy: str = "flag"
-) -> None:
+) -> uuid.UUID:
     for path, body in (
         ("/organizations", {"name": "Northstar", "slug": "northstar"}),
         ("/orgs/northstar/processes", {"name": "POs", "slug": "purchase-orders"}),
@@ -45,7 +53,7 @@ async def seed_stream(
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
-    await publish_runtime_config(
+    return await publish_runtime_config(
         client, db, stream_overrides={"duplicate_policy": duplicate_policy}
     )
 
@@ -168,3 +176,225 @@ async def test_interleaved_concurrent_sessions_detect_each_other(
             str(d.id): d for d in (await session.execute(select(Document))).scalars().all()
         }
         assert documents[second["document_id"]].duplicate_of == uuid.UUID(first["document_id"])
+
+
+async def test_exact_duplicate_fence_uses_tenant_stream_and_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    advisory_lock = AsyncMock()
+    monkeypatch.setattr(duplicate_service, "transaction_advisory_lock", advisory_lock)
+    session = AsyncMock()
+    organization_id = uuid.uuid4()
+    stream_id = uuid.uuid4()
+    content_sha256 = "a" * 64
+    context = OrganizationContext(organization_id=organization_id)
+
+    await duplicate_service.lock_exact_duplicate_intake(
+        session,
+        context,
+        stream_id=stream_id,
+        content_sha256=content_sha256,
+    )
+
+    advisory_lock.assert_awaited_once_with(
+        session,
+        "document-exact-duplicate-intake",
+        organization_id,
+        stream_id,
+        content_sha256,
+    )
+
+
+async def test_shared_intake_wires_the_exact_duplicate_fence(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db, store = harness
+    fence = AsyncMock()
+    monkeypatch.setattr(ingestion_service, "lock_exact_duplicate_intake", fence)
+    await seed_stream(client, db)
+
+    completed = await finish(
+        client,
+        store,
+        open_session(client, data=PDF_A, filename="fenced.pdf"),
+        PDF_A,
+    )
+
+    fence.assert_awaited_once()
+    _, fenced_context = fence.await_args.args
+    async with db.session_scope() as session:
+        document = (
+            await session.execute(
+                select(Document).where(Document.id == uuid.UUID(completed["document_id"]))
+            )
+        ).scalar_one()
+    assert fenced_context.organization_id == document.organization_id
+    assert fence.await_args.kwargs == {
+        "stream_id": document.stream_id,
+        "content_sha256": sha256_hex(PDF_A),
+    }
+
+
+async def _validation_rule_keys(
+    db: DatabaseSessions,
+    document_id: str,
+    stream_version_id: uuid.UUID,
+) -> set[str | None]:
+    """The rule keys validation raises for the document (via the REV-009
+    revalidation path, which shares the worker's duplicate gate)."""
+    async with db.session_scope() as session:
+        document = (
+            await session.execute(select(Document).where(Document.id == uuid.UUID(document_id)))
+        ).scalar_one()
+        context = OrganizationContext(organization_id=document.organization_id)
+        version = await StreamVersionRepository(session, context).get(stream_version_id)
+        assert version is not None and isinstance(version.resolved_snapshot, dict)
+        pins = await resolve_runtime_pins(
+            session,
+            context,
+            stream_version_id=stream_version_id,
+        )
+        run = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256=document.content_sha256,
+            stream_version_id=stream_version_id,
+            config_fingerprint=pins.config_fingerprint,
+            instruction_version_id=pins.instruction_version_id,
+            confidence_policy_version_id=pins.confidence_policy_version_id,
+            provider_policy_version_id=pins.provider_policy_version_id,
+            provider_credential_ref=pins.provider_credential_ref,
+            execution_fingerprint=pins.execution_fingerprint,
+            triggered_by="test:duplicate-revalidation",
+        )
+        result = await revalidate_run(
+            session,
+            context,
+            document=document,
+            run_id=run.id,
+        )
+        return {reason.get("rule_key") for reason in result["decision"]["reasons"]}
+
+
+async def test_allow_policy_is_processing_transparent_but_never_silent(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    stream_version_id = await seed_stream(client, db, duplicate_policy="allow")
+    first = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    second = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    assert second["state"] == "queued"
+
+    async with db.session_scope() as session:
+        # Never silent: the marker and the audit event survive the policy.
+        document = (
+            await session.execute(
+                select(Document).where(Document.id == uuid.UUID(second["document_id"]))
+            )
+        ).scalar_one()
+        assert document.duplicate_of == uuid.UUID(first["document_id"])
+        events = (
+            (
+                await session.execute(
+                    select(AuditEvent).where(AuditEvent.action == "document.duplicate_detected")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
+    # Processing-transparent: validation raises no review-routing reason
+    # from duplicates.business_hook under 'allow'.
+    assert "duplicates.business_hook" not in await _validation_rule_keys(
+        db, second["document_id"], stream_version_id
+    )
+
+
+async def test_revalidation_uses_the_runs_pinned_duplicate_policy(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    allow_version_id = await seed_stream(client, db, duplicate_policy="allow")
+    await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    duplicate = await finish(
+        client,
+        store,
+        open_session(client, data=PDF_A, filename="again.pdf"),
+        PDF_A,
+    )
+
+    # Publishing a newer active version must not alter revalidation of a run
+    # already pinned to the earlier allow policy.
+    await publish_runtime_config(client, db, stream_overrides={"duplicate_policy": "flag"})
+    assert "duplicates.business_hook" not in await _validation_rule_keys(
+        db,
+        duplicate["document_id"],
+        allow_version_id,
+    )
+
+
+async def test_revalidation_resolves_the_complete_pinned_contract(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    stream_version_id = await seed_stream(client, db, duplicate_policy="allow")
+    uploaded = await finish(
+        client,
+        store,
+        open_session(client, data=PDF_A, filename="contract.pdf"),
+        PDF_A,
+    )
+
+    async with db.session_scope() as session:
+        document = (
+            await session.execute(
+                select(Document).where(Document.id == uuid.UUID(uploaded["document_id"]))
+            )
+        ).scalar_one()
+        context = OrganizationContext(organization_id=document.organization_id)
+        pins = await resolve_runtime_pins(
+            session,
+            context,
+            stream_version_id=stream_version_id,
+        )
+        run = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256=document.content_sha256,
+            stream_version_id=stream_version_id,
+            config_fingerprint=pins.config_fingerprint,
+            instruction_version_id=pins.instruction_version_id,
+            confidence_policy_version_id=pins.confidence_policy_version_id,
+            provider_policy_version_id=pins.provider_policy_version_id,
+            provider_credential_ref=pins.provider_credential_ref,
+            execution_fingerprint=pins.execution_fingerprint,
+            triggered_by="test:complete-revalidation-contract",
+        )
+        config = await load_revalidation_config(
+            session,
+            context,
+            document=document,
+            run_id=run.id,
+        )
+
+        assert [rule["key"] for rule in config.rules] == ["required.po_number"]
+        assert config.field_types == {"po_number": "text"}
+        assert config.normalizer_for("po_number") == "identifier"
+        assert config.confidence_policy.standard_min_confidence == 0.86
+        assert config.confidence_policy.field_min_confidence["po_number"] == 0.99
+        assert config.stream_config["duplicate_policy"] == "allow"
+
+
+async def test_flag_policy_surfaces_the_duplicate_to_validation(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    stream_version_id = await seed_stream(client, db)
+    await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    second = await finish(client, store, open_session(client, data=PDF_A, filename="a.pdf"), PDF_A)
+    assert "duplicates.business_hook" in await _validation_rule_keys(
+        db, second["document_id"], stream_version_id
+    )

@@ -19,6 +19,7 @@ from soa_api.services.duplicates import (
     DuplicatePolicy,
     find_exact_duplicate,
     get_duplicate_policy,
+    lock_exact_duplicate_intake,
     mark_duplicate,
 )
 from soa_api.services.file_inspection import InspectionResult, InspectionVerdict, inspect_file
@@ -95,6 +96,15 @@ async def finalize_document_intake(
     unit of work by construction. Callers must evaluate the bytes before
     opening the registration transaction.
     """
+    # PostgreSQL holds this transaction-scoped fence through the caller's
+    # commit. Acquiring it before any registration work guarantees that the
+    # later duplicate lookup sees a concurrent winner in this tenant/stream.
+    await lock_exact_duplicate_intake(
+        session,
+        context,
+        stream_id=declaration.stream_id,
+        content_sha256=declaration.sha256,
+    )
     pins = await resolve_runtime_pins(
         session,
         context,

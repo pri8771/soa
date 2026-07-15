@@ -25,6 +25,12 @@ from soa_config import (
     SecretStoreError,
     SecretStoreUnavailableError,
 )
+from soa_db.catalogs import (
+    CATALOG_VERSION_PINS_KEY,
+    CatalogError,
+    parse_catalog_version_pins,
+    validate_catalog_version_pins,
+)
 from soa_db.documents import Document
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRun, StageRun
@@ -524,6 +530,17 @@ async def load_resolved_run_config(
     """Resolve the pinned control-plane versions into one runtime value."""
     effective_snapshot = dict(snapshot or await verify_run_config(session, context, run))
     config = _json_object(effective_snapshot.get("config"))
+    if CATALOG_VERSION_PINS_KEY not in config:
+        raise RunConfigError(
+            "the pinned stream snapshot predates immutable catalog pins; republish it"
+        )
+    try:
+        catalog_version_pins = parse_catalog_version_pins(config[CATALOG_VERSION_PINS_KEY])
+        if catalog_version_pins is None:
+            raise CatalogError("catalog version pins cannot be null")
+        await validate_catalog_version_pins(session, context, catalog_version_pins)
+    except CatalogError as error:
+        raise RunConfigError(f"the pinned catalog contract is invalid: {error}") from error
     schema, _schema_version = await _version_definition(
         session,
         context,

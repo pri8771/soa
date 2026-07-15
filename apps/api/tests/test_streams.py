@@ -15,6 +15,7 @@ from soa_api.domain.processes import (
     publish_draft,
 )
 from soa_api.domain.streams import (
+    StreamOverrideError,
     StreamRepository,
     StreamVersionRepository,
     create_stream,
@@ -95,6 +96,32 @@ async def test_overrides_win_and_inherited_values_flow_through(db: DatabaseSessi
         assert len(snapshot["fingerprint"]) == 64
         # Only explicit overrides are stored on the version itself.
         assert published.overrides == {"confidence_floor": 0.95}
+
+
+@pytest.mark.parametrize("field", ["duplicate_policy", "business_duplicate_policy"])
+async def test_publish_revalidates_legacy_invalid_stream_overrides(
+    db: DatabaseSessions,
+    field: str,
+) -> None:
+    process_id, process_version_id = await seed_process(db)
+    async with db.session_scope() as session:
+        _, process_version = await load(db, session, process_id, process_version_id)
+        stream = await create_stream(
+            session, ORG_A, process_id=process_id, name="Email", slug="email", actor_id=ACTOR
+        )
+        draft = await create_stream_draft(session, ORG_A, stream=stream, actor_id=ACTOR)
+        # Simulate a draft persisted before strict write validation existed.
+        draft.overrides = {field: "silent-fallback"}
+        with pytest.raises(StreamOverrideError, match=field):
+            await publish_stream_draft(
+                session,
+                ORG_A,
+                stream=stream,
+                draft=draft,
+                process_version=process_version,
+                actor_id=ACTOR,
+            )
+        assert draft.state == VersionState.DRAFT
 
 
 async def test_snapshot_is_isolated_from_later_process_edits(db: DatabaseSessions) -> None:

@@ -15,6 +15,7 @@ from soa_db.catalogs import (
     CatalogBindingMode,
     CatalogBindingRepository,
     CatalogError,
+    CatalogRecord,
     CatalogRecordRepository,
     CatalogVersion,
     CatalogVersionRepository,
@@ -172,6 +173,83 @@ class TestActivation:
             assert catalog is not None and first is not None
             assert catalog.active_version_id == second_id
             assert first.state == "superseded"
+
+    async def test_published_catalog_records_reject_direct_inserts_updates_and_deletes(
+        self, db: DatabaseSessions
+    ) -> None:
+        catalog_id, version_id = await make_catalog_with_draft(db)
+        await add_widget(db, version_id)
+        async with db.session_scope() as session:
+            catalog = await session.get(Catalog, catalog_id)
+            version = await session.get(CatalogVersion, version_id)
+            assert catalog is not None and version is not None
+            await activate_catalog_version(
+                session, CONTEXT, catalog=catalog, version=version, actor_id="user:u-1"
+            )
+
+        with pytest.raises(ImmutableVersionError):
+            async with db.session_scope() as session:
+                session.add(
+                    CatalogRecord(
+                        organization_id=ORG,
+                        catalog_version_id=version_id,
+                        source_id="SKU-LATE",
+                        display_name="Late direct insert",
+                    )
+                )
+                await session.flush()
+
+        with pytest.raises(ImmutableVersionError):
+            async with db.session_scope() as session:
+                (record,) = await CatalogRecordRepository(session, CONTEXT).list_for_version(
+                    version_id
+                )
+                record.display_name = "History rewritten"
+                await session.flush()
+
+        with pytest.raises(ImmutableVersionError):
+            async with db.session_scope() as session:
+                (record,) = await CatalogRecordRepository(session, CONTEXT).list_for_version(
+                    version_id
+                )
+                await session.delete(record)
+                await session.flush()
+
+    async def test_published_catalog_record_cannot_be_reparented_to_a_draft(
+        self, db: DatabaseSessions
+    ) -> None:
+        catalog_id, published_id = await make_catalog_with_draft(db)
+        await add_widget(db, published_id)
+        async with db.session_scope() as session:
+            catalog = await session.get(Catalog, catalog_id)
+            published = await session.get(CatalogVersion, published_id)
+            assert catalog is not None and published is not None
+            await activate_catalog_version(
+                session,
+                CONTEXT,
+                catalog=catalog,
+                version=published,
+                actor_id="user:u-1",
+            )
+
+        with pytest.raises(ImmutableVersionError):
+            async with db.session_scope() as session:
+                catalog = await session.get(Catalog, catalog_id)
+                assert catalog is not None
+                draft = await create_catalog_version(
+                    session, CONTEXT, catalog=catalog, actor_id="user:u-1"
+                )
+                (record,) = await CatalogRecordRepository(session, CONTEXT).list_for_version(
+                    published_id
+                )
+                record.catalog_version_id = draft.id
+                await session.flush()
+
+        async with db.session_scope() as session:
+            assert (
+                len(await CatalogRecordRepository(session, CONTEXT).list_for_version(published_id))
+                == 1
+            )
 
 
 class TestBindings:

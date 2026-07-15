@@ -15,6 +15,8 @@ import { PermissionDenied } from "../auth/PermissionDenied";
 import { DevConsole } from "../components/dev/DevConsole";
 import { ShellSessionProvider, type ShellSession } from "../shell/ShellContext";
 
+const SESSION_REFRESH_MS = 60_000;
+
 function CenteredState({ children }: { children: React.ReactNode }) {
   return (
     <main style={{ maxWidth: "32rem", margin: "8vh auto", padding: "0 var(--soa-space-6)" }}>
@@ -65,6 +67,12 @@ export function AppLayout() {
     queryKey: ["me"],
     queryFn: fetchMe,
     staleTime: 30_000,
+    // Authorization context is small and security-sensitive. Always refresh
+    // it on focus (even inside staleTime), and periodically while this tab is
+    // active so membership suspension or permission reduction is bounded
+    // without making every feature query revalidate the session itself.
+    refetchOnWindowFocus: "always",
+    refetchInterval: SESSION_REFRESH_MS,
   });
 
   if (status === "pending") {
@@ -158,7 +166,12 @@ export function AppLayout() {
     <ShellSessionProvider key={membership.organization_id} session={session}>
       {denied ? <PermissionDenied requiredPermission={requiredPermission} /> : <Outlet />}
       {import.meta.env.MODE === "development" && session.permissions.has("jobs.read") && (
-        <DevConsole organizationSlug={membership.organization_slug} />
+        <>
+          {/* The console is position:fixed; the spacer keeps its bar from
+              occluding the bottom of the page content. */}
+          <div aria-hidden="true" style={{ height: 32 }} />
+          <DevConsole organizationSlug={membership.organization_slug} />
+        </>
       )}
     </ShellSessionProvider>
   );

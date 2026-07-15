@@ -79,5 +79,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     exclude: ["e2e/**", "node_modules/**"],
+    // Full-router jsdom suites are memory/CPU heavy. Vitest otherwise uses
+    // every reported core (18 on the release-gate host), starving async
+    // renders until their normal 1s/5s assertions expire.
+    maxWorkers: 4,
   },
 });

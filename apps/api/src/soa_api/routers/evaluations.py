@@ -13,6 +13,7 @@ from soa_api.domain.processes import ProcessRepository, ProcessVersionRepository
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository, resolve_snapshot
 from soa_api.services.runtime_pins import RuntimePinError, resolve_evaluation_runtime_pins
 from soa_db.artifacts import ArtifactKind, ArtifactRepository
+from soa_db.catalogs import CatalogError, materialize_catalog_version_pins
 from soa_db.documents import DocumentRepository
 from soa_db.evaluation_runs import (
     CALLER_SUBMITTED_EVIDENCE_SOURCE,
@@ -143,7 +144,22 @@ async def create_evaluation(
                     "server-executed evidence."
                 ),
             )
-    snapshot = resolve_snapshot(process_version, candidate.overrides)
+    try:
+        catalog_version_pins = await materialize_catalog_version_pins(
+            session,
+            context,
+            stream_id=stream.id,
+        )
+    except CatalogError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Candidate catalog bindings are invalid: {error}",
+        ) from None
+    snapshot = resolve_snapshot(
+        process_version,
+        candidate.overrides,
+        catalog_version_pins=catalog_version_pins,
+    )
     runtime_pins: dict[str, Any] | None = None
     execution_fingerprint: str | None = None
     if body.execution_mode is EvaluationExecutionMode.SERVER:

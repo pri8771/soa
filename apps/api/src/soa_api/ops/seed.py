@@ -341,11 +341,15 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
                     "organization_id": context.organization_id,
                     "catalog_id": catalog.id,
                     "version_number": 1,
-                    "state": VersionState.PUBLISHED.value,
+                    # Populate the immutable record set while the version is
+                    # still a draft. Publishing first would make the seed
+                    # itself violate the same history guarantee enforced for
+                    # every other catalog writer.
+                    "state": VersionState.DRAFT.value,
                     "record_count": len(fixture.data["records"]),
                     "change_summary": "Deterministic development seed",
-                    "published_at": now,
-                    "published_by": ACTOR,
+                    "published_at": None,
+                    "published_by": None,
                 },
                 created,
                 existing,
@@ -367,6 +371,11 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
                     created,
                     existing,
                 )
+            if version.state == VersionState.DRAFT.value:
+                version.state = VersionState.PUBLISHED.value
+                version.published_at = now
+                version.published_by = ACTOR
+                await session.flush()
 
         primary_stream = streams[0]
         for fixture in tenant.documents:

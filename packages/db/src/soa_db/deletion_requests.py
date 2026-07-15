@@ -24,6 +24,7 @@ from soa_db.repository import OrganizationContext, OrganizationScopedMixin, Scop
 from soa_db.types import GUID, UTCDateTime, utcnow
 
 DOCUMENT_DELETION_JOB_TYPE = "document.delete"
+DOCUMENT_DELETION_LIFECYCLE_LOCK = "document-deletion-lifecycle"
 
 DELETION_SETTLED_STATES = frozenset(
     {
@@ -171,21 +172,25 @@ async def request_document_deletion(
     if len(normalized) < 3 or len(normalized) > 500:
         raise DeletionLifecycleError("deletion reason must be 3-500 characters")
     await transaction_advisory_lock(
-        session, "document-deletion-lifecycle", context.organization_id, document_id
+        session, DOCUMENT_DELETION_LIFECYCLE_LOCK, context.organization_id, document_id
     )
     document = await DocumentRepository(session, context).get(document_id, for_update=True)
     if document is None:
         raise DeletionLifecycleError("document does not exist")
+    repo = DeletionRequestRepository(session, context)
+    existing = await repo.get_for_document(document_id, for_update=True)
+    if existing is not None and existing.state != DeletionRequestState.CANCELLED.value:
+        # Idempotent even after the completed worker has reduced the document
+        # shell to the terminal ``deleted`` state.
+        return existing
+    if document.state == DocumentState.DELETED.value:
+        raise DeletionLifecycleError("document data has already been deleted")
     if document.state not in DELETION_SETTLED_STATES:
         raise DeletionLifecycleError(
             "document deletion requires a settled terminal state; "
             f"the document is {document.state!r}"
         )
-    repo = DeletionRequestRepository(session, context)
-    existing = await repo.get_for_document(document_id, for_update=True)
     if existing is not None:
-        if existing.state != DeletionRequestState.CANCELLED.value:
-            return existing
         existing.state = DeletionRequestState.PENDING_APPROVAL.value
         existing.reason = normalized
         existing.requested_by = actor_id
@@ -236,7 +241,7 @@ async def cancel_document_deletion(
         raise DeletionLifecycleError("cancellation reason must be 3-500 characters")
     await transaction_advisory_lock(
         session,
-        "document-deletion-lifecycle",
+        DOCUMENT_DELETION_LIFECYCLE_LOCK,
         context.organization_id,
         request.document_id,
     )
@@ -284,7 +289,7 @@ async def approve_document_deletion(
         raise DeletionLifecycleError("approval reason must be 3-500 characters")
     await transaction_advisory_lock(
         session,
-        "document-deletion-lifecycle",
+        DOCUMENT_DELETION_LIFECYCLE_LOCK,
         context.organization_id,
         request.document_id,
     )
@@ -343,10 +348,18 @@ async def place_legal_hold(
     if len(normalized) < 3 or len(normalized) > 500:
         raise DeletionLifecycleError("legal-hold reason must be 3-500 characters")
     await transaction_advisory_lock(
-        session, "document-deletion-lifecycle", context.organization_id, document_id
+        session, DOCUMENT_DELETION_LIFECYCLE_LOCK, context.organization_id, document_id
     )
-    if await DocumentRepository(session, context).get(document_id, for_update=True) is None:
+    document = await DocumentRepository(session, context).get(document_id, for_update=True)
+    if document is None:
         raise DeletionLifecycleError("document does not exist")
+    if document.state == DocumentState.DELETED.value:
+        raise DeletionLifecycleError("deleted document data cannot be placed on legal hold")
+    request = await DeletionRequestRepository(session, context).get_for_document(
+        document_id, for_update=True
+    )
+    if request is not None and request.state == DeletionRequestState.COMPLETED.value:
+        raise DeletionLifecycleError("completed document deletion cannot be placed on legal hold")
     repo = LegalHoldRepository(session, context)
     existing = await repo.active_for_document(document_id, for_update=True)
     if existing is not None:
@@ -355,12 +368,10 @@ async def place_legal_hold(
     await session.flush()
     # A hold placed before execution revokes an approval. Re-approval after
     # release is explicit; the old queue delivery then becomes a safe no-op.
-    request = await DeletionRequestRepository(session, context).get_for_document(
-        document_id, for_update=True
-    )
     if request is not None and request.state in (
         DeletionRequestState.PENDING_APPROVAL.value,
         DeletionRequestState.APPROVED.value,
+        DeletionRequestState.RUNNING.value,
         DeletionRequestState.FAILED.value,
     ):
         request.state = DeletionRequestState.PENDING_APPROVAL.value
@@ -394,7 +405,7 @@ async def release_legal_hold(
         raise DeletionLifecycleError("release reason must be 3-500 characters")
     await transaction_advisory_lock(
         session,
-        "document-deletion-lifecycle",
+        DOCUMENT_DELETION_LIFECYCLE_LOCK,
         context.organization_id,
         hold.document_id,
     )
@@ -423,7 +434,9 @@ async def release_legal_hold(
 
 
 __all__ = [
+    "DELETION_SETTLED_STATES",
     "DOCUMENT_DELETION_JOB_TYPE",
+    "DOCUMENT_DELETION_LIFECYCLE_LOCK",
     "DeletionLifecycleError",
     "DeletionRequest",
     "DeletionRequestRepository",

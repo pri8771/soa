@@ -156,6 +156,7 @@ class ValidationFinding:
         the existing review flow unchanged."""
         return {
             "code": self.code,
+            "severity": self.severity,
             "message": self.message,
             "field_key": self.field_key,
             "row_index": self.row_index,

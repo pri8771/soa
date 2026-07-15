@@ -166,7 +166,7 @@ def test_retryable_failure_reenters_the_queue() -> None:
     # document sent back from review.
     assert DocumentState.QUEUED in ALLOWED_TRANSITIONS[DocumentState.FAILED_TERMINAL]
     assert DocumentState.QUEUED in ALLOWED_TRANSITIONS[DocumentState.REVIEW_REQUIRED]
-    # Business commitments and the true terminal state never resume.
+    # Business commitments and the true terminal states never resume.
     for settled in (
         DocumentState.COMPLETED,
         DocumentState.REJECTED,
@@ -174,7 +174,27 @@ def test_retryable_failure_reenters_the_queue() -> None:
         DocumentState.QUARANTINED,
     ):
         assert DocumentState.QUEUED not in ALLOWED_TRANSITIONS.get(settled, frozenset())
-    assert ALLOWED_TRANSITIONS.get(DocumentState.ARCHIVED, frozenset()) == frozenset()
+    # Archived can still be deleted (SEC-010) — nothing else.
+    assert ALLOWED_TRANSITIONS.get(DocumentState.ARCHIVED, frozenset()) == frozenset(
+        {DocumentState.DELETED}
+    )
+    for settled in (
+        DocumentState.COMPLETED,
+        DocumentState.REJECTED,
+        DocumentState.CANCELLED,
+        DocumentState.FAILED_TERMINAL,
+        DocumentState.QUARANTINED,
+        DocumentState.ARCHIVED,
+    ):
+        assert DocumentState.DELETED in ALLOWED_TRANSITIONS[settled]
+    for resumable in (
+        DocumentState.REVIEW_REQUIRED,
+        DocumentState.APPROVED,
+        DocumentState.FAILED_RETRYABLE,
+    ):
+        assert DocumentState.DELETED not in ALLOWED_TRANSITIONS.get(resumable, frozenset())
+    # Deleted is the end of the line: the data is gone.
+    assert ALLOWED_TRANSITIONS.get(DocumentState.DELETED, frozenset()) == frozenset()
 
 
 async def test_client_reference_idempotency_is_scoped(db: DatabaseSessions) -> None:

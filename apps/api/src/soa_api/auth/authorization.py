@@ -11,6 +11,7 @@ handlers cannot accidentally query tenant data without passing the checks:
 4. Resource ownership: ``verify_owned`` re-checks any loaded entity.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -75,9 +76,31 @@ class AuthorizationService:
         organization_slug: str,
         required_permission: str,
     ) -> AuthorizedContext:
-        # Fail closed on unregistered permissions BEFORE touching data.
-        if required_permission not in PERMISSION_REGISTRY:
-            raise UnknownPermissionError(required_permission)
+        return await self.authorize_any(
+            principal,
+            organization_slug=organization_slug,
+            required_permissions=(required_permission,),
+        )
+
+    async def authorize_any(
+        self,
+        principal: Principal,
+        *,
+        organization_slug: str,
+        required_permissions: Iterable[str],
+    ) -> AuthorizedContext:
+        """Authorize when the member holds at least one declared permission.
+
+        Every candidate is validated before any tenant data is read, preserving
+        the same fail-closed behavior as :meth:`authorize`.
+        """
+
+        required = frozenset(required_permissions)
+        if not required:
+            raise ValueError("authorization requires at least one permission")
+        unknown = sorted(required - PERMISSION_REGISTRY)
+        if unknown:
+            raise UnknownPermissionError(unknown[0])
 
         organization = await OrganizationRepository(self._session).get_by_slug(organization_slug)
         if organization is None:
@@ -105,7 +128,7 @@ class AuthorizationService:
 
         await bind_tenant(self._session, organization.id)
         permissions = await permissions_for_membership(self._session, context, membership.id)
-        if required_permission not in permissions:
+        if permissions.isdisjoint(required):
             raise AuthorizationDeniedError(DenyReason.PERMISSION_MISSING)
 
         return AuthorizedContext(

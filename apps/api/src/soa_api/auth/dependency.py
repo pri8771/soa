@@ -98,3 +98,35 @@ def require_permission(
         return authorized
 
     return dependency
+
+
+def require_any_permission(
+    *permissions: str,
+) -> Callable[..., Awaitable[AuthorizedContext]]:
+    """Require at least one permission while resolving tenant context once."""
+
+    required = tuple(dict.fromkeys(permissions))
+    if not required:
+        raise ValueError("require_any_permission needs at least one permission")
+
+    async def dependency(
+        organization_slug: str,
+        principal: CurrentPrincipal,
+        session: DbSession,
+    ) -> AuthorizedContext:
+        service = AuthorizationService(session)
+        try:
+            authorized = await service.authorize_any(
+                principal,
+                organization_slug=organization_slug,
+                required_permissions=required,
+            )
+        except AuthorizationDeniedError as exc:
+            raise HTTPException(
+                status_code=_DENY_STATUS[exc.reason],
+                detail=str(exc),
+            ) from None
+        await bind_tenant(session, authorized.organization.id)
+        return authorized
+
+    return dependency

@@ -79,7 +79,9 @@ export function CatalogCandidatePicker({
       data-catalog-picker
       style={{ display: "grid", gap: "var(--soa-space-3)" }}
     >
-      <div style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "end" }}>
+      <div
+        style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "end", flexWrap: "wrap" }}
+      >
         <TextField label={`Search catalog for ${fieldLabel}`} value={query} onChange={setQuery} />
         <Button size="sm" variant="secondary" onPress={() => void search()}>
           Search catalog

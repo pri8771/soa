@@ -22,6 +22,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 
 import { cancelJob, fetchJobs, fetchJobStats, replayJob, type JobSummary } from "../api/client";
+import { liveQueryOptions, QUEUE_POLL_MS } from "../app/liveQuery";
 import { DataTable } from "../components/table/DataTable";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -140,7 +141,7 @@ export function JobsQueue() {
   const stats = useQuery({
     queryKey: ["jobs-stats", slug],
     queryFn: () => fetchJobStats(slug),
-    refetchInterval: 30_000,
+    ...liveQueryOptions(QUEUE_POLL_MS),
   });
   const jobs = useInfiniteQuery({
     queryKey: ["jobs", slug, statusFilter],
@@ -151,7 +152,7 @@ export function JobsQueue() {
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : null),
-    refetchInterval: 30_000,
+    ...liveQueryOptions(QUEUE_POLL_MS),
   });
   const jobItems = jobs.data?.pages.flatMap((page) => page.items) ?? [];
 

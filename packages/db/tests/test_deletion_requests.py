@@ -18,9 +18,16 @@ from soa_db.deletion_requests import (
     release_legal_hold,
     request_document_deletion,
 )
-from soa_db.documents import DocumentState, SourceChannel, create_document, transition_document
+from soa_db.documents import (
+    DocumentRepository,
+    DocumentState,
+    SourceChannel,
+    create_document,
+    transition_document,
+)
 from soa_db.jobs import Job
 from soa_db.repository import OrganizationContext
+from soa_db.types import utcnow
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 CONTEXT = OrganizationContext(organization_id=ORG)
@@ -222,3 +229,71 @@ async def test_cancelled_request_can_be_reopened_without_competing_rows(
         assert reopened.state == DeletionRequestState.PENDING_APPROVAL.value
         assert reopened.reason == "corrected verified request"
         assert reopened.cancelled_at is None
+
+
+async def test_completed_request_is_idempotent_after_document_is_deleted(
+    db: DatabaseSessions,
+) -> None:
+    document_id = await _settled_document(db)
+    async with db.session_scope() as session:
+        request = await request_document_deletion(
+            session,
+            CONTEXT,
+            document_id=document_id,
+            reason="verified erasure request",
+            actor_id="user:requester",
+        )
+        request.state = DeletionRequestState.COMPLETED.value
+        request.completed_at = utcnow()
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        await transition_document(
+            session,
+            CONTEXT,
+            document=document,
+            to_state=DocumentState.DELETED,
+            reason="document data deleted",
+            actor_id="worker:deletion",
+        )
+
+        repeated = await request_document_deletion(
+            session,
+            CONTEXT,
+            document_id=document_id,
+            reason="redelivered verified request",
+            actor_id="user:requester",
+        )
+        assert repeated.id == request.id
+        assert repeated.state == DeletionRequestState.COMPLETED.value
+        with pytest.raises(DeletionLifecycleError, match="deleted"):
+            await place_legal_hold(
+                session,
+                CONTEXT,
+                document_id=document_id,
+                reason="late preservation notice",
+                actor_id="user:counsel",
+            )
+
+
+async def test_completed_request_rejects_late_hold_even_if_legacy_shell_is_not_deleted(
+    db: DatabaseSessions,
+) -> None:
+    document_id = await _settled_document(db)
+    async with db.session_scope() as session:
+        request = await request_document_deletion(
+            session,
+            CONTEXT,
+            document_id=document_id,
+            reason="verified erasure request",
+            actor_id="user:requester",
+        )
+        request.state = DeletionRequestState.COMPLETED.value
+        request.completed_at = utcnow()
+        with pytest.raises(DeletionLifecycleError, match="completed document deletion"):
+            await place_legal_hold(
+                session,
+                CONTEXT,
+                document_id=document_id,
+                reason="late preservation notice",
+                actor_id="user:counsel",
+            )

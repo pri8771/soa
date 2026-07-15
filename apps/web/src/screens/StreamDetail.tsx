@@ -200,7 +200,12 @@ export function StreamDetail() {
 
         <Panel title="Overview">
           <dl
-            style={{ display: "grid", gridTemplateColumns: "12rem 1fr", gap: "0.5rem", margin: 0 }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "12rem minmax(0, 1fr)",
+              gap: "0.5rem",
+              margin: 0,
+            }}
           >
             <dt>Status</dt>
             <dd style={{ margin: 0 }}>
@@ -248,7 +253,7 @@ export function StreamDetail() {
             <dl
               style={{
                 display: "grid",
-                gridTemplateColumns: "12rem 1fr",
+                gridTemplateColumns: "12rem minmax(0, 1fr)",
                 gap: "0.5rem",
                 margin: 0,
               }}

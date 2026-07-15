@@ -350,7 +350,54 @@ export const DEFAULT_DOCUMENTS = [
     received_at: "2026-07-12T09:20:00+00:00",
     duplicate_of: null,
   },
+  {
+    id: "85555555-5555-4555-8555-555555555555",
+    stream_id: "",
+    state: "deleted",
+    state_reason: "document data deleted",
+    source_channel: "",
+    original_filename: "[deleted]",
+    content_sha256: "",
+    size_bytes: 0,
+    content_type: "application/octet-stream",
+    client_reference: null,
+    priority: 0,
+    sla_due_at: null,
+    received_at: "2026-07-15T12:05:00+00:00",
+    duplicate_of: null,
+  },
 ];
+
+export const DEFAULT_DELETION_REQUEST = {
+  id: "d9999999-9999-4999-8999-999999999999",
+  document_id: DEFAULT_DOCUMENTS[2].id,
+  state: "pending_approval",
+  reason: "customer erasure request",
+  requested_by: "u-1",
+  requested_at: "2026-07-15T12:00:00Z",
+  approved_by: null,
+  approval_reason: null,
+  approved_at: null,
+  completed_at: null,
+  cancelled_by: null,
+  cancellation_reason: null,
+  cancelled_at: null,
+  safe_error: null,
+  version: 1,
+} as const;
+
+export const DEFAULT_LEGAL_HOLD = {
+  id: "e9999999-9999-4999-8999-999999999999",
+  document_id: DEFAULT_DOCUMENTS[2].id,
+  state: "active",
+  reason: "litigation preservation order",
+  placed_by: "u-3",
+  placed_at: "2026-07-15T11:00:00Z",
+  released_by: null,
+  release_reason: null,
+  released_at: null,
+  version: 1,
+} as const;
 
 export const DEFAULT_RUNS = [
   {
@@ -1250,13 +1297,71 @@ export const handlers = [
     const channel = url.searchParams.get("source_channel");
     const search = url.searchParams.get("search");
     let items = DEFAULT_DOCUMENTS;
+    // Deleted documents are a tombstone, not active work: an unfiltered
+    // list hides them, mirroring the real API (routers/documents.py).
     if (state) items = items.filter((d) => d.state === state);
+    else items = items.filter((d) => d.state !== "deleted");
     if (channel) items = items.filter((d) => d.source_channel === channel);
     if (search) items = items.filter((d) => d.original_filename.includes(search));
     return HttpResponse.json({ items, has_more: false, next_cursor: null });
   }),
   http.post("/api/orgs/:slug/documents/:documentId/cancel", ({ params }) =>
     HttpResponse.json({ id: String(params["documentId"]), state: "cancelled" }),
+  ),
+  http.post("/api/orgs/:slug/documents/:documentId/deletion-requests", ({ params }) =>
+    HttpResponse.json(
+      {
+        ...DEFAULT_DELETION_REQUEST,
+        document_id: String(params["documentId"]),
+      },
+      { status: 202 },
+    ),
+  ),
+  http.get("/api/orgs/:slug/documents/:documentId/deletion-request", () =>
+    HttpResponse.json({ error: { message: "Deletion request not found." } }, { status: 404 }),
+  ),
+  http.get("/api/orgs/:slug/deletion-requests", () => HttpResponse.json({ items: [] })),
+  http.post("/api/orgs/:slug/deletion-requests/:requestId/approve", () =>
+    HttpResponse.json(
+      {
+        ...DEFAULT_DELETION_REQUEST,
+        state: "approved",
+        approved_by: "u-2",
+        approval_reason: "verified independent approval",
+        approved_at: "2026-07-15T12:02:00Z",
+        version: 2,
+      },
+      { status: 202 },
+    ),
+  ),
+  http.post("/api/orgs/:slug/deletion-requests/:requestId/cancel", () =>
+    HttpResponse.json({
+      ...DEFAULT_DELETION_REQUEST,
+      state: "cancelled",
+      cancelled_by: "u-1",
+      cancellation_reason: "request recorded in error",
+      cancelled_at: "2026-07-15T12:02:00Z",
+      version: 2,
+    }),
+  ),
+  http.get("/api/orgs/:slug/documents/:documentId/legal-holds", () =>
+    HttpResponse.json({ items: [] }),
+  ),
+  http.post("/api/orgs/:slug/documents/:documentId/legal-holds", ({ params }) =>
+    HttpResponse.json(
+      { ...DEFAULT_LEGAL_HOLD, document_id: String(params["documentId"]) },
+      { status: 201 },
+    ),
+  ),
+  http.post("/api/orgs/:slug/legal-holds/:holdId/release", () =>
+    HttpResponse.json({
+      ...DEFAULT_LEGAL_HOLD,
+      state: "released",
+      released_by: "u-1",
+      release_reason: "preservation requirement ended",
+      released_at: "2026-07-15T12:10:00Z",
+      version: 2,
+    }),
   ),
   http.get("/api/orgs/:slug/documents/:documentId/runs", ({ params }) => {
     const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
@@ -1283,6 +1388,28 @@ export const handlers = [
     const found = DEFAULT_DOCUMENTS.find((d) => d.id === String(params["documentId"]));
     if (!found) {
       return HttpResponse.json({ error: { message: "Document not found." } }, { status: 404 });
+    }
+    if (found.state === "deleted") {
+      return HttpResponse.json({
+        document: found,
+        artifacts: [],
+        context: { stream_id: "" },
+        timeline: [
+          {
+            occurred_at: "2026-07-15T12:05:00+00:00",
+            action: "document.deletion_completed",
+            actor_type: "system",
+            actor_id: "system:document-deletion",
+            target_type: "document",
+            summary: {
+              tombstone_id: "f9999999-9999-4999-8999-999999999999",
+              object_keys_deleted: 3,
+              category_counts: { artifacts: 1, processing_runs: 1, review_tasks: 1 },
+            },
+            correlation_id: null,
+          },
+        ],
+      });
     }
     return HttpResponse.json({
       document: found,

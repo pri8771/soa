@@ -3,6 +3,7 @@ extract -> normalize -> validate -> route, with artifacts, timeline,
 audit projection, and worker-kill recovery."""
 
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from sqlalchemy import select
 
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
+from soa_db.catalog_business import BusinessValidationResult
 from soa_db.catalog_selections import CatalogFieldSelectionRepository
 from soa_db.catalogs import (
     CatalogBindingMode,
@@ -50,11 +52,15 @@ from soa_worker.extraction.provider import (
 )
 from soa_worker.model_usage import ProviderCallUsage, ProviderUsage
 from soa_worker.orchestrator import STAGE_SEQUENCE, Orchestrator
-from soa_worker.pipeline import build_executors
+from soa_worker.pipeline import build_executors, canonical_sales_order_config
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STREAM = uuid.UUID("33333333-3333-4333-8333-333333333333")
 CONTEXT = OrganizationContext(organization_id=ORG)
+
+#: A REAL digital PDF (the AIO-002 corpus) whose native text the
+#: extracting stage must hand to non-mock providers.
+DIGITAL_PO = (Path(__file__).parent / "fixtures" / "pdfs" / "digital-po.pdf").read_bytes()
 
 
 @pytest.fixture
@@ -490,6 +496,50 @@ async def test_bound_catalogs_match_and_validate_inside_pipeline(db: DatabaseSes
         assert summary["business_validation"]["findings"] == []
 
 
+async def test_business_findings_keep_evaluation_and_decision_summary_aligned(
+    db: DatabaseSessions,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def finding_only(*_args: object, **_kwargs: object) -> BusinessValidationResult:
+        return BusinessValidationResult(
+            findings=(
+                {
+                    "code": "customer_unresolved",
+                    "message": "customer needs review",
+                    "field_key": "customer_name",
+                    "row_index": None,
+                    "rule_key": "catalog.customer_unresolved",
+                },
+            ),
+            notes=(),
+            catalog_versions={},
+            matches=0,
+        )
+
+    monkeypatch.setattr("soa_worker.pipeline.validate_order_business_data", finding_only)
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    config = replace(
+        canonical_sales_order_config(),
+        rules=[],
+        rules_version="business-finding-only",
+    )
+    orchestrator = Orchestrator(
+        db,
+        build_executors(store, MockExtractionProvider(), config),
+    )
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        summary = {stage.stage: stage for stage in stages}["validating_data"].output_summary
+        assert summary["decision"]["route"] == "review_required"
+        assert summary["evaluation"]["review_required"] is True
+        assert summary["business_validation"]["findings"][0]["code"] == ("customer_unresolved")
+
+
 async def test_worker_kill_mid_pipeline_resumes_from_the_database(
     db: DatabaseSessions,
 ) -> None:
@@ -588,3 +638,187 @@ async def test_unrecognized_document_reviews_instead_of_inventing_values(
             (await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id))[0].id
         )
         assert all(f.raw_value is None for f in fields), "nothing was invented"
+
+
+# -- native PDF text for real providers (AIO-002 feeding PRC-006) -----------
+
+
+class _CapturingProvider:
+    """A non-mock-named provider that records the requests the pipeline
+    builds (so the test can see exactly what a real model would) and
+    delegates the answers to the mock."""
+
+    def __init__(self) -> None:
+        self.requests: list[ExtractionRequest] = []
+        self._inner = MockExtractionProvider()
+
+    @property
+    def name(self) -> str:
+        return "capturing-test-provider"
+
+    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+        self.requests.append(request)
+        return await self._inner.extract(request)
+
+
+async def test_non_mock_providers_receive_native_pdf_text(db: DatabaseSessions) -> None:
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store, data=DIGITAL_PO)
+    provider = _CapturingProvider()
+    orchestrator = Orchestrator(db, build_executors(store, provider))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    (request,) = provider.requests
+    assert request.pages, "the extraction request carries the rendered pages"
+    assert all(page.text for page in request.pages), "every page carries its native text"
+    assert "PURCHASE ORDER PO-4711" in (request.pages[0].text or "")
+
+
+async def test_the_mock_provider_never_spawns_native_text(
+    db: DatabaseSessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mock reads nothing from page text — the pipeline must not pay
+    for (or depend on) the native-text sandbox when it runs."""
+
+    def _refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the mock path must never resolve the native-text provider")
+
+    monkeypatch.setattr("soa_worker.pipeline.create_provider", _refuse)
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "approved"
+
+
+# -- duplicate policy at validation (ING-006) --------------------------------
+
+
+async def mark_duplicate(db: DatabaseSessions, document_id: uuid.UUID) -> None:
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        document.duplicate_of = uuid.uuid4()
+
+
+async def run_duplicate_pipeline(
+    db: DatabaseSessions, *, duplicate_policy: str
+) -> tuple[uuid.UUID, dict[str, Any]]:
+    """Drive the known-good fixture, marked as a duplicate, through a run
+    pinned to the given policy; returns (document_id, routing decision)."""
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    await mark_duplicate(db, document_id)
+    config = replace(
+        canonical_sales_order_config(),
+        stream_config={"duplicate_policy": duplicate_policy},
+    )
+    orchestrator = Orchestrator(
+        db,
+        build_executors(store, MockExtractionProvider(), config),
+    )
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        decision = {s.stage: s for s in stages}["validating_data"].output_summary["decision"]
+    return document_id, dict(decision)
+
+
+async def test_allow_policy_processes_a_duplicate_transparently(db: DatabaseSessions) -> None:
+    document_id, decision = await run_duplicate_pipeline(db, duplicate_policy="allow")
+    assert decision["route"] == "approved"
+    assert all(r.get("rule_key") != "duplicates.business_hook" for r in decision["reasons"])
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "approved"
+        # Transparent, not silent: the duplicate marker survives (ING-006).
+        assert document.duplicate_of is not None
+
+
+async def test_allow_exact_duplicate_is_not_rerouted_by_business_po_check(
+    db: DatabaseSessions,
+) -> None:
+    """The independent PO check must not undo exact-duplicate ``allow``."""
+
+    store = MemoryObjectStore()
+    config = replace(
+        canonical_sales_order_config(),
+        stream_config={"duplicate_policy": "allow", "business_duplicate_policy": "warn"},
+    )
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider(), config))
+
+    original_id = await seed_document(db, store)
+    await orchestrator.handle_preprocess(preprocess_payload(original_id))
+    await pump(db, orchestrator)
+
+    duplicate_id = await seed_document(db, store)
+    async with db.session_scope() as session:
+        duplicate = await DocumentRepository(session, CONTEXT).get(duplicate_id)
+        assert duplicate is not None
+        duplicate.duplicate_of = original_id
+    await orchestrator.handle_preprocess(preprocess_payload(duplicate_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        duplicate = await DocumentRepository(session, CONTEXT).get(duplicate_id)
+        assert duplicate is not None
+        assert duplicate.state == "approved"
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(duplicate_id)
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        validation = {stage.stage: stage for stage in stages}["validating_data"]
+        summary = validation.output_summary or {}
+        assert summary["decision"]["route"] == "approved"
+        assert summary["business_validation"]["findings"] == []
+        assert any(
+            "exact duplicate was excluded" in note
+            for note in summary["business_validation"]["notes"]
+        )
+
+
+async def test_flag_policy_still_routes_a_duplicate_to_review(db: DatabaseSessions) -> None:
+    document_id, decision = await run_duplicate_pipeline(db, duplicate_policy="flag")
+    assert decision["route"] == "review_required"
+    assert any(r.get("rule_key") == "duplicates.business_hook" for r in decision["reasons"])
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.state == "review_required"
+
+
+async def test_flag_policy_is_enforced_when_custom_rules_omit_duplicate_hook(
+    db: DatabaseSessions,
+) -> None:
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    await mark_duplicate(db, document_id)
+    config = replace(
+        canonical_sales_order_config(),
+        rules=[],
+        rules_version="custom-without-duplicate-hook",
+        stream_config={"duplicate_policy": "flag"},
+    )
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider(), config))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None and document.state == "review_required"
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        decision = {stage.stage: stage for stage in stages}["validating_data"].output_summary[
+            "decision"
+        ]
+        assert any(
+            reason.get("code") == "exact_duplicate_flagged" for reason in decision["reasons"]
+        )

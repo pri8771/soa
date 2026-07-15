@@ -18,10 +18,12 @@ from soa_db.duplicate_po import (
     DuplicateOverride,
     DuplicateOverrideError,
     DuplicatePoPolicy,
+    DuplicatePoPolicyValidationError,
     PoDuplicateCandidate,
     assess_po_duplicates,
     find_po_duplicates,
     get_po_duplicate_policy,
+    validate_po_duplicate_policy,
 )
 from soa_db.extracted_fields import create_extracted_field
 from soa_db.repository import OrganizationContext
@@ -341,3 +343,14 @@ class TestPolicyAssessment:
             DuplicatePoPolicy.WARN
         )
         assert get_po_duplicate_policy({}) == DuplicatePoPolicy.WARN
+
+    @pytest.mark.parametrize("value", ["warn", "block", "allow"])
+    def test_strict_write_validation_accepts_documented_values(self, value: str) -> None:
+        assert validate_po_duplicate_policy({"business_duplicate_policy": value}) is (
+            DuplicatePoPolicy(value)
+        )
+
+    @pytest.mark.parametrize("value", ["nonsense", "WARN", "", None, 1])
+    def test_strict_write_validation_rejects_invalid_values(self, value: object) -> None:
+        with pytest.raises(DuplicatePoPolicyValidationError, match="warn, block, allow"):
+            validate_po_duplicate_policy({"business_duplicate_policy": value})

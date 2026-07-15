@@ -9,6 +9,7 @@ service, where they BLOCK the approval with every problem named.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date
 from typing import Any
@@ -25,6 +26,7 @@ from soa_canonical.mapping import (
 from soa_canonical.models import CanonicalOrder
 from soa_db.canonical_payloads import CanonicalPayload, record_canonical_payload
 from soa_db.catalog_selections import CatalogIdentity, resolve_catalog_identities
+from soa_db.catalogs import CatalogVersionPin
 from soa_db.corrections import FieldCorrection, FieldCorrectionRepository, latest_corrections
 from soa_db.documents import Document
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository
@@ -61,6 +63,7 @@ async def build_canonical_order(
     *,
     document: Document,
     run_id: uuid.UUID,
+    catalog_version_pins: Sequence[CatalogVersionPin] | None = None,
 ) -> CanonicalOrder:
     """Assemble the mapper input from the run and map it. Raises
     soa_canonical.mapping.CanonicalMappingError when the selected values
@@ -104,6 +107,7 @@ async def build_canonical_order(
         run_id=run_id,
         values={key: source.value for key, source in selected_by_key.items()},
         as_of=as_of,
+        catalog_version_pins=catalog_version_pins,
     )
     if catalog_resolution.issues:
         raise CanonicalMappingError(

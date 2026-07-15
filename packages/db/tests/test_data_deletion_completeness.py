@@ -13,7 +13,14 @@ from soa_db.data_deletion import (
     delete_document_data,
 )
 from soa_db.data_export_jobs import DataExportJob, DataExportState, new_data_export_job
-from soa_db.documents import Document, DocumentRepository, SourceChannel, create_document
+from soa_db.documents import (
+    Document,
+    DocumentRepository,
+    DocumentState,
+    SourceChannel,
+    create_document,
+    transition_document,
+)
 from soa_db.evaluation_runs import EvaluationRun, EvaluationRunState
 from soa_db.external_cleanup import (
     ExternalCleanupIntent,
@@ -225,6 +232,20 @@ async def test_deletion_erases_copies_unlinks_evidence_and_anonymizes_shell(
                 "evaluation_run_id": str(evaluation.id),
             },
         )
+        await transition_document(
+            session,
+            CONTEXT,
+            document=document,
+            to_state=DocumentState.VALIDATING_FILE,
+            actor_id="worker:test",
+        )
+        await transition_document(
+            session,
+            CONTEXT,
+            document=document,
+            to_state=DocumentState.QUARANTINED,
+            actor_id="worker:test",
+        )
         other_id = other.id
 
     async with db.session_scope() as session:
@@ -250,7 +271,7 @@ async def test_deletion_erases_copies_unlinks_evidence_and_anonymizes_shell(
     async with db.session_scope() as session:
         retained = await DocumentRepository(session, CONTEXT).get(document_id)
         assert retained is not None
-        assert retained.state == "archived"
+        assert retained.state == DocumentState.DELETED.value
         assert retained.original_filename == "[deleted]"
         assert retained.content_sha256 == "0" * 64
         assert retained.size_bytes == 0

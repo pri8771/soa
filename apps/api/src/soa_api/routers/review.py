@@ -33,7 +33,13 @@ from soa_api.services.approval import (
     approve_document,
     reject_document,
 )
-from soa_api.services.revalidation import normalize_correction, revalidate_run
+from soa_api.services.revalidation import (
+    RevalidationConfig,
+    RevalidationConfigError,
+    load_revalidation_config,
+    normalize_correction,
+    revalidate_run,
+)
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.catalog_match_policy import (
     MatchDecision,
@@ -76,9 +82,53 @@ from soa_db.review_tasks import (
 )
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.types import utcnow
-from soa_rules.baseline import CANONICAL_FIELD_TYPES, CANONICAL_NORMALIZER_OVERRIDES
 
 router = APIRouter(tags=["review"])
+
+
+async def _load_revalidation_config_or_409(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    *,
+    document: Document,
+    run_id: uuid.UUID,
+) -> RevalidationConfig:
+    try:
+        return await load_revalidation_config(
+            session,
+            authorized.org_context,
+            document=document,
+            run_id=run_id,
+        )
+    except RevalidationConfigError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The run's validation configuration is unavailable: {error}",
+        ) from None
+
+
+async def _revalidate_or_409(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    *,
+    document: Document,
+    run_id: uuid.UUID,
+    config: RevalidationConfig,
+) -> dict[str, Any]:
+    try:
+        return await revalidate_run(
+            session,
+            authorized.org_context,
+            document=document,
+            run_id=run_id,
+            config=config,
+        )
+    except RevalidationConfigError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The run's validation configuration is unavailable: {error}",
+        ) from None
+
 
 VIEWS = ("all", "mine", "unassigned", "overdue", "blocked")
 SORTS = ("priority", "sla", "created")
@@ -578,6 +628,16 @@ async def correct_field(
             ),
         )
 
+    document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    run_config = await _load_revalidation_config_or_409(
+        session,
+        authorized,
+        document=document,
+        run_id=task.run_id,
+    )
+
     fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
         task.run_id
     )
@@ -593,7 +653,7 @@ async def correct_field(
         and body.row_index is not None
         and body.row_index >= 0
         and "." in body.field_key
-        and CANONICAL_FIELD_TYPES.get(body.field_key) not in (None, "table")
+        and run_config.field_types.get(body.field_key) not in (None, "table")
     )
     if target is None and not is_new_table_cell:
         raise HTTPException(
@@ -609,7 +669,11 @@ async def correct_field(
     )
 
     corrected_raw = body.value if body.value is not None and body.value != "" else None
-    normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)
+    normalized, normalization_error = normalize_correction(
+        body.field_key,
+        corrected_raw,
+        config=run_config,
+    )
     correction = await record_correction(
         session,
         authorized.org_context,
@@ -631,9 +695,8 @@ async def correct_field(
     task.updated_at = utcnow()
     await session.flush()
 
-    document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
     selected_value = normalized if normalized is not None else corrected_raw
-    if document is not None and body.field_key in CATALOG_FIELD_CONFIG:
+    if body.field_key in CATALOG_FIELD_CONFIG:
         await reconcile_catalog_selection(
             session,
             authorized.org_context,
@@ -647,11 +710,14 @@ async def correct_field(
             as_of=document.received_at.date(),
             selected_by=actor,
             selection_source=CatalogSelectionSource.CORRECTION,
+            catalog_version_pins=run_config.catalog_version_pins,
         )
-    revalidation = (
-        await revalidate_run(session, authorized.org_context, document=document, run_id=task.run_id)
-        if document is not None
-        else None
+    revalidation = await _revalidate_or_409(
+        session,
+        authorized,
+        document=document,
+        run_id=task.run_id,
+        config=run_config,
     )
     return {
         "correction": {
@@ -686,7 +752,11 @@ def _match_field_type(field_key: str) -> str:
 
 
 async def _bound_catalog_records(
-    session: DbSession, authorized: AuthorizedContext, document: Document, field_type: str
+    session: DbSession,
+    authorized: AuthorizedContext,
+    document: Document,
+    field_type: str,
+    run_config: RevalidationConfig,
 ) -> tuple[BoundCatalog | None, str | None]:
     """The records of the stream's bound catalog serving ``field_type``,
     or ``(None, reason)`` when the stream has nothing usable bound."""
@@ -700,6 +770,7 @@ async def _bound_catalog_records(
         authorized.org_context,
         stream_id=document.stream_id,
         catalog_type=catalog_type,
+        catalog_version_pins=run_config.catalog_version_pins,
     )
     if error is not None:
         return None, error
@@ -754,8 +825,16 @@ async def catalog_candidates(
     the picker. A stream without a usable catalog is stated honestly
     (``available: false``), not treated as an error."""
     task, document = await _task_and_document(session, authorized, task_id)
+    run_config = await _load_revalidation_config_or_409(
+        session,
+        authorized,
+        document=document,
+        run_id=task.run_id,
+    )
     field_type = _match_field_type(field_key)
-    bound, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    bound, unavailable = await _bound_catalog_records(
+        session, authorized, document, field_type, run_config
+    )
     if bound is None:
         return {"available": False, "reason": unavailable, "candidates": []}
     decision = resolve_match(
@@ -805,6 +884,12 @@ async def select_catalog_record(
     evaluation example. The pick lands as a REV-009 correction and the
     run revalidates, so dependent validation recalculates immediately."""
     task, document = await _task_and_document(session, authorized, task_id)
+    run_config = await _load_revalidation_config_or_409(
+        session,
+        authorized,
+        document=document,
+        run_id=task.run_id,
+    )
     actor = _actor(authorized)
     if task.state != ReviewTaskState.IN_PROGRESS.value:
         raise HTTPException(
@@ -826,7 +911,9 @@ async def select_catalog_record(
         )
 
     field_type = _match_field_type(body.field_key)
-    bound, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    bound, unavailable = await _bound_catalog_records(
+        session, authorized, document, field_type, run_config
+    )
     if bound is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=unavailable)
     records = [facts_of(record) for record in bound.records]
@@ -919,10 +1006,14 @@ async def select_catalog_record(
         # the display name for text fields.
         corrected_raw = (
             chosen.source_id
-            if CANONICAL_NORMALIZER_OVERRIDES.get(body.field_key) == "identifier"
+            if run_config.normalizer_for(body.field_key) == "identifier"
             else chosen.display_name
         )
-        normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)
+        normalized, normalization_error = normalize_correction(
+            body.field_key,
+            corrected_raw,
+            config=run_config,
+        )
         correction = await record_correction(
             session,
             authorized.org_context,
@@ -1009,8 +1100,12 @@ async def select_catalog_record(
     )
     await session.flush()
 
-    revalidation = await revalidate_run(
-        session, authorized.org_context, document=document, run_id=task.run_id
+    revalidation = await _revalidate_or_409(
+        session,
+        authorized,
+        document=document,
+        run_id=task.run_id,
+        config=run_config,
     )
     return {
         "correction": correction_payload,
@@ -1136,6 +1231,11 @@ async def approve_review_task(
         )
     except CriticalBlockersError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except RevalidationConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The run's validation configuration is unavailable: {exc}",
+        ) from None
     except ApprovalStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     except ApprovalPermissionError as exc:

@@ -158,6 +158,7 @@ async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseS
             "rule_set_version_id": str(RULES),
             "provider_policy_version_id": str(POLICY),
             "confidence_policy_version_id": str(CONFIDENCE),
+            "catalog_version_pins": [],
             "languages": ["EN", "es"],
             "locale": "en-GB",
             "currency": "GBP",

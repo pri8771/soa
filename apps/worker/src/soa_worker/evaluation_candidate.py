@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_config import SecretStore
 from soa_db.artifacts import Artifact, ArtifactKind, ArtifactRepository
+from soa_db.catalog_business import validate_order_business_data
 from soa_db.documents import Document, DocumentRepository
 from soa_db.evaluation_runs import (
     SERVER_ATTESTATION_SCHEMA_VERSION,
@@ -31,7 +32,6 @@ from soa_db.runs import ProcessingRun
 from soa_normalize import NormalizationError, normalize
 from soa_rules import EvaluationInput, FieldSignal, decide_route, evaluate_rule_set
 from soa_storage import ObjectNotFoundError, ObjectStore, sha256_hex
-from soa_worker.catalog_business import validate_order_business_data
 from soa_worker.evaluation import EvalDocument, EvalPrediction
 from soa_worker.extraction.provider import (
     ExtractionProvider,

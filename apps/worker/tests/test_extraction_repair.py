@@ -124,6 +124,24 @@ class TestRepairEndToEnd:
         assert len(wire) == 1
         assert not any("repaired" in warning for warning in outcome.result.warnings)
 
+    async def test_before_attempt_runs_before_every_real_repair_call(self) -> None:
+        provider, wire = adapter_with_scripted_answers(["broken {", GOOD])
+        persisted_attempts: list[int] = []
+
+        async def persist(attempt_number: int) -> None:
+            # The callback runs before the adapter reaches its transport.
+            assert len(wire) == attempt_number - 1
+            persisted_attempts.append(attempt_number)
+
+        outcome = await extract_with_repair(
+            provider,
+            request(),
+            before_attempt=persist,
+        )
+        assert outcome.fallback is None
+        assert persisted_attempts == [1, 2]
+        assert len(wire) == 2
+
 
 class TestBounds:
     async def test_attempts_are_bounded_and_exhaustion_falls_back_to_review(self) -> None:

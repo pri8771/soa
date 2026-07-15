@@ -1,4 +1,4 @@
-"""Cross-replica PostgreSQL proofs for logical-slot and lease fencing."""
+"""Cross-replica PostgreSQL proofs for transaction and lease fencing."""
 
 import asyncio
 import os
@@ -16,6 +16,12 @@ from soa_api.domain.uploads import (
     UploadSessionRepository,
     create_upload_session,
     validate_upload_declaration,
+)
+from soa_api.services.duplicates import (
+    DuplicatePolicy,
+    find_exact_duplicate,
+    lock_exact_duplicate_intake,
+    mark_duplicate,
 )
 from soa_config import MemorySecretStore
 from soa_db import DatabaseSessions, create_database_engine
@@ -122,6 +128,105 @@ async def test_pending_upload_cap_is_atomic_across_replicas(
             await bind_tenant(session, organization_id)
             await session.execute(
                 delete(UploadSession).where(UploadSession.organization_id == organization_id)
+            )
+
+
+async def test_exact_duplicate_registration_is_serialized_across_replicas(
+    replicas: tuple[DatabaseSessions, DatabaseSessions],
+) -> None:
+    """Both transactions start together; exactly one becomes the original."""
+
+    first, second = replicas
+    organization_id = uuid.uuid4()
+    context = OrganizationContext(organization_id)
+    stream_id = uuid.uuid4()
+    content_sha256 = "d" * 64
+    rendezvous = asyncio.Barrier(2)
+
+    async def register(db: DatabaseSessions, suffix: str) -> uuid.UUID:
+        async with db.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            await rendezvous.wait()
+            await lock_exact_duplicate_intake(
+                session,
+                context,
+                stream_id=stream_id,
+                content_sha256=content_sha256,
+            )
+            # Keep the winner's transaction open briefly so its peer is
+            # demonstrably waiting on the advisory lock, not merely scheduled later.
+            await asyncio.sleep(0.05)
+            document = await create_document(
+                session,
+                context,
+                stream_id=stream_id,
+                source_channel=SourceChannel.UPLOAD,
+                original_filename=f"{suffix}.pdf",
+                content_sha256=content_sha256,
+                size_bytes=100,
+                content_type="application/pdf",
+                actor_id="user:concurrency-test",
+            )
+            original = await find_exact_duplicate(
+                session,
+                context,
+                stream_id=stream_id,
+                content_sha256=content_sha256,
+                exclude_document_id=document.id,
+            )
+            if original is not None:
+                await mark_duplicate(
+                    session,
+                    context,
+                    document=document,
+                    original=original,
+                    policy=DuplicatePolicy.FLAG,
+                    actor_id="system:duplicate-detection",
+                )
+            return document.id
+
+    try:
+        document_ids = await asyncio.gather(register(first, "first"), register(second, "second"))
+        async with first.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            documents = list(
+                (
+                    await session.execute(
+                        select(Document).where(
+                            Document.organization_id == organization_id,
+                            Document.id.in_(document_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            originals = [document for document in documents if document.duplicate_of is None]
+            duplicates = [document for document in documents if document.duplicate_of is not None]
+            assert len(originals) == 1
+            assert len(duplicates) == 1
+            assert duplicates[0].duplicate_of == originals[0].id
+            events = list(
+                (
+                    await session.execute(
+                        select(AuditEvent).where(
+                            AuditEvent.organization_id == organization_id,
+                            AuditEvent.action == "document.duplicate_detected",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(events) == 1
+    finally:
+        async with first.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            await session.execute(
+                delete(Document).where(Document.organization_id == organization_id)
+            )
+            await session.execute(
+                delete(AuditEvent).where(AuditEvent.organization_id == organization_id)
             )
 
 

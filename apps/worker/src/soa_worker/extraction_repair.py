@@ -28,6 +28,7 @@ Failure classification decides what happens next:
   fabricating values or dead-lettering recoverable work.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -123,6 +124,8 @@ async def extract_with_repair(
     provider: RepairableExtractionProvider,
     request: ExtractionRequest,
     policy: RepairPolicy | None = None,
+    *,
+    before_attempt: Callable[[int], Awaitable[None]] | None = None,
 ) -> RepairOutcome:
     """Run one extraction under the repair policy. See module docstring
     for the classification rules; retryable transport/rate-limit errors
@@ -136,6 +139,11 @@ async def extract_with_repair(
     repair_hint: str | None = None
 
     for attempt_number in range(1, effective.max_attempts + 1):
+        if before_attempt is not None:
+            # The routed production path uses this hook to commit safe call
+            # provenance before each actual network request, including repair
+            # calls that subsequently fail or return invalid output.
+            await before_attempt(attempt_number)
         try:
             result = await provider.extract(request, repair_hint=repair_hint)
         except ModelOutputInvalidError as invalid:

@@ -21,10 +21,11 @@ import {
   fetchProcesses,
   fetchStreams,
 } from "../api/client";
+import { DASHBOARD_POLL_MS, liveQueryOptions } from "../app/liveQuery";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
-type StepStatus = "done" | "todo" | "pending";
+type StepStatus = "done" | "todo" | "pending" | "unavailable";
 
 interface ChecklistStep {
   key: string;
@@ -48,28 +49,61 @@ const card: CSSProperties = {
 function statusBadge(status: StepStatus): ReactNode {
   if (status === "pending") return <Badge tone="neutral">checking…</Badge>;
   if (status === "done") return <Badge tone="success">done</Badge>;
+  if (status === "unavailable") return <Badge tone="neutral">not available</Badge>;
   return <Badge tone="warning">to do</Badge>;
 }
 
 export function GettingStarted() {
   const session = useShellSession();
   const slug = session.organization.slug;
+  const canReadProcesses = session.permissions.has("processes.read");
+  const canReadStreams = session.permissions.has("streams.read");
+  const canReadCatalogs = session.permissions.has("catalogs.read");
+  const canReadIntegrations = session.permissions.has("integrations.read");
+  const canReadDocuments = session.permissions.has("documents.read");
 
+  const live = liveQueryOptions(DASHBOARD_POLL_MS);
   const [processes, streams, catalogs, integrations, documents] = useQueries({
     queries: [
-      { queryKey: ["processes", slug], queryFn: () => fetchProcesses(slug) },
-      { queryKey: ["streams", slug], queryFn: () => fetchStreams(slug) },
-      { queryKey: ["catalogs", slug], queryFn: () => fetchCatalogs(slug) },
-      { queryKey: ["integrations", slug], queryFn: () => fetchIntegrations(slug) },
-      { queryKey: ["documents", slug, "onboarding"], queryFn: () => fetchDocuments(slug) },
+      {
+        queryKey: ["processes", slug],
+        queryFn: () => fetchProcesses(slug),
+        enabled: canReadProcesses,
+        ...live,
+      },
+      {
+        queryKey: ["streams", slug],
+        queryFn: () => fetchStreams(slug),
+        enabled: canReadStreams,
+        ...live,
+      },
+      {
+        queryKey: ["catalogs", slug],
+        queryFn: () => fetchCatalogs(slug),
+        enabled: canReadCatalogs,
+        ...live,
+      },
+      {
+        queryKey: ["integrations", slug],
+        queryFn: () => fetchIntegrations(slug),
+        enabled: canReadIntegrations,
+        ...live,
+      },
+      {
+        queryKey: ["documents", slug, "onboarding"],
+        queryFn: () => fetchDocuments(slug),
+        enabled: canReadDocuments,
+        ...live,
+      },
     ],
   });
 
-  // A step is `pending` while its query loads, `done` when the live data
-  // satisfies it, else `todo`. Any query error is treated as not-yet-done
-  // (the linked screen surfaces the real error).
-  const derive = (loading: boolean, done: boolean): StepStatus =>
-    loading ? "pending" : done ? "done" : "todo";
+  // A step is unavailable when the principal cannot read its source. Its
+  // query stays disabled, so this page never turns missing access into a
+  // repeating 403. For permitted steps, errors remain actionable `todo`
+  // states and the linked feature screen surfaces the detailed error.
+  const derive = (permitted: boolean, loading: boolean, done: boolean): StepStatus =>
+    !permitted ? "unavailable" : loading ? "pending" : done ? "done" : "todo";
 
   const linkStyle: CSSProperties = {
     border: "1px solid var(--soa-border)",
@@ -107,14 +141,14 @@ export function GettingStarted() {
       title: "Publish a process and schema",
       description:
         "Define what to extract: header fields and line items, with a published schema version.",
-      status: derive(processes.isPending, hasActiveProcess),
+      status: derive(canReadProcesses, processes.isPending, hasActiveProcess),
       link: link("/app/$organizationSlug/processes", orgParams, "Open Processes"),
     },
     {
       key: "stream",
       title: "Set up a stream",
       description: "A stream is the operational bucket documents flow through, with its overrides.",
-      status: derive(streams.isPending, hasStream),
+      status: derive(canReadStreams, streams.isPending, hasStream),
       link: link("/app/$organizationSlug/streams", orgParams, "Open Streams"),
     },
     {
@@ -122,14 +156,14 @@ export function GettingStarted() {
       title: "Import a catalog",
       description:
         "Load your customers, ship-tos, and materials so matching can validate against real data.",
-      status: derive(catalogs.isPending, hasActiveCatalog),
+      status: derive(canReadCatalogs, catalogs.isPending, hasActiveCatalog),
       link: link("/app/$organizationSlug/catalogs", orgParams, "Open Catalogs"),
     },
     {
       key: "sample",
       title: "Process a sample document",
       description: "Upload a real purchase order end-to-end to see extraction, review, and export.",
-      status: derive(documents.isPending, hasDocument),
+      status: derive(canReadDocuments, documents.isPending, hasDocument),
       link: link("/app/$organizationSlug/documents/upload", orgParams, "Upload a document"),
     },
     {
@@ -137,13 +171,14 @@ export function GettingStarted() {
       title: "Connect an integration",
       description:
         "Point exports at your ERP or a signed webhook so approved orders land where they belong.",
-      status: derive(integrations.isPending, hasIntegration),
+      status: derive(canReadIntegrations, integrations.isPending, hasIntegration),
       link: link("/app/$organizationSlug/integrations", orgParams, "Open Integrations"),
     },
   ];
 
   const goLiveReady = steps.every((s) => s.status === "done");
   const doneCount = steps.filter((s) => s.status === "done").length;
+  const unavailableCount = steps.filter((s) => s.status === "unavailable").length;
 
   return (
     <AppShell
@@ -170,6 +205,14 @@ export function GettingStarted() {
           </Banner>
         ) : null}
 
+        {unavailableCount > 0 ? (
+          <Banner tone="info" title="Some setup steps need additional access">
+            {unavailableCount} step{unavailableCount === 1 ? " is" : "s are"} marked not available.
+            Ask an organization administrator for the matching read permission; this page will not
+            repeatedly request data you cannot access.
+          </Banner>
+        ) : null}
+
         <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.75rem" }}>
           {steps.map((step, index) => (
             <li key={step.key} style={card}>
@@ -190,7 +233,7 @@ export function GettingStarted() {
                 </span>
               </div>
               {statusBadge(step.status)}
-              {step.status === "done" ? null : step.link}
+              {step.status === "todo" ? step.link : null}
             </li>
           ))}
           <li key="go-live" style={card}>

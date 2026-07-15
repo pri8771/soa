@@ -24,9 +24,17 @@ from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
+from soa_db.advisory import transaction_advisory_lock
 from soa_db.artifacts import ArtifactRepository
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.canonical_payloads import CanonicalPayloadRepository
+from soa_db.data_deletion import DeletionTombstone, TombstoneState
+from soa_db.deletion_requests import (
+    DOCUMENT_DELETION_LIFECYCLE_LOCK,
+    DeletionRequestRepository,
+    DeletionRequestState,
+)
 from soa_db.documents import (
     Document,
     DocumentRepository,
@@ -38,7 +46,7 @@ from soa_db.jobs import enqueue_job
 from soa_db.pages import DocumentPageRepository
 from soa_db.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from soa_db.review_tasks import cancel_active_task_for_document
-from soa_db.runs import ProcessingRunRepository, StageRunRepository
+from soa_db.runs import ProcessingRun, ProcessingRunRepository, StageRunRepository
 
 router = APIRouter(tags=["documents"])
 
@@ -97,9 +105,32 @@ def decode_documents_cursor(
 
 
 def _project(document: Document, fields: tuple[str, ...]) -> dict[str, Any]:
+    deleted_values: dict[str, Any] = {
+        "id": document.id,
+        "stream_id": "",
+        "state": DocumentState.DELETED.value,
+        "state_reason": "document data deleted",
+        "source_channel": "",
+        "original_filename": "[deleted]",
+        "content_sha256": "",
+        "size_bytes": 0,
+        "content_type": "application/octet-stream",
+        "client_reference": None,
+        "priority": 0,
+        "sla_due_at": None,
+        # The erasure transition updates the shell; use that timestamp rather
+        # than retransmitting the original intake time in an explicit deleted
+        # listing.
+        "received_at": document.updated_at,
+        "duplicate_of": None,
+    }
     row: dict[str, Any] = {}
     for field in fields:
-        value = getattr(document, field)
+        value = (
+            deleted_values[field]
+            if document.state == DocumentState.DELETED.value
+            else getattr(document, field)
+        )
         if isinstance(value, uuid.UUID):
             row[field] = str(value)
         elif hasattr(value, "isoformat"):
@@ -161,6 +192,12 @@ async def list_documents(
     stmt = select(Document).where(Document.organization_id == organization_id)
     if document_state is not None:
         stmt = stmt.where(Document.state == document_state)
+    else:
+        # Deleted documents are a tombstone, not active work (SEC-010): an
+        # unfiltered list hides them, same as any soft-delete convention.
+        # ?document_state=deleted (or the UI's "Deleted" filter) still
+        # finds them — nothing is unreachable, just off the default view.
+        stmt = stmt.where(Document.state != DocumentState.DELETED.value)
     if stream_id is not None:
         stmt = stmt.where(Document.stream_id == stream_id)
     if source_channel is not None:
@@ -364,6 +401,7 @@ _REPROCESS_PROTECTED = {
     DocumentState.EXPORTING.value: "the document is being exported",
     DocumentState.COMPLETED.value: "the document has been exported",
     DocumentState.ARCHIVED.value: "the document is archived",
+    DocumentState.DELETED.value: "the document's data has been deleted",
 }
 
 
@@ -374,6 +412,37 @@ class ReprocessRequest(BaseModel):
     mode: Literal["retry", "current_config", "historical_config"] = "current_config"
     run_id: uuid.UUID | None = None  # historical_config only
     reason: str = Field(min_length=3, max_length=500)
+
+
+def _processing_run_pin_payload(run: ProcessingRun) -> dict[str, str | None]:
+    """Recreate the exact immutable job contract retained by a prior run."""
+
+    if (
+        run.stream_version_id is None
+        or run.config_fingerprint is None
+        or run.provider_policy_version_id is None
+        or run.execution_fingerprint is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The selected run predates the complete immutable execution contract; "
+                "reprocess with the current published configuration instead."
+            ),
+        )
+    return {
+        "stream_version_id": str(run.stream_version_id),
+        "config_fingerprint": run.config_fingerprint,
+        "instruction_version_id": (
+            str(run.instruction_version_id) if run.instruction_version_id else None
+        ),
+        "confidence_policy_version_id": (
+            str(run.confidence_policy_version_id) if run.confidence_policy_version_id else None
+        ),
+        "provider_policy_version_id": str(run.provider_policy_version_id),
+        "provider_credential_ref": run.provider_credential_ref,
+        "execution_fingerprint": run.execution_fingerprint,
+    }
 
 
 @router.post("/orgs/{organization_slug}/documents/{document_id}/reprocess")
@@ -396,9 +465,31 @@ async def reprocess_document(
         f"user:{authorized.membership.user_id}",
         deps.settings.rate_limit_reprocess_per_minute,
     )
-    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    await transaction_advisory_lock(
+        session,
+        DOCUMENT_DELETION_LIFECYCLE_LOCK,
+        authorized.org_context.organization_id,
+        document_id,
+    )
+    document = await DocumentRepository(session, authorized.org_context).get(
+        document_id, for_update=True
+    )
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    deletion_request = await DeletionRequestRepository(
+        session, authorized.org_context
+    ).get_for_document(document_id, for_update=True)
+    if (
+        deletion_request is not None
+        and deletion_request.state != DeletionRequestState.CANCELLED.value
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Reprocessing is not allowed while the document has a "
+                f"{deletion_request.state!r} deletion request."
+            ),
+        )
     if document.state in _REPROCESS_PROTECTED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -418,6 +509,7 @@ async def reprocess_document(
                 detail="The document has never run; there is no configuration to retry under.",
             )
         source = runs[-1]
+        runtime_pin_payload = _processing_run_pin_payload(source)
         stream_version_id = source.stream_version_id
         config_fingerprint = source.config_fingerprint
         consequence = (
@@ -443,6 +535,7 @@ async def reprocess_document(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="That run does not exist for this document.",
             )
+        runtime_pin_payload = _processing_run_pin_payload(historical)
         stream_version_id = historical.stream_version_id
         config_fingerprint = historical.config_fingerprint
         consequence = (
@@ -451,16 +544,17 @@ async def reprocess_document(
         )
     else:  # current_config
         stream = await StreamRepository(session, authorized.org_context).get(document.stream_id)
-        stream_version_id = stream.active_version_id if stream else None
-        config_fingerprint = None
-        if stream is not None and stream.active_version_id is not None:
-            active = await StreamVersionRepository(session, authorized.org_context).get(
-                stream.active_version_id
+        try:
+            pins = await resolve_runtime_pins(
+                session,
+                authorized.org_context,
+                stream_version_id=stream.active_version_id if stream is not None else None,
             )
-            if active is not None and active.resolved_snapshot:
-                config = active.resolved_snapshot.get("config")
-                fingerprint = config.get("fingerprint") if isinstance(config, dict) else None
-                config_fingerprint = str(fingerprint) if fingerprint else None
+        except RuntimePinError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+        runtime_pin_payload = pins.job_payload()
+        stream_version_id = pins.stream_version_id
+        config_fingerprint = pins.config_fingerprint
         consequence = (
             "A new run will re-execute the full pipeline under the stream's currently "
             "published configuration."
@@ -497,8 +591,7 @@ async def reprocess_document(
             "document_id": str(document.id),
             "stream_id": str(document.stream_id),
             "organization_id": str(authorized.org_context.organization_id),
-            "stream_version_id": str(stream_version_id) if stream_version_id else None,
-            "config_fingerprint": config_fingerprint,
+            **runtime_pin_payload,
         },
         organization_id=authorized.org_context.organization_id,
         # The intake enqueue used the bare document key; each reprocess is
@@ -520,6 +613,7 @@ async def reprocess_document(
             "run_number": next_run_number,
             "stream_version_id": str(stream_version_id) if stream_version_id else None,
             "config_fingerprint": config_fingerprint,
+            "execution_fingerprint": runtime_pin_payload["execution_fingerprint"],
         },
     )
     return {
@@ -530,6 +624,7 @@ async def reprocess_document(
         "pinned": {
             "stream_version_id": str(stream_version_id) if stream_version_id else None,
             "config_fingerprint": config_fingerprint,
+            "execution_fingerprint": runtime_pin_payload["execution_fingerprint"],
         },
         "consequence": consequence
         + " Previous runs and their artifacts remain unchanged as evidence.",
@@ -546,6 +641,60 @@ def _redact_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
     if not summary:
         return {}
     return {key: value for key, value in summary.items() if key not in _REDACTED_SUMMARY_KEYS}
+
+
+async def _deleted_document_tombstone(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    document: Document,
+) -> dict[str, Any]:
+    """Return deletion evidence without retransmitting retained history.
+
+    The anonymized shell, audit rows, request, and legal-hold history remain
+    available to their dedicated privileged ledgers. The general document
+    detail endpoint exposes only the stable identifier plus counts-only proof,
+    so neither a browser cache nor an intermediary receives historical stream,
+    actor, reason, filename, or timeline data after erasure.
+    """
+
+    tombstone = (
+        await session.execute(
+            select(DeletionTombstone).where(
+                DeletionTombstone.organization_id == authorized.org_context.organization_id,
+                DeletionTombstone.document_id == document.id,
+                DeletionTombstone.state == TombstoneState.COMPLETED.value,
+            )
+        )
+    ).scalar_one_or_none()
+    completed_at = tombstone.completed_at if tombstone is not None else None
+    return {
+        "document": {
+            "id": str(document.id),
+            "stream_id": "",
+            "state": DocumentState.DELETED.value,
+            "state_reason": "document data deleted",
+            "source_channel": "",
+            "original_filename": "[deleted]",
+            "content_sha256": "",
+            "size_bytes": 0,
+            "content_type": "application/octet-stream",
+            "client_reference": None,
+            "priority": 0,
+            "sla_due_at": None,
+            "received_at": completed_at.isoformat() if completed_at is not None else "",
+            "duplicate_of": None,
+        },
+        "artifacts": [],
+        "context": {"stream_id": ""},
+        "timeline": [],
+        "deletion_tombstone": {
+            "completed_at": completed_at.isoformat() if completed_at is not None else None,
+            "object_keys_deleted": (
+                tombstone.object_keys_deleted if tombstone is not None else None
+            ),
+            "category_counts": dict(tombstone.category_counts) if tombstone is not None else {},
+        },
+    }
 
 
 def _redact_canonical_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -624,6 +773,8 @@ async def get_document_detail(
     document = await DocumentRepository(session, authorized.org_context).get(document_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    if document.state == DocumentState.DELETED.value:
+        return await _deleted_document_tombstone(session, authorized, document)
 
     artifacts = await ArtifactRepository(session, authorized.org_context).list_for_document(
         document.id

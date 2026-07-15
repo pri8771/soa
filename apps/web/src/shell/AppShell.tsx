@@ -13,6 +13,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useAuth } from "../auth/AuthContext";
+import { BREAKPOINT_COMPACT_LAYOUT, BREAKPOINT_COMPACT_NAV } from "./breakpoints";
 import { CommandPalette } from "./CommandPalette";
 import { OrganizationSwitcher } from "./OrganizationSwitcher";
 import { useShellSession } from "./ShellContext";
@@ -97,6 +98,36 @@ export const NAV_ITEMS = [
 export type NavItem = (typeof NAV_ITEMS)[number];
 
 const NAV_COLLAPSE_KEY = "soa.nav.collapsed";
+const COMPACT_NAV_QUERY = `(max-width: ${BREAKPOINT_COMPACT_NAV}px)`;
+const NARROW_NAV_QUERY = `(max-width: ${BREAKPOINT_COMPACT_LAYOUT}px)`;
+
+function readCollapsePreference(): boolean | null {
+  try {
+    const stored = globalThis.localStorage?.getItem(NAV_COLLAPSE_KEY);
+    return stored === null || stored === undefined ? null : stored === "true";
+  } catch {
+    // Storage is optional (for example, browsers may block it in private
+    // contexts). The viewport-derived default remains fully functional.
+    return null;
+  }
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof globalThis.matchMedia === "function" ? globalThis.matchMedia(query).matches : false,
+  );
+
+  useEffect(() => {
+    if (typeof globalThis.matchMedia !== "function") return;
+    const media = globalThis.matchMedia(query);
+    const update = (event: MediaQueryListEvent) => setMatches(event.matches);
+    setMatches(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
+}
 
 export interface Breadcrumb {
   label: string;
@@ -117,13 +148,29 @@ export function AppShell({
   const session = useShellSession();
   const auth = useAuth();
   const queryClient = useQueryClient();
-  const [collapsed, setCollapsed] = useState<boolean>(
-    () => globalThis.localStorage?.getItem(NAV_COLLAPSE_KEY) === "true",
+  const [collapsePreference, setCollapsePreference] = useState<boolean | null>(
+    readCollapsePreference,
   );
+  const compactViewport = useMediaQuery(COMPACT_NAV_QUERY);
+  const narrowViewport = useMediaQuery(NARROW_NAV_QUERY);
 
-  useEffect(() => {
-    globalThis.localStorage?.setItem(NAV_COLLAPSE_KEY, String(collapsed));
-  }, [collapsed]);
+  // A persisted preference wins on desktop and compact desktop. Truly
+  // narrow layouts always keep the rail collapsed so a desktop "expanded"
+  // preference cannot consume most of a tablet or split-screen viewport.
+  const collapsed = narrowViewport || (collapsePreference ?? compactViewport);
+
+  //: Persist only explicit toggles — viewport changes never become a sticky
+  //: preference. The control is omitted while the narrow safety override is
+  //: active, so it never advertises an expansion the layout cannot honor.
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsePreference(next);
+    try {
+      globalThis.localStorage?.setItem(NAV_COLLAPSE_KEY, String(next));
+    } catch {
+      // Preference persistence is best effort; local state still updates.
+    }
+  };
 
   const visibleItems = NAV_ITEMS.filter((item) => session.permissions.has(item.permission));
   const signOut = async () => {
@@ -152,14 +199,16 @@ export function AppShell({
             <span className="soa-shell-nav-label">{item.label}</span>
           </Link>
         ))}
-        <div className="soa-shell-nav-footer">
-          <Button variant="subtle" size="sm" onPress={() => setCollapsed((value) => !value)}>
-            <span aria-hidden="true">{collapsed ? "»" : "«"}</span>
-            <span className="soa-shell-nav-label">
-              {collapsed ? "Expand navigation" : "Collapse navigation"}
-            </span>
-          </Button>
-        </div>
+        {!narrowViewport ? (
+          <div className="soa-shell-nav-footer">
+            <Button variant="subtle" size="sm" onPress={toggleCollapsed}>
+              <span aria-hidden="true">{collapsed ? "»" : "«"}</span>
+              <span className="soa-shell-nav-label">
+                {collapsed ? "Expand navigation" : "Collapse navigation"}
+              </span>
+            </Button>
+          </div>
+        ) : null}
       </nav>
 
       <header className="soa-shell-topbar">
@@ -171,9 +220,7 @@ export function AppShell({
         ) : null}
         <div className="soa-shell-topbar-spacer" />
         <CommandPalette />
-        <span style={{ font: "var(--soa-font-body-sm)", color: "var(--soa-text-secondary)" }}>
-          {session.userLabel}
-        </span>
+        <span className="soa-shell-user">{session.userLabel}</span>
         {!session.devSession ? (
           <Button variant="subtle" size="sm" onPress={() => void signOut()}>
             Sign out

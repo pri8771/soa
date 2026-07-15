@@ -141,7 +141,12 @@ export function PayloadViewer({ data }: { data: CanonicalPayloadResponse }) {
       {view === "formatted" ? (
         <div style={{ display: "grid", gap: "var(--soa-space-2)" }}>
           <dl
-            style={{ display: "grid", gridTemplateColumns: "12rem 1fr", gap: "0.4rem", margin: 0 }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "12rem minmax(0, 1fr)",
+              gap: "0.4rem",
+              margin: 0,
+            }}
           >
             <dt>PO number</dt>
             <dd style={{ margin: 0 }}>{payload.identifiers.po_number}</dd>
@@ -154,38 +159,42 @@ export function PayloadViewer({ data }: { data: CanonicalPayloadResponse }) {
             <dt>Grand total</dt>
             <dd style={{ margin: 0 }}>{money(payload.totals.grand_total)}</dd>
           </dl>
-          <table style={{ borderCollapse: "collapse" }}>
-            <caption
-              style={{
-                textAlign: "left",
-                font: "var(--soa-font-caption)",
-                paddingBottom: "0.3rem",
-              }}
-            >
-              Line items ({payload.line_items.length})
-            </caption>
-            <thead>
-              <tr>
-                {["#", "SKU", "Description", "Qty", "Unit price", "Line total"].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "0.2rem 0.75rem 0.2rem 0" }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {payload.line_items.slice(0, MAX_TREE_CHILDREN).map((item: LineItem) => (
-                <tr key={item.line_number}>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.line_number}</td>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.sku ?? "—"}</td>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.description ?? "—"}</td>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.quantity}</td>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{money(item.unit_price)}</td>
-                  <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{money(item.line_total)}</td>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse" }}>
+              <caption
+                style={{
+                  textAlign: "left",
+                  font: "var(--soa-font-caption)",
+                  paddingBottom: "0.3rem",
+                }}
+              >
+                Line items ({payload.line_items.length})
+              </caption>
+              <thead>
+                <tr>
+                  {["#", "SKU", "Description", "Qty", "Unit price", "Line total"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "0.2rem 0.75rem 0.2rem 0" }}>
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {payload.line_items.slice(0, MAX_TREE_CHILDREN).map((item: LineItem) => (
+                  <tr key={item.line_number}>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.line_number}</td>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.sku ?? "—"}</td>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>
+                      {item.description ?? "—"}
+                    </td>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{item.quantity}</td>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{money(item.unit_price)}</td>
+                    <td style={{ padding: "0.2rem 0.75rem 0.2rem 0" }}>{money(item.line_total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {payload.line_items.length > MAX_TREE_CHILDREN ? (
             <p style={{ margin: 0, font: "var(--soa-font-caption)" }}>
               Showing the first {MAX_TREE_CHILDREN} of {payload.line_items.length} lines — download

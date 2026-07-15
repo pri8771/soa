@@ -33,7 +33,11 @@ from soa_db.data_export_jobs import (
     DataExportState,
     new_data_export_job,
 )
-from soa_db.deletion_requests import DeletionRequestRepository, DeletionRequestState
+from soa_db.deletion_requests import (
+    DOCUMENT_DELETION_LIFECYCLE_LOCK,
+    DeletionRequestRepository,
+    DeletionRequestState,
+)
 from soa_db.documents import DocumentRepository
 from soa_db.jobs import enqueue_job
 from soa_db.types import utcnow
@@ -243,7 +247,7 @@ async def create_document_data_export(
     # synchronous export could copy personal data after the eraser took its
     # object inventory but before commit.
     await transaction_advisory_lock(
-        session, "document-deletion-lifecycle", organization_id, document_id
+        session, DOCUMENT_DELETION_LIFECYCLE_LOCK, organization_id, document_id
     )
     # Tenant scope first: a document outside the caller's organization is
     # indistinguishable from one that does not exist.

@@ -58,8 +58,15 @@ class StubProvider:
         return self._name
 
     @property
-    def runtime_provenance(self) -> dict[str, str]:
-        return {"adapter": f"stub:{self.name}"}
+    def runtime_provenance(self) -> dict[str, object]:
+        return {
+            "adapter": f"stub:{self.name}",
+            "model": f"model:{self.name}",
+            "timeout_seconds": 10.0,
+            "max_tokens": 500,
+            "temperature": 0,
+            "api_key": "must-never-persist",
+        }
 
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
         self.calls += 1
@@ -213,11 +220,30 @@ async def test_runtime_context_records_route_audit_and_attempt_health(
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     db = DatabaseSessions(engine)
+    committed_call_event_counts: list[int] = []
+
+    async def observe_committed_call_evidence() -> None:
+        # A separate connection can see the call-start row only after the
+        # routing session committed it. This code runs inside the fake
+        # provider invocation, before that invocation returns an outcome.
+        async with db.session_scope() as observer:
+            events = (
+                (
+                    await observer.execute(
+                        select(AuditEvent.id).where(AuditEvent.action == "provider.call_started")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            committed_call_event_counts.append(len(events))
 
     async def fail(_request: ExtractionRequest) -> ExtractionResult:
+        await observe_committed_call_evidence()
         raise ExtractionProviderError("temporary provider outage", retryable=True)
 
     async def succeed(_request: ExtractionRequest) -> ExtractionResult:
+        await observe_committed_call_evidence()
         return result(FALLBACK, cost_cents=2)
 
     provider = routed(StubProvider(PRIMARY, fail), StubProvider(FALLBACK, succeed))
@@ -241,10 +267,27 @@ async def test_runtime_context_records_route_audit_and_attempt_health(
         with provider.bind_execution(session, ORG, run, stage):
             extracted = await provider.extract(extraction_request)
             assert provider.runtime_provenance["selected_adapter"] == {
-                "adapter": f"stub:{FALLBACK}"
+                "adapter": f"stub:{FALLBACK}",
+                "model": f"model:{FALLBACK}",
+                "timeout_seconds": 10.0,
+                "max_tokens": 500,
+                "temperature": 0,
             }
+            assert provider.runtime_provenance["selected_provider"] == FALLBACK
+            assert [attempt["provider"] for attempt in provider.runtime_provenance["attempts"]] == [
+                PRIMARY,
+                FALLBACK,
+            ]
+            assert [
+                attempt["runtime_provenance"]["adapter"]
+                for attempt in provider.runtime_provenance["attempts"]
+            ] == [f"stub:{PRIMARY}", f"stub:{FALLBACK}"]
         assert "selected_adapter" not in provider.runtime_provenance
         assert extracted.provider == FALLBACK
+        assert committed_call_event_counts == [1, 2]
+        assert [
+            attempt["provider"] for attempt in stage.output_summary["provider_call_attempts"]
+        ] == [PRIMARY, FALLBACK]
         metrics = await ProviderRuntimeMetricRepository(session, ORG).list_for_capability(
             "field_extraction"
         )
@@ -252,8 +295,31 @@ async def test_runtime_context_records_route_audit_and_attempt_health(
         assert by_name[PRIMARY].failure_count == 1
         assert by_name[FALLBACK].success_count == 1
         assert by_name[FALLBACK].fallback_count == 1
-        actions = set((await session.execute(select(AuditEvent.action))).scalars().all())
-        assert {"provider.route_selected", "provider.fallback_triggered"} <= actions
+        audit_events = (await session.execute(select(AuditEvent))).scalars().all()
+        actions = {event.action for event in audit_events}
+        assert {
+            "provider.route_selected",
+            "provider.call_started",
+            "provider.fallback_triggered",
+        } <= actions
+        call_events = [event for event in audit_events if event.action == "provider.call_started"]
+        assert len(call_events) == 2
+        call_summaries = {
+            str(event.summary["provider"]): event.summary
+            for event in call_events
+            if event.summary is not None
+        }
+        assert set(call_summaries) == {PRIMARY, FALLBACK}
+        assert call_summaries[PRIMARY]["fallback"] is False
+        assert call_summaries[FALLBACK]["fallback"] is True
+        assert all(
+            len(str(summary["runtime_fingerprint"])) == 64 for summary in call_summaries.values()
+        )
+        assert all(
+            summary["runtime_provenance"]["max_output_units"] == 500
+            for summary in call_summaries.values()
+        )
+        assert all("must-never-persist" not in str(summary) for summary in call_summaries.values())
     await db.dispose()
 
 

@@ -21,11 +21,13 @@ from soa_api.dependencies import DbSession
 from soa_api.domain.policies import PolicyVersionRepository
 from soa_api.domain.processes import (
     Process,
+    ProcessDefinitionError,
     ProcessRepository,
     ProcessVersion,
     ProcessVersionRepository,
     create_draft,
     create_process,
+    validate_process_definition,
 )
 from soa_api.domain.resolver import ENVIRONMENT_DEFAULTS, resolve_configuration
 from soa_api.domain.rules import (
@@ -71,6 +73,7 @@ from soa_api.services.config_service import (
 )
 from soa_db import CursorRequest
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.catalogs import CatalogError, materialize_catalog_version_pins
 from soa_db.evaluation_runs import EvaluationRunRepository
 from soa_db.mixins import VersionConflictError
 
@@ -379,14 +382,17 @@ async def create_version(
     if body.from_version_id is not None:
         source = await _load_version(session, authorized, process, body.from_version_id)
         definition = dict(source.definition)
-    draft = await create_draft(
-        session,
-        authorized.org_context,
-        process=process,
-        definition=definition,
-        change_summary=body.change_summary,
-        actor_id=_actor(authorized),
-    )
+    try:
+        draft = await create_draft(
+            session,
+            authorized.org_context,
+            process=process,
+            definition=definition,
+            change_summary=body.change_summary,
+            actor_id=_actor(authorized),
+        )
+    except ProcessDefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return VersionDetailResponse.from_model(draft)
 
 
@@ -409,12 +415,15 @@ async def update_draft(
     try:
         if if_match is not None:
             record.expect_version(if_match)
+        validate_process_definition(body.definition)
         record.definition = dict(body.definition)
         if body.change_summary is not None:
             record.change_summary = body.change_summary
         await session.flush()
     except VersionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except ProcessDefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return VersionDetailResponse.from_model(record)
 
 
@@ -782,7 +791,25 @@ async def publish_stream_version(
             status_code=status.HTTP_409_CONFLICT,
             detail="The parent process's active version could not be loaded.",
         )
-    candidate_snapshot = resolve_snapshot(process_version, draft.overrides)
+    try:
+        try:
+            catalog_version_pins = await materialize_catalog_version_pins(
+                session,
+                authorized.org_context,
+                stream_id=stream.id,
+            )
+        except CatalogError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Promotion blocked: catalog bindings are invalid: {exc}",
+            ) from None
+        candidate_snapshot = resolve_snapshot(
+            process_version,
+            draft.overrides,
+            catalog_version_pins=catalog_version_pins,
+        )
+    except StreamOverrideError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     candidate_config = candidate_snapshot.get("config")
     assert isinstance(candidate_config, dict)
     runtime_problem = await _candidate_runtime_problem(
@@ -820,9 +847,12 @@ async def publish_stream_version(
             draft=draft,
             process_version=process_version,
             actor_id=_actor(authorized),
+            catalog_version_pins=catalog_version_pins,
         )
     except InvalidVersionStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except StreamOverrideError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return StreamVersionResponse.from_model(published)
 
 

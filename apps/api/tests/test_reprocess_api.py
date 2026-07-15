@@ -10,8 +10,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from soa_api.app import create_app
+from soa_api.domain.streams import StreamRepository
+from soa_api.services.runtime_pins import resolve_runtime_pins
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_db.deletion_requests import (
+    DeletionRequestRepository,
+    cancel_document_deletion,
+    request_document_deletion,
+)
 from soa_db.documents import DocumentState, SourceChannel, create_document, transition_document
 from soa_db.jobs import Job
 from soa_db.repository import OrganizationContext
@@ -69,6 +77,12 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
             headers=ADMIN,
         )
         assert granted.status_code == 201, granted.text
+    await publish_runtime_config(
+        client,
+        db,
+        stream_slug="uploads",
+        headers=ADMIN,
+    )
     return client, db
 
 
@@ -114,14 +128,26 @@ async def seed_document(
                     session, context, document=document, to_state=state, actor_id="worker"
                 )
         if with_run:
+            stream = await StreamRepository(session, context).get(stream_id)
+            assert stream is not None
+            pins = await resolve_runtime_pins(
+                session,
+                context,
+                stream_version_id=stream.active_version_id,
+            )
             run = await start_run(
                 session,
                 context,
                 document_id=document.id,
                 input_sha256="c" * 64,
-                stream_version_id=None,
-                config_fingerprint="a" * 64,
+                stream_version_id=pins.stream_version_id,
+                config_fingerprint=pins.config_fingerprint,
                 triggered_by="system:test",
+                instruction_version_id=pins.instruction_version_id,
+                confidence_policy_version_id=pins.confidence_policy_version_id,
+                provider_policy_version_id=pins.provider_policy_version_id,
+                provider_credential_ref=pins.provider_credential_ref,
+                execution_fingerprint=pins.execution_fingerprint,
             )
             run_id = str(run.id)
         return str(document.id), run_id
@@ -166,6 +192,8 @@ async def test_reprocessable_states_requeue_with_a_new_run_intent(
             .one()
         )
         assert job.payload["document_id"] == document_id
+        assert job.payload["provider_policy_version_id"]
+        assert len(job.payload["execution_fingerprint"]) == 64
 
 
 @pytest.mark.parametrize(
@@ -196,6 +224,42 @@ async def test_active_documents_answer_409_from_the_state_machine(
     assert "not allowed" in response.json()["error"]["message"]
 
 
+async def test_non_cancelled_deletion_request_blocks_reprocessing(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    document_id, _ = await seed_document(client, db, to_state=DocumentState.FAILED_TERMINAL)
+    organization_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=organization_id)
+    async with db.session_scope() as session:
+        request = await request_document_deletion(
+            session,
+            context,
+            document_id=uuid.UUID(document_id),
+            reason="verified erasure request",
+            actor_id="user:requester",
+        )
+        request_id = request.id
+
+    blocked = reprocess(client, document_id, ADMIN)
+    assert blocked.status_code == 409
+    assert "deletion request" in blocked.json()["error"]["message"]
+
+    async with db.session_scope() as session:
+        request = await DeletionRequestRepository(session, context).get(request_id)
+        assert request is not None
+        await cancel_document_deletion(
+            session,
+            context,
+            request=request,
+            reason="customer withdrew the erasure request",
+            actor_id="user:requester",
+        )
+
+    allowed = reprocess(client, document_id, ADMIN)
+    assert allowed.status_code == 200, allowed.text
+
+
 async def test_unknown_document_is_404(harness: tuple[TestClient, DatabaseSessions]) -> None:
     client, _db = harness
     response = reprocess(client, str(uuid.uuid4()), ADMIN)
@@ -215,7 +279,8 @@ async def test_retry_mode_pins_the_last_runs_configuration(
     response = reprocess(client, document_id, ADMIN, mode="retry")
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["pinned"]["config_fingerprint"] == "a" * 64
+    assert len(payload["pinned"]["config_fingerprint"]) == 64
+    assert len(payload["pinned"]["execution_fingerprint"]) == 64
     assert payload["run_number"] == 2
     assert "same configuration" in payload["consequence"]
 
@@ -246,7 +311,8 @@ async def test_historical_config_mode_pins_the_chosen_run(
     response = reprocess(client, document_id, ADMIN, mode="historical_config", run_id=run_id)
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["pinned"]["config_fingerprint"] == "a" * 64
+    assert len(payload["pinned"]["config_fingerprint"]) == 64
+    assert len(payload["pinned"]["execution_fingerprint"]) == 64
     assert "HISTORICAL" in payload["consequence"]
 
 
@@ -323,7 +389,7 @@ async def test_runs_endpoint_returns_stage_attempts_with_redacted_summaries(
     assert response.status_code == 200, response.text
     payload = response.json()
     (run_row,) = payload["runs"]
-    assert run_row["config_fingerprint"] == "a" * 64
+    assert len(run_row["config_fingerprint"]) == 64
     (stage_row,) = run_row["stages"]
     assert stage_row["stage"] == "preprocessing"
     assert stage_row["attempt"] == 1

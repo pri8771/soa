@@ -40,13 +40,25 @@ export default defineConfig({
     },
   },
   webServer: {
+    // Build the exact bundle under test with a valid production auth/API
+    // configuration. Reusing an arbitrary dist/preview can leave the app
+    // blank before Playwright's deterministic session mock is installed.
+    command:
+      "pnpm exec vite build && pnpm exec vite preview --port 4173 --strictPort --host 127.0.0.1",
+    env: {
+      VITE_API_BASE_URL: "/api",
+      VITE_AUTH_MODE: "oidc",
+      VITE_OIDC_ISSUER: "https://idp.playwright.invalid",
+      VITE_OIDC_CLIENT_ID: "playwright-e2e",
+    },
     // `pnpm run x -- --flag` forwards the literal `--`, which vite treats as
     // end-of-options — the port/host flags were silently ignored and vite
     // bound to `localhost` (IPv6 ::1 on newer Node), unreachable at the
     // 127.0.0.1 readiness URL. `pnpm exec` forwards flags verbatim.
-    command: "pnpm exec vite preview --port 4173 --strictPort --host 127.0.0.1",
     url: "http://127.0.0.1:4173",
-    reuseExistingServer: !process.env.CI,
+    // A stale preview may have been built with a different authentication
+    // mode, so it is never a valid substitute for this release-gate server.
+    reuseExistingServer: false,
     timeout: 120_000,
     // Surface preview-server output in CI logs when startup fails.
     stdout: "pipe",
