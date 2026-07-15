@@ -128,6 +128,10 @@ class ExtractedField(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixi
     instruction_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     config_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     execution_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Deterministic catalog decision, including candidates, scores, and reasons.
+    catalog_match_json: Mapped[dict[str, Any] | None] = mapped_column(
+        "catalog_match", PORTABLE_JSON, nullable=True
+    )
     #: Serialized Evidence list (see evidence_spans()).
     evidence_json: Mapped[list[Any]] = mapped_column(
         "evidence", PORTABLE_JSON, nullable=False, default=list

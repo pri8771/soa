@@ -56,6 +56,7 @@ from soa_rules.baseline import (
 )
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
+from soa_worker.catalog_business import validate_order_business_data
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
 from soa_worker.extraction.provider import (
     ExtractionProvider,
@@ -100,6 +101,9 @@ class PipelineConfig:
     confidence_policy: ConfidencePolicy = dataclass_field(default_factory=ConfidencePolicy)
     render_limits: RenderLimits = dataclass_field(default_factory=RenderLimits)
     languages: tuple[str, ...] = ("en",)
+    #: Immutable stream-level business policies used during validation.
+    stream_config: Mapping[str, Any] = dataclass_field(default_factory=dict)
+    input_contract: str = "single_sales_order"
 
     def normalizer_for(self, spec: FieldSpec) -> str | None:
         override = self.normalizer_overrides.get(spec.key)
@@ -211,7 +215,7 @@ class _Pipeline:
             )
         return StageOutcome(output_summary={"pages": len(pages)})
 
-    # -- classifying / splitting: honest placeholders until AIO -------------
+    # -- classifying / splitting: enforced production input contract ---------
 
     async def classifying(
         self,
@@ -221,11 +225,16 @@ class _Pipeline:
         document: Document,
         stage_run: StageRun,
     ) -> StageOutcome:
+        if self._config.input_contract != "single_sales_order":
+            raise StageExecutionError(
+                "this deployment supports exactly one sales order per input",
+                retryable=False,
+            )
         return StageOutcome(
             output_summary={
                 "document_type": "sales_order",
-                "method": "assumed",
-                "note": "single-type pipeline; a real classifier arrives with AIO",
+                "method": "input_contract",
+                "input_contract": "single_sales_order",
             }
         )
 
@@ -240,7 +249,8 @@ class _Pipeline:
         return StageOutcome(
             output_summary={
                 "documents": 1,
-                "note": "no split performed; a real splitter arrives with AIO",
+                "method": "input_contract",
+                "input_contract": "single_sales_order",
             }
         )
 
@@ -547,17 +557,30 @@ class _Pipeline:
         ]
         decision = decide_route(signals, evaluation, self._config.confidence_policy)
 
+        business = await validate_order_business_data(
+            session,
+            context,
+            run,
+            document,
+            rows,
+            stream_config=self._config.stream_config,
+        )
+        decision_json = decision.to_json()
+        if business.findings:
+            decision_json["route"] = "review_required"
+            decision_json["reasons"].extend(business.findings)
+
         flagged = {
-            (reason.field_key, reason.row_index)
-            for reason in decision.reasons
-            if reason.field_key is not None
+            (reason["field_key"], reason.get("row_index"))
+            for reason in decision_json["reasons"]
+            if reason.get("field_key") is not None
         }
         for row in rows:
             if (row.field_key, row.row_index) in flagged:
                 row.validation_status = ValidationStatus.REVIEW.value
             elif row.raw_value is not None:
                 row.validation_status = ValidationStatus.PASSED.value
-        if decision.route == "review_required":
+        if decision_json["route"] == "review_required":
             # REV-001 routing: the review task carries the decision's own
             # reasons, so the reviewer sees exactly why it landed there.
             await route_document_to_review(
@@ -565,7 +588,7 @@ class _Pipeline:
                 context,
                 document_id=document.id,
                 run_id=run.id,
-                reasons=[reason.to_json() for reason in decision.reasons],
+                reasons=decision_json["reasons"],
                 priority=document.priority,
                 blocking=evaluation.blocking,
                 sla_due_at=document.sla_due_at,
@@ -575,9 +598,15 @@ class _Pipeline:
             output_summary={
                 "rules_version": self._config.rules_version,
                 "evaluation": evaluation.summary(),
-                "decision": decision.to_json(),
+                "decision": decision_json,
+                "business_validation": {
+                    "catalog_versions": business.catalog_versions,
+                    "matches": business.matches,
+                    "findings": list(business.findings),
+                    "notes": list(business.notes),
+                },
             },
-            route=decision.route,
+            route=str(decision_json["route"]),
         )
 
 

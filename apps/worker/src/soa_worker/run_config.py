@@ -381,6 +381,9 @@ async def load_resolved_run_config(
     currency = config.get("currency", "USD")
     if not isinstance(locale, str) or not isinstance(currency, str):
         raise RunConfigError("the pinned normalization locale or currency is invalid")
+    input_contract = config.get("input_contract", "single_sales_order")
+    if input_contract != "single_sales_order":
+        raise RunConfigError("the pinned input contract is not supported by this worker")
     pipeline = PipelineConfig(
         field_specs=specs,
         criticality=criticality,
@@ -390,6 +393,8 @@ async def load_resolved_run_config(
         normalizer_overrides=normalizers,
         confidence_policy=_confidence_policy(confidence_definition, confidence_version),
         languages=tuple(language.lower() for language in languages),
+        stream_config=config,
+        input_contract=input_contract,
     )
     return ResolvedRunConfig(
         fingerprint=str(effective_snapshot["fingerprint"]),

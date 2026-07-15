@@ -89,6 +89,17 @@ async def validate_process_draft(
     """
     findings: list[ValidationFinding] = []
 
+    input_contract = draft.definition.get("input_contract", "single_sales_order")
+    if input_contract != "single_sales_order":
+        findings.append(
+            ValidationFinding(
+                level="error",
+                path="input_contract",
+                message="production currently supports exactly one sales order per input; "
+                "packet classification and splitting are not available",
+            )
+        )
+
     schema_version = await SchemaVersionRepository(session, context).get_published(process.id)
     field_types: dict[str, str] = {}
     if schema_version is None:
@@ -186,6 +197,7 @@ async def publish_process_draft_checked(
     # without consulting whichever versions happen to be current later.
     draft.definition = {
         **draft.definition,
+        "input_contract": "single_sales_order",
         "schema_version_id": str(schema.id),
         "rule_set_version_id": str(rules.id),
         "provider_policy_version_id": str(provider.id),

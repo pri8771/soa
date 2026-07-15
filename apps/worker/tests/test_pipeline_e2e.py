@@ -11,6 +11,14 @@ from sqlalchemy import select
 
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
+from soa_db.catalogs import (
+    CatalogBindingMode,
+    activate_catalog_version,
+    add_catalog_record,
+    bind_catalog_to_stream,
+    create_catalog,
+    create_catalog_version,
+)
 from soa_db.documents import (
     DocumentRepository,
     DocumentState,
@@ -87,6 +95,87 @@ async def seed_document(
                 session, CONTEXT, document=document, to_state=state, actor_id="worker"
             )
         return document.id
+
+
+async def seed_reference_catalogs(db: DatabaseSessions) -> None:
+    async with db.session_scope() as session:
+        customers = await create_catalog(
+            session,
+            CONTEXT,
+            name="Customers",
+            slug="customers",
+            catalog_type="customers",
+            source="manual",
+            actor_id="user:test",
+        )
+        customer_version = await create_catalog_version(
+            session, CONTEXT, catalog=customers, actor_id="user:test"
+        )
+        await add_catalog_record(
+            session,
+            CONTEXT,
+            version=customer_version,
+            source_id="C-100",
+            display_name="Acme Industrial Supply",
+            attributes={"roles": ["sold_to"]},
+        )
+        await activate_catalog_version(
+            session,
+            CONTEXT,
+            catalog=customers,
+            version=customer_version,
+            actor_id="user:test",
+        )
+        await bind_catalog_to_stream(
+            session,
+            CONTEXT,
+            stream_id=STREAM,
+            catalog=customers,
+            mode=CatalogBindingMode.PINNED,
+            pinned_version_id=customer_version.id,
+            actor_id="user:test",
+        )
+
+        products = await create_catalog(
+            session,
+            CONTEXT,
+            name="Products",
+            slug="products",
+            catalog_type="products",
+            source="manual",
+            actor_id="user:test",
+        )
+        product_version = await create_catalog_version(
+            session, CONTEXT, catalog=products, actor_id="user:test"
+        )
+        for source_id, name, price in (
+            ("WID-100", "Widget", "45.00"),
+            ("GAD-205", "Gadget", "261.50"),
+        ):
+            await add_catalog_record(
+                session,
+                CONTEXT,
+                version=product_version,
+                source_id=source_id,
+                display_name=name,
+                attributes={"base_uom": "EA", "price": price, "currency": "USD"},
+            )
+        await activate_catalog_version(
+            session,
+            CONTEXT,
+            catalog=products,
+            version=product_version,
+            actor_id="user:test",
+        )
+        await bind_catalog_to_stream(
+            session,
+            CONTEXT,
+            stream_id=STREAM,
+            catalog=products,
+            mode=CatalogBindingMode.PINNED,
+            pinned_version_id=product_version.id,
+            actor_id="user:test",
+        )
 
 
 def preprocess_payload(document_id: uuid.UUID) -> dict[str, Any]:
@@ -227,6 +316,33 @@ async def test_real_model_provider_receives_recognized_document_text(
         assert all(page.text_artifact_id is not None for page in pages)
         artifacts = await ArtifactRepository(session, CONTEXT).list_for_document(document_id)
         assert len([item for item in artifacts if item.kind == ArtifactKind.OCR_TEXT.value]) == 2
+
+
+async def test_bound_catalogs_match_and_validate_inside_pipeline(db: DatabaseSessions) -> None:
+    await seed_reference_catalogs(db)
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None and document.state == "approved"
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        fields = await ExtractedFieldRepository(session, CONTEXT).list_for_run(run.id)
+        matched = {
+            (field.field_key, field.row_index): field.catalog_match_json
+            for field in fields
+            if field.catalog_match_json is not None
+        }
+        assert matched[("customer_name", None)]["selected_source_id"] == "C-100"
+        assert matched[("lines.sku", 0)]["selected_source_id"] == "WID-100"
+        assert matched[("lines.sku", 1)]["selected_source_id"] == "GAD-205"
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        summary = {stage.stage: stage for stage in stages}["validating_data"].output_summary
+        assert summary["business_validation"]["matches"] == 3
+        assert summary["business_validation"]["findings"] == []
 
 
 async def test_worker_kill_mid_pipeline_resumes_from_the_database(
