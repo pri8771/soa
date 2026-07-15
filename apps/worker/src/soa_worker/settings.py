@@ -18,19 +18,12 @@ class WorkerSettings(BaseServiceSettings):
     model_config = SettingsConfigDict(env_prefix="SOA_WORKER_", frozen=True)
 
     service_name: str = "soa-worker"
-    poll_interval_seconds: float = Field(default=1.0, gt=0)
-    heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
-    #: Container liveness (REL-001). When set, the heartbeat loop touches
-    #: this file every beat; ``python -m soa_worker.healthcheck`` fails if
-    #: it is missing or older than heartbeat_interval times the staleness
-    #: factor. Unset disables the file (the default outside containers).
-    liveness_file: str | None = None
-    liveness_staleness_factor: float = Field(default=3.0, gt=1)
 
-    # The worker must read the exact objects the API wrote. Local
-    # development therefore points both services at MinIO; production uses
-    # S3-compatible storage or GCS.
-    storage_backend: Literal["s3", "gcs"] = "s3"
+    #: Object storage the worker reads originals from and writes derived
+    #: artifacts to — must match the API's store. "s3" (MinIO/S3), "gcs",
+    #: or "filesystem" (development-only local disk shared with the API).
+    storage_backend: Literal["s3", "gcs", "filesystem"] = "s3"
+    storage_filesystem_root: str = ".local-storage"
     storage_endpoint_url: str | None = None
     storage_access_key: str | None = None
     storage_secret_key: str | None = None
@@ -41,6 +34,15 @@ class WorkerSettings(BaseServiceSettings):
     storage_sse_kms_key_id: str | None = None
     storage_gcs_project: str | None = None
     storage_gcs_kms_key_name: str | None = None
+
+    poll_interval_seconds: float = Field(default=1.0, gt=0)
+    heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
+    #: Container liveness (REL-001). When set, the heartbeat loop touches
+    #: this file every beat; ``python -m soa_worker.healthcheck`` fails if
+    #: it is missing or older than heartbeat_interval times the staleness
+    #: factor. Unset disables the file (the default outside containers).
+    liveness_file: str | None = None
+    liveness_staleness_factor: float = Field(default=3.0, gt=1)
 
     # Deprecated development fallback retained for environment compatibility.
     # Runtime extraction is selected from each run's pinned provider policy.
@@ -85,7 +87,9 @@ class WorkerSettings(BaseServiceSettings):
     def _validate_runtime_dependencies(self) -> Self:
         if self.is_production:
             problems: list[str] = []
-            if self.storage_backend == "gcs":
+            if self.storage_backend == "filesystem":
+                problems.append("filesystem storage is development-only")
+            elif self.storage_backend == "gcs":
                 if not self.storage_gcs_project:
                     problems.append("GCS storage requires storage_gcs_project")
             elif not (

@@ -94,6 +94,42 @@ Owner decisions this session: hosting = **GCP/Firebase, not Firestore** (OPEN-00
 
 GTM-003 onboarding checklist, GTM-005 in-app help, and GTM-006 support intake are now DONE (`apps/web/src/screens/GettingStarted.tsx` — resumable checklist deriving live status; `apps/web/src/components/help/` — HelpTip + content, wired onto Upload/Review; `apps/web/src/screens/Support.tsx` — support reference + REL-011 severity model + secure-attachment guidance + request composer; the GTM-006 staff-side triage console remains ANA-008, owner-blocked on identity). **With these, every agent-buildable task is complete.** Owner-blocked: REL-004 restore rehearsal (needs live DB), REL-012 provider-migration rehearsal (needs REL-002/004 applied), PIL-001..008 (needs a pilot customer), ANA-008 support console (OPEN-002 identity), AIO-005/006 (OPEN-003 OCR + heavy deps), CAT-008 (heavy embedding dep), SEC-012 (external pen test), ENT-001..009 (post-pilot).
 
+### 2.3c Local runnable core (upload → process → review, no Docker)
+
+The first real slice of codex workstream #2 ("runnable core") is now wired so a
+purchase order actually flows end to end on a developer machine — proven live
+(upload via the API → filesystem storage → worker claim loop → `approved`, shown
+in the Documents queue). New pieces:
+
+- **Worker claim loop** (`apps/worker/src/soa_worker/job_runner.py` +
+  `main.py`): the worker now builds the PRC-003 orchestrator + pipeline,
+  registers `document.preprocess`/`document.stage` handlers, and runs the
+  JOB-003/004/005 claim→dispatch→complete loop (was previously an idle
+  heartbeat with an empty registry). Extraction uses the deterministic mock
+  provider; wiring the AIO provider router per-stream is the follow-on.
+  Covered by `apps/worker/tests/test_job_runner.py` (drives a PO to `approved`
+  through the real jobs table).
+- **Filesystem object store** (`packages/storage/src/soa_storage/filesystem.py`,
+  `storage_backend="filesystem"`): zero-dependency local storage; the API
+  serves signed PUT/GET at `/_local-blobs` (`apps/api/.../routers/local_blobs.py`)
+  so a browser uploads exactly as against presigned S3, and the worker reads the
+  same bytes off disk. Dev-only — settings refuse it in production.
+- **`make seed`** (`scripts/seed_local.py`): creates the Northstar demo org
+  (dev admin as owner), a published purchase-order process, and an active
+  `uploads` stream — so the Upload screen has a target and the dev login lands
+  on a populated tenant. Replaces the old stub.
+- **Dev auto-login** (`apps/web/src/main.tsx`): in a dev build the web app
+  defaults the dev-identity session to `admin@northstar.example`, removing the
+  manual `localStorage` step.
+- **`docs/LOCAL_DEV.md`**: the authoritative no-Docker run guide; `make dev`
+  now prints the matching commands.
+
+Honest scope: this is the local demo path, not the production runtime. Still
+unwired (later #2 threads): the AIO provider router / real extraction, approval
+→ export delivery through the worker, per-stream config resolution (the pipeline
+uses the canonical baseline config), and the production system identity/RLS
+context for cross-org claiming (local uses a superuser role).
+
 ### 2.4 Execution mode
 
 Owner wants autonomous task-by-task execution: start at `FND-001`, work down the backlog in dependency order, commit per task (or tightly coupled group) to `dev`, push regularly, and do not stop to ask between tasks unless a genuine product decision is required.

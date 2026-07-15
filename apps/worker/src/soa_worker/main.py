@@ -70,6 +70,50 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
         )
 
 
+def _build_object_store(settings: WorkerSettings) -> ObjectStore:
+    """Build the same object store the API writes to, so the worker reads
+    the originals it uploaded and writes derived artifacts alongside."""
+    if settings.storage_backend == "filesystem":
+        from soa_storage.filesystem import FilesystemObjectStore
+
+        return FilesystemObjectStore(root=settings.storage_filesystem_root)
+    if settings.storage_backend == "gcs":
+        from soa_storage.gcs import GcsObjectStore, GcsSettings
+
+        if not settings.storage_gcs_project:
+            raise ValueError("worker GCS storage requires SOA_WORKER_STORAGE_GCS_PROJECT")
+        return GcsObjectStore(
+            GcsSettings(
+                bucket=settings.storage_bucket,
+                project=settings.storage_gcs_project,
+                kms_key_name=settings.storage_gcs_kms_key_name,
+            )
+        )
+    from soa_storage.s3 import S3ObjectStore, S3Settings
+
+    if not (
+        settings.storage_endpoint_url
+        and settings.storage_access_key
+        and settings.storage_secret_key
+    ):
+        raise ValueError(
+            "worker S3 storage requires SOA_WORKER_STORAGE_ENDPOINT_URL, "
+            "SOA_WORKER_STORAGE_ACCESS_KEY, and SOA_WORKER_STORAGE_SECRET_KEY"
+        )
+    return S3ObjectStore(
+        S3Settings(
+            endpoint_url=settings.storage_endpoint_url,
+            access_key=settings.storage_access_key,
+            secret_key=settings.storage_secret_key,
+            bucket=settings.storage_bucket,
+            region=settings.storage_region,
+            force_path_style=settings.storage_force_path_style,
+            sse=settings.storage_sse,
+            sse_kms_key_id=settings.storage_sse_kms_key_id,
+        )
+    )
+
+
 async def _run() -> None:
     settings = load_settings()
     configure_logging(
@@ -78,7 +122,7 @@ async def _run() -> None:
         level="DEBUG" if settings.debug else "INFO",
     )
     _register_extraction_providers(settings)
-    db = DatabaseSessions(create_database_engine(settings.database_url))
+    db = DatabaseSessions(create_database_engine(settings.database_url.get_secret_value()))
     store = _build_object_store(settings)
     if hasattr(store, "ensure_bucket"):
         await store.ensure_bucket()
@@ -189,44 +233,6 @@ async def _run() -> None:
         await worker.run()
     finally:
         await db.dispose()
-
-
-def _build_object_store(settings: WorkerSettings) -> ObjectStore:
-    if settings.storage_backend == "gcs":
-        from soa_storage.gcs import GcsObjectStore, GcsSettings
-
-        if not settings.storage_gcs_project:
-            raise ValueError("worker GCS storage requires SOA_WORKER_STORAGE_GCS_PROJECT")
-        return GcsObjectStore(
-            GcsSettings(
-                bucket=settings.storage_bucket,
-                project=settings.storage_gcs_project,
-                kms_key_name=settings.storage_gcs_kms_key_name,
-            )
-        )
-    from soa_storage.s3 import S3ObjectStore, S3Settings
-
-    if not (
-        settings.storage_endpoint_url
-        and settings.storage_access_key
-        and settings.storage_secret_key
-    ):
-        raise ValueError(
-            "worker S3 storage requires SOA_WORKER_STORAGE_ENDPOINT_URL, "
-            "SOA_WORKER_STORAGE_ACCESS_KEY, and SOA_WORKER_STORAGE_SECRET_KEY"
-        )
-    return S3ObjectStore(
-        S3Settings(
-            endpoint_url=settings.storage_endpoint_url,
-            access_key=settings.storage_access_key,
-            secret_key=settings.storage_secret_key,
-            bucket=settings.storage_bucket,
-            region=settings.storage_region,
-            force_path_style=settings.storage_force_path_style,
-            sse=settings.storage_sse,
-            sse_kms_key_id=settings.storage_sse_kms_key_id,
-        )
-    )
 
 
 def main() -> None:
