@@ -18,13 +18,14 @@ from soa_db.documents import (
     create_document,
     transition_document,
 )
-from soa_db.extracted_fields import ExtractedFieldRepository
+from soa_db.extracted_fields import EvidenceCertainty, ExtractedFieldRepository
 from soa_db.jobs import Job, JobStatus
 from soa_db.pages import DocumentPageRepository
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.state_projection import verify_state_projection
 from soa_db.stream_config import stream_versions_read
+from soa_db.usage_ledger import UsageEntry
 from soa_storage.keys import artifact_key
 from soa_storage.memory import MemoryObjectStore
 from soa_storage.store import sha256_hex
@@ -36,6 +37,7 @@ from soa_worker.extraction.mock import (
 from soa_worker.extraction.provider import ExtractionRequest, ExtractionResult
 from soa_worker.orchestrator import STAGE_SEQUENCE, Orchestrator
 from soa_worker.pipeline import build_executors
+from soa_worker.providers.native_text import NativeTextPage, NativeTextResult, TextSpan
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STREAM = uuid.UUID("33333333-3333-4333-8333-333333333333")
@@ -177,7 +179,13 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         po = by_key[("po_number", None)]
         assert po.raw_value == "PO-100042"
         assert po.normalized_value == "PO-100042"
-        assert po.evidence_spans()[0].polygon is not None
+        # AIO-014 honesty: the mock has no native-text geometry, so its
+        # evidence is page-level — no fabricated full-page polygon, but
+        # the verbatim quote is preserved.
+        span = po.evidence_spans()[0]
+        assert span.certainty == EvidenceCertainty.PAGE
+        assert span.polygon is None
+        assert span.quote == "PO-100042"
         assert po.validation_status == "passed"
         assert by_key[("order_date", None)].normalized_value == "2026-03-14"
         assert by_key[("requested_delivery_date", None)].normalized_value == "2026-04-01"
@@ -196,6 +204,27 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         assert validating.output_summary["evaluation"]["blocking"] is False
         assert validating.output_summary["rules_version"] == "1.1.0"
         assert by_stage["extracting"].provider == "mock"
+
+        # ANA-003 usage ledger: the extracting stage recorded this run's
+        # consumption as an immutable ledger row, so billing/quota/cost
+        # analytics see real facts instead of zero.
+        usage = (
+            (await session.execute(select(UsageEntry).where(UsageEntry.organization_id == ORG)))
+            .scalars()
+            .all()
+        )
+        extraction_usage = [e for e in usage if e.cost_category == "extraction"]
+        assert len(extraction_usage) == 1
+        entry = extraction_usage[0]
+        assert entry.entry_type == "usage"
+        assert entry.provider == "mock"
+        assert entry.document_id == document_id
+        assert entry.run_id == run.id
+        assert entry.stream_id == STREAM
+        assert entry.page_count == 1
+        assert entry.billed_unit == "pages"
+        assert entry.billed_quantity == 1
+        assert entry.source_reference == f"{run.id}:extracting"
 
 
 async def test_worker_kill_mid_pipeline_resumes_from_the_database(
@@ -353,6 +382,100 @@ async def test_the_mock_provider_never_spawns_native_text(
         document = await DocumentRepository(session, CONTEXT).get(document_id)
         assert document is not None
         assert document.state == "approved"
+
+
+# -- honest evidence: quote -> coordinates (AIO-014 wired) -------------------
+
+
+class _StubNativeText:
+    """A native-text provider returning fixed page geometry, so the
+    AIO-014 resolver has REAL coordinates to anchor a quote against
+    without depending on the pdfium sandbox."""
+
+    def __init__(self, pages: tuple[NativeTextPage, ...]) -> None:
+        self._pages = pages
+
+    @property
+    def name(self) -> str:
+        return "stub-native-text"
+
+    async def read(self, request: object) -> NativeTextResult:
+        return NativeTextResult(provider=self.name, pages=self._pages)
+
+
+#: A real sub-page box (not the full page) where the PO number "sits".
+PO_BOX = ((100.0, 100.0), (400.0, 100.0), (400.0, 140.0), (100.0, 140.0))
+
+
+async def test_matching_quote_resolves_to_a_subpage_region(
+    db: DatabaseSessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-mock provider's evidence quote that matches injected
+    native-text geometry is stored as a REGION at the resolved sub-page
+    box — real coordinates, never the fabricated full page. A quote with
+    no match on the page stays honestly page-level."""
+    page = NativeTextPage(
+        page_number=1,
+        width_px=1700,
+        height_px=2200,
+        spans=(TextSpan(text="PO-100042", polygon=PO_BOX),),
+        coverage=1.0,
+    )
+    monkeypatch.setattr(
+        "soa_worker.pipeline.create_provider",
+        lambda *args, **kwargs: _StubNativeText((page,)),
+    )
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    orchestrator = Orchestrator(db, build_executors(store, _CapturingProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        fields = await ExtractedFieldRepository(session, CONTEXT).list_for_run(run.id)
+        by_key = {(f.field_key, f.row_index): f for f in fields}
+
+        # po_number: the quote resolved to REAL geometry.
+        po = by_key[("po_number", None)].evidence_spans()[0]
+        assert po.certainty == EvidenceCertainty.REGION
+        assert po.polygon == PO_BOX
+        full_page = ((0.0, 0.0), (1700.0, 0.0), (1700.0, 2200.0), (0.0, 2200.0))
+        assert po.polygon != full_page, "resolved to a sub-page box, not the full page"
+
+        # customer_name: its quote is not on the page — honest PAGE, no
+        # fabricated polygon.
+        customer = by_key[("customer_name", None)].evidence_spans()[0]
+        assert customer.certainty == EvidenceCertainty.PAGE
+        assert customer.polygon is None
+        assert customer.quote == "Acme Industrial Supply"
+
+
+async def test_no_native_geometry_keeps_evidence_page_level(
+    db: DatabaseSessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When native text reads nothing (a scanned original), a non-mock
+    provider's evidence has no geometry to resolve against — every span
+    is page-level, and no full-page polygon is invented."""
+    monkeypatch.setattr(
+        "soa_worker.pipeline.create_provider",
+        lambda *args, **kwargs: _StubNativeText(()),
+    )
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store)
+    orchestrator = Orchestrator(db, build_executors(store, _CapturingProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        fields = await ExtractedFieldRepository(session, CONTEXT).list_for_run(run.id)
+        with_evidence = [f for f in fields if f.evidence_json]
+        assert with_evidence, "the provider returned evidence"
+        for field in with_evidence:
+            for span in field.evidence_spans():
+                assert span.certainty == EvidenceCertainty.PAGE
+                assert span.polygon is None
 
 
 # -- duplicate policy at validation (ING-006) --------------------------------

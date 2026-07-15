@@ -20,7 +20,7 @@ worker runs the canonical config until that lands.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ from soa_db.repository import OrganizationContext
 from soa_db.review_tasks import route_document_to_review
 from soa_db.runs import ProcessingRun, StageRun
 from soa_db.stream_config import pinned_stream_config
+from soa_db.usage_ledger import record_usage
 from soa_normalize import NormalizationContext, NormalizationError, normalize
 from soa_rules import (
     ConfidencePolicy,
@@ -59,21 +60,85 @@ from soa_rules.baseline import (
 )
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
+from soa_worker.evidence_resolver import (
+    TextGeometry,
+    geometry_from_native_page,
+    resolve_quote,
+)
 from soa_worker.extraction.mock import PROVIDER_NAME as MOCK_PROVIDER_NAME
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
 from soa_worker.extraction.provider import (
+    EvidenceSpan,
     ExtractionProvider,
     ExtractionProviderError,
     ExtractionRequest,
+    ExtractionResult,
     FieldSpec,
     PageInput,
 )
+from soa_worker.extraction_repair import RepairableExtractionProvider, extract_with_repair
 from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
 from soa_worker.providers import Capability, create_provider
-from soa_worker.providers.native_text import NativeTextError, NativeTextRequest
+from soa_worker.providers.native_text import (
+    NativeTextError,
+    NativeTextPage,
+    NativeTextRequest,
+)
 from soa_worker.rendering import RenderError, RenderLimits, render_document
 
 ACTOR = "system:pipeline"
+
+
+class _RepairChannelProvider:
+    """Adapt an :class:`ExtractionProvider` to the AIO-012 repair
+    interface so the extracting stage can run every provider through
+    :func:`extract_with_repair` uniformly. Model adapters expose the
+    ``repair_hint`` channel natively and receive it; the mock never emits
+    :class:`ModelOutputInvalidError`, so it is only ever called without a
+    hint and a plain ``extract`` suffices — the mock path is unchanged."""
+
+    def __init__(self, provider: ExtractionProvider) -> None:
+        self._provider = provider
+
+    @property
+    def name(self) -> str:
+        return self._provider.name
+
+    async def extract(
+        self, request: ExtractionRequest, *, repair_hint: str | None = None
+    ) -> ExtractionResult:
+        if repair_hint is None:
+            return await self._provider.extract(request)
+        # A hint only ever follows a ModelOutputInvalidError, which only
+        # repairable (model) adapters raise — so this branch is theirs.
+        repairable = cast(RepairableExtractionProvider, self._provider)
+        return await repairable.extract(request, repair_hint=repair_hint)
+
+
+def _resolve_evidence(span: EvidenceSpan, geometry_by_page: Mapping[int, TextGeometry]) -> Evidence:
+    """AIO-014: turn one provider evidence span into stored evidence with
+    HONEST certainty. A span whose verbatim quote resolves to real
+    positioned text on its page (native-text geometry) becomes a REGION
+    carrying those resolved coordinates; anything else — no quote, no
+    geometry for the page (the mock, or a scanned original), or a quote
+    that does not match — is page-level, and no polygon is ever
+    fabricated."""
+    geometry = geometry_by_page.get(span.page_number)
+    if span.quote and geometry is not None:
+        resolved = resolve_quote(span.quote, geometry)
+        if resolved.match_kind in ("exact", "fuzzy"):
+            return Evidence(
+                page_number=span.page_number,
+                certainty=EvidenceCertainty.REGION,
+                polygon=resolved.polygon,
+                quote=span.quote,
+            )
+    return Evidence(
+        page_number=span.page_number,
+        certainty=EvidenceCertainty.PAGE,
+        polygon=None,
+        quote=span.quote,
+    )
 
 
 @dataclass(frozen=True)
@@ -134,6 +199,7 @@ class _Pipeline:
     ) -> None:
         self._store = store
         self._provider = provider
+        self._repairable = _RepairChannelProvider(provider)
         self._config = config
 
     # -- preprocessing: render the original into bounded page rasters -------
@@ -248,7 +314,16 @@ class _Pipeline:
         pages = await DocumentPageRepository(session, context).list_for_run(run.id)
         if not pages:
             raise StageExecutionError("no rendered pages to extract from", retryable=False)
-        text_by_page = await self._native_page_text(session, context, document)
+        # ONE native-text read yields both the per-page prompt text and
+        # the per-page geometry AIO-014 resolves quotes against.
+        native_pages = await self._native_pages(session, context, document)
+        text_by_page = {
+            number: "\n".join(span.text for span in page.spans)
+            for number, page in native_pages.items()
+        }
+        geometry_by_page = {
+            number: geometry_from_native_page(page) for number, page in native_pages.items()
+        }
         request = ExtractionRequest(
             document_id=document.id,
             document_sha256=document.content_sha256,
@@ -265,9 +340,14 @@ class _Pipeline:
             fields=self._config.field_specs,
         )
         try:
-            result = await self._provider.extract(request)
+            # AIO-012: bounded in-call repair. A passthrough for the mock
+            # (it never returns malformed output); model adapters re-ask
+            # on ModelOutputInvalidError and fall back to an honest
+            # all-absent result once the attempt/cost ceilings are spent.
+            repaired = await extract_with_repair(self._repairable, request)
         except ExtractionProviderError as error:
             raise StageExecutionError(str(error), retryable=error.retryable) from None
+        result = repaired.result
 
         dimensions = {p.page_number: (p.width_px, p.height_px) for p in pages}
         for extracted in result.fields:
@@ -283,19 +363,36 @@ class _Pipeline:
                 provider_model=result.model,
                 row_index=extracted.row_index,
                 evidence=tuple(
-                    Evidence(
-                        page_number=span.page_number,
-                        certainty=EvidenceCertainty.REGION,
-                        polygon=span.polygon,
-                        quote=span.quote,
-                    )
-                    for span in extracted.evidence
+                    _resolve_evidence(span, geometry_by_page) for span in extracted.evidence
                 ),
                 candidates=tuple(
                     Candidate(c.raw_value, c.confidence) for c in extracted.candidates
                 ),
                 page_dimensions=dimensions,
             )
+        # ANA-003 usage ledger: record this run's extraction consumption
+        # in the SAME transaction as the stage, so billing/quota/analytics
+        # cannot drift from what actually processed. The document-once and
+        # reprocess-page rules are applied later at statement time
+        # (soa_db.billing_statement); here we record the run's real facts,
+        # idempotent on the (run, stage) reference so a retried delivery
+        # cannot double-bill.
+        await record_usage(
+            session,
+            context,
+            provider=result.provider,
+            provider_model=result.model,
+            cost_category="extraction",
+            estimated_cost_cents=result.cost_cents,
+            page_count=len(pages),
+            billed_unit="pages",
+            billed_quantity=len(pages),
+            stream_id=document.stream_id,
+            document_id=document.id,
+            run_id=run.id,
+            source_reference=f"{run.id}:extracting",
+            actor_id=ACTOR,
+        )
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
         summary = confidence_summary(rows)
         summary["warnings"] = list(result.warnings)
@@ -303,15 +400,17 @@ class _Pipeline:
             output_summary=summary, cost_cents=result.cost_cents, provider=result.provider
         )
 
-    async def _native_page_text(
+    async def _native_pages(
         self, session: AsyncSession, context: OrganizationContext, document: Document
-    ) -> dict[int, str]:
-        """Per-page native PDF text (AIO-002) for the extraction request.
-        Model adapters build their prompts from ``PageInput.text``, so a
-        real provider gets the document's own words; the mock reads
-        nothing and must never spawn the native-text sandbox. A document
-        native text cannot read — a scanned or image original — honestly
-        yields nothing, leaving ``text=None`` on every page."""
+    ) -> dict[int, NativeTextPage]:
+        """Per-page native PDF text (AIO-002), read ONCE. Each page it
+        returns carries both the document's own words (the extracting
+        stage joins them for ``PageInput.text``, so a real provider gets
+        the document's words) and the positioned spans AIO-014 resolves
+        quotes against. The mock reads nothing and must never spawn the
+        native-text sandbox; a document native text cannot read — a
+        scanned or image original — honestly yields nothing, so those
+        pages get neither prompt text nor geometry."""
         if self._provider.name == MOCK_PROVIDER_NAME:
             return {}
         artifacts = await ArtifactRepository(session, context).list_for_document(document.id)
@@ -339,11 +438,7 @@ class _Pipeline:
             )
         except NativeTextError:
             return {}
-        return {
-            page.page_number: "\n".join(span.text for span in page.spans)
-            for page in result.pages
-            if page.spans
-        }
+        return {page.page_number: page for page in result.pages if page.spans}
 
     # -- normalizing: raw -> canonical, never overwriting raw ------------------
 
