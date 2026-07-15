@@ -114,6 +114,11 @@ deployment.
   pinned (not live-editable) retention window, with an absolute
   **legal-hold** override that always wins, and a gated state machine
   (`RETAINED → ELIGIBLE → PENDING_APPROVAL → APPROVED → DELETED`).
+  **Wiring status, stated honestly:** today only the operator-initiated
+  deletion path is live — the `data.delete` endpoint (SEC-010) passes a
+  document directly to `APPROVED` on an authorized operator's sign-off —
+  while engine-driven scheduled eligibility (automatic `RETAINED → ELIGIBLE`
+  aging) is not yet connected to any scheduler.
 - **Deletion** — erasure runs only after explicit approval: it removes
   the document's object-store artifacts and derived rows, reconciles that
   the objects are gone, and leaves an immutable **tombstone** plus a

@@ -76,7 +76,10 @@ there is no login step.
 
 ## Optional: real extraction instead of the mock
 
-The pipeline defaults to the deterministic mock provider. To use a real model,
-run a local LLM (Ollama) or set a BYO key — see [`docs/LLM_PROVIDERS.md`](LLM_PROVIDERS.md).
-Wiring the provider router into the worker's pipeline (so per-stream provider
-policy is honored) is a follow-on; today the worker always uses the mock.
+The pipeline defaults to the deterministic mock provider, but the worker
+honors `SOA_WORKER_EXTRACTION_PROVIDER` — set it to a registered provider name
+to run a real model instead (a local LLM via Ollama, or a BYO Claude / Gemini /
+OpenAI key). See [`docs/LLM_PROVIDERS.md`](LLM_PROVIDERS.md) for the provider
+names and setup. Per-stream provider routing (so each stream can pick its own
+provider) is still a follow-on; the value of `SOA_WORKER_EXTRACTION_PROVIDER`
+is a single worker-level choice applied to every run.
