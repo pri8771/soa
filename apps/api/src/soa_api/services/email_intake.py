@@ -37,6 +37,7 @@ from soa_api.domain.tenancy import Organization
 from soa_api.domain.uploads import SUPPORTED_UPLOAD_TYPES
 from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
 from soa_api.services.malware import MalwareScanner
+from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
 from soa_db.audit import ActorType
 from soa_db.documents import SourceChannel
 from soa_db.repository import OrganizationContext
@@ -172,6 +173,14 @@ async def process_inbound_email(
             reason=f"no active stream for recipient {email.recipient!r}",
         )
     context, stream = resolved
+    try:
+        pins = await resolve_runtime_pins(
+            session,
+            context,
+            stream_version_id=stream.active_version_id,
+        )
+    except RuntimePinError as error:
+        return EmailIntakeReport(outcome="skipped", reason=str(error))
 
     if not email.attachments:
         return EmailIntakeReport(outcome="processed", reason="no attachments", attachments=[])
@@ -205,7 +214,7 @@ async def process_inbound_email(
             context,
             declaration=IntakeDeclaration(
                 stream_id=stream.id,
-                stream_config={},
+                stream_config=pins.config,
                 source_channel=SourceChannel.EMAIL,
                 filename=attachment.filename,
                 content_type=attachment.content_type,
@@ -219,6 +228,7 @@ async def process_inbound_email(
                 },
                 document_id=document_id,
                 stream_version_id=stream.active_version_id,
+                config_fingerprint=pins.config_fingerprint,
             ),
             data=attachment.data,
             scanner=scanner,

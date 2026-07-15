@@ -21,6 +21,7 @@ from soa_api.domain.versioning import (
     InvalidVersionStateError,
     VersionState,
 )
+from soa_config import SecretReference
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.outbox import PORTABLE_JSON
@@ -69,8 +70,13 @@ def validate_policy(policy_type: PolicyType, definition: dict[str, Any]) -> None
         if not isinstance(capabilities, list):
             raise PolicyValidationError("provider policy needs a capabilities list")
         credential_ref = definition.get("credential_ref")
-        if credential_ref is not None and not str(credential_ref).startswith("credential:"):
-            raise PolicyValidationError("credential_ref must reference a managed credential")
+        if credential_ref is not None:
+            try:
+                SecretReference.parse(str(credential_ref))
+            except ValueError as error:
+                raise PolicyValidationError(
+                    "credential_ref must be an immutable secretref:// reference"
+                ) from error
     elif policy_type == PolicyType.CONFIDENCE:
         floor = definition.get("floor")
         if not isinstance(floor, int | float) or not 0 <= float(floor) <= 1:

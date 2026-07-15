@@ -220,7 +220,13 @@ def register_gemini_extraction(
                 uses_content_for_training=False,
             ),
         ),
-        lambda: GeminiExtractionProvider(api_key=api_key, model=model, endpoint_base=endpoint_base),
+        lambda **runtime: GeminiExtractionProvider(
+            api_key=runtime.get("credential_value") or api_key,
+            model=model,
+            endpoint_base=endpoint_base,
+            instructions=runtime.get("instructions"),
+            instruction_reference=runtime.get("instruction_reference"),
+        ),
     )
 
 

@@ -21,7 +21,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import Index, String, UniqueConstraint, event
+from sqlalchemy import Index, String, Text, UniqueConstraint, event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -84,6 +84,13 @@ class ProcessingRun(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin
     #: and the resolver's deterministic fingerprint of the resolved config.
     stream_version_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     config_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    instruction_version_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    confidence_policy_version_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    provider_policy_version_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: Opaque secret-store reference, never the credential value.
+    provider_credential_ref: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    #: Hash of every immutable id/reference above plus config_fingerprint.
+    execution_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     #: Fingerprint of the input the run consumed (the original's SHA-256).
     input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     triggered_by: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -189,6 +196,11 @@ async def start_run(
     stream_version_id: uuid.UUID | None,
     config_fingerprint: str | None,
     triggered_by: str,
+    instruction_version_id: uuid.UUID | None = None,
+    confidence_policy_version_id: uuid.UUID | None = None,
+    provider_policy_version_id: uuid.UUID | None = None,
+    provider_credential_ref: str | None = None,
+    execution_fingerprint: str | None = None,
     reason: str | None = None,
 ) -> ProcessingRun:
     """Start a new run. Reprocessing calls this again: run numbers only
@@ -201,6 +213,11 @@ async def start_run(
             input_sha256=input_sha256,
             stream_version_id=stream_version_id,
             config_fingerprint=config_fingerprint,
+            instruction_version_id=instruction_version_id,
+            confidence_policy_version_id=confidence_policy_version_id,
+            provider_policy_version_id=provider_policy_version_id,
+            provider_credential_ref=provider_credential_ref,
+            execution_fingerprint=execution_fingerprint,
             triggered_by=triggered_by,
             reason=reason,
         )
@@ -218,6 +235,7 @@ async def start_run(
             "document_id": str(document_id),
             "run_number": run.run_number,
             "config_fingerprint": config_fingerprint,
+            "execution_fingerprint": execution_fingerprint,
             "reason": reason,
         },
     )

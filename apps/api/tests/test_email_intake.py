@@ -12,6 +12,7 @@ from sqlalchemy import select
 from soa_api.app import create_app
 from soa_api.services.email_intake import MailpitPoller, parse_inbound_email, route_recipient
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import Document
 from soa_storage import MemoryObjectStore
@@ -90,7 +91,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
     return TestClient(app, raise_server_exceptions=False), db
 
 
-def seed_stream(client: TestClient) -> None:
+async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
     for path, body in (
         ("/organizations", {"name": "Northstar", "slug": "northstar"}),
         ("/orgs/northstar/processes", {"name": "POs", "slug": "purchase-orders"}),
@@ -100,6 +101,7 @@ def seed_stream(client: TestClient) -> None:
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
+    await publish_runtime_config(client, db)
 
 
 def deliver(client: TestClient, raw: bytes, *, secret: str = SECRET):
@@ -110,7 +112,7 @@ async def test_multi_attachment_email_ingests_each_supported_file(
     harness: tuple[TestClient, DatabaseSessions],
 ) -> None:
     client, db = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     raw = build_mime(
         attachments=[
             ("po.pdf", "application/pdf", PDF),
@@ -145,7 +147,7 @@ async def test_unroutable_empty_and_looping_mail_is_explicit(
     harness: tuple[TestClient, DatabaseSessions],
 ) -> None:
     client, db = harness
-    seed_stream(client)
+    await seed_stream(client, db)
 
     unroutable = deliver(client, build_mime(to="unknown-org.email@intake.example"))
     assert unroutable.json()["outcome"] == "skipped"
@@ -172,7 +174,7 @@ async def test_webhook_requires_the_shared_secret(
     harness: tuple[TestClient, DatabaseSessions],
 ) -> None:
     client, _db = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
     raw = build_mime(attachments=[("po.pdf", "application/pdf", PDF)])
     assert deliver(client, raw, secret="wrong").status_code == 401
     assert client.post("/v1/inbound-email", content=raw).status_code == 401

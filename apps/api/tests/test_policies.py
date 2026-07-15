@@ -24,7 +24,7 @@ ACTOR = "user:test-admin"
 PROVIDER_OK = {
     "provider_name": "acme-docai",
     "capabilities": ["ocr", "field_extraction", "tables"],
-    "credential_ref": "credential:acme-docai-prod",
+    "credential_ref": "secretref://memory/orgs/acme/providers/docai/v1",
 }
 
 
@@ -59,7 +59,7 @@ def test_policy_shape_validation() -> None:
         validate_policy(PolicyType.RETENTION, {"document_days": 0})
     with pytest.raises(PolicyValidationError, match="mappings object"):
         validate_policy(PolicyType.MAPPING, {})
-    with pytest.raises(PolicyValidationError, match="managed credential"):
+    with pytest.raises(PolicyValidationError, match="secretref"):
         validate_policy(
             PolicyType.PROVIDER,
             {"provider_name": "x", "capabilities": [], "credential_ref": "sk-raw-secret"},

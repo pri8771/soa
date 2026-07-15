@@ -299,6 +299,9 @@ class _Pipeline:
                 confidence=extracted.confidence,
                 provider=result.provider,
                 provider_model=result.model,
+                instruction_reference=result.instruction_reference,
+                config_fingerprint=run.config_fingerprint,
+                execution_fingerprint=run.execution_fingerprint,
                 row_index=extracted.row_index,
                 evidence=tuple(
                     Evidence(
@@ -317,6 +320,13 @@ class _Pipeline:
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
         summary = confidence_summary(rows)
         summary["warnings"] = [*text_warnings, *result.warnings]
+        summary["provenance"] = {
+            "provider": result.provider,
+            "model": result.model,
+            "instruction_reference": result.instruction_reference,
+            "config_fingerprint": run.config_fingerprint,
+            "execution_fingerprint": run.execution_fingerprint,
+        }
         return StageOutcome(
             output_summary=summary, cost_cents=result.cost_cents, provider=result.provider
         )

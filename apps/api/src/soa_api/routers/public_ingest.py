@@ -43,10 +43,11 @@ from soa_api.domain.credentials import (
     credential_organization_id,
     require_scope,
 )
-from soa_api.domain.streams import StreamRepository, StreamStatus, StreamVersionRepository
+from soa_api.domain.streams import StreamRepository, StreamStatus
 from soa_api.domain.uploads import SUPPORTED_UPLOAD_TYPES
 from soa_api.services.file_limits import FileLimits, LimitViolation, check_size, resolve_limits
 from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
+from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
 from soa_db.audit import ActorType
 from soa_db.documents import DocumentRepository, SourceChannel
 from soa_db.repository import OrganizationContext
@@ -145,13 +146,15 @@ async def ingest_document(
         )
 
     # Effective limits: platform maxima, lowered by stream configuration.
-    stream_config: dict[str, Any] = {}
-    if stream.active_version_id is not None:
-        active = await StreamVersionRepository(session, context).get(stream.active_version_id)
-        if active is not None and active.resolved_snapshot:
-            config = active.resolved_snapshot.get("config")
-            if isinstance(config, dict):
-                stream_config = config
+    try:
+        pins = await resolve_runtime_pins(
+            session,
+            context,
+            stream_version_id=stream.active_version_id,
+        )
+    except RuntimePinError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
+    stream_config = pins.config
     limits = resolve_limits(
         FileLimits(
             max_size_bytes=deps.settings.max_upload_bytes,
@@ -192,9 +195,7 @@ async def ingest_document(
             source_metadata={"api_client": actor_id},
             document_id=document_id,
             stream_version_id=stream.active_version_id,
-            config_fingerprint=(
-                str(stream_config["fingerprint"]) if "fingerprint" in stream_config else None
-            ),
+            config_fingerprint=pins.config_fingerprint,
         ),
         data=data,
         scanner=scanner,

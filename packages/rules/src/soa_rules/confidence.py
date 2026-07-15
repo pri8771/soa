@@ -18,7 +18,8 @@ over rival readings. Every gate is an explicit, versioned number below;
 changing one is a new POLICY_VERSION.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from soa_rules.evaluator import RuleSetEvaluation
@@ -37,6 +38,8 @@ class ConfidencePolicy:
     #: never gate routing — they are captured, not enforced.
     critical_min_confidence: float = 0.98
     standard_min_confidence: float = 0.85
+    #: Optional exact field gates from a pinned tenant confidence policy.
+    field_min_confidence: Mapping[str, float] = field(default_factory=dict)
     #: Critical values must carry evidence to auto-approve.
     critical_requires_evidence: bool = True
     #: A rival reading within this margin of the chosen one makes the
@@ -98,7 +101,10 @@ class RouteDecision:
         }
 
 
-def _min_confidence(policy: ConfidencePolicy, criticality: str) -> float | None:
+def _min_confidence(policy: ConfidencePolicy, criticality: str, field_key: str) -> float | None:
+    override = policy.field_min_confidence.get(field_key)
+    if override is not None:
+        return override
     if criticality == "critical":
         return policy.critical_min_confidence
     if criticality == "standard":
@@ -130,7 +136,7 @@ def _field_reasons(signal: FieldSignal, policy: ConfidencePolicy) -> list[Reason
         return []  # non-critical absence is the rules' business, not a gate
 
     reasons: list[Reason] = []
-    gate = _min_confidence(policy, signal.criticality)
+    gate = _min_confidence(policy, signal.criticality, signal.field_key)
     if gate is not None and signal.confidence < gate:
         reasons.append(
             Reason(

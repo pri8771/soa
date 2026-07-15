@@ -86,7 +86,7 @@ async def _run() -> None:
     orchestrator = Orchestrator(
         db,
         {},
-        executor_resolver=ResolvedExecutorFactory(store),
+        executor_resolver=ResolvedExecutorFactory(store, secret_store),
     )
     registry = HandlerRegistry()
 

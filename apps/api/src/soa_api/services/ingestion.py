@@ -23,6 +23,7 @@ from soa_api.services.duplicates import (
 )
 from soa_api.services.file_inspection import InspectionVerdict, inspect_file
 from soa_api.services.malware import MalwareScanner, ScanVerdict
+from soa_api.services.runtime_pins import resolve_runtime_pins
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType
 from soa_db.documents import (
@@ -69,6 +70,11 @@ async def finalize_document_intake(
 ) -> Document:
     """Register the stored bytes as a document and run the safety
     pipeline. Returns the document in its final intake state."""
+    pins = await resolve_runtime_pins(
+        session,
+        context,
+        stream_version_id=declaration.stream_version_id,
+    )
     document = await create_document(
         session,
         context,
@@ -153,7 +159,7 @@ async def finalize_document_intake(
         content_sha256=declaration.sha256,
         exclude_document_id=document.id,
     )
-    policy = get_duplicate_policy(declaration.stream_config)
+    policy = get_duplicate_policy(pins.config)
     if duplicate is not None:
         await mark_duplicate(
             session,
@@ -187,10 +193,7 @@ async def finalize_document_intake(
             "document_id": str(document.id),
             "stream_id": str(declaration.stream_id),
             "organization_id": str(context.organization_id),
-            "stream_version_id": (
-                str(declaration.stream_version_id) if declaration.stream_version_id else None
-            ),
-            "config_fingerprint": declaration.config_fingerprint,
+            **pins.job_payload(),
         },
         organization_id=context.organization_id,
         dedupe_key=f"document.preprocess:{document.id}",

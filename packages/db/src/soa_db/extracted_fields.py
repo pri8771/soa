@@ -125,6 +125,9 @@ class ExtractedField(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixi
     confidence: Mapped[float] = mapped_column(Float(), nullable=False, default=0.0)
     provider: Mapped[str] = mapped_column(String(100), nullable=False)
     provider_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    instruction_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    config_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: Serialized Evidence list (see evidence_spans()).
     evidence_json: Mapped[list[Any]] = mapped_column(
         "evidence", PORTABLE_JSON, nullable=False, default=list
@@ -182,6 +185,9 @@ async def create_extracted_field(
     confidence: float,
     provider: str,
     provider_model: str | None = None,
+    instruction_reference: str | None = None,
+    config_fingerprint: str | None = None,
+    execution_fingerprint: str | None = None,
     row_index: int | None = None,
     evidence: Sequence[Evidence] = (),
     candidates: Sequence[Candidate] = (),
@@ -225,6 +231,9 @@ async def create_extracted_field(
             confidence=confidence,
             provider=provider,
             provider_model=provider_model,
+            instruction_reference=instruction_reference,
+            config_fingerprint=config_fingerprint,
+            execution_fingerprint=execution_fingerprint,
             evidence_json=[span.to_json() for span in evidence],
             candidates_json=[candidate.to_json() for candidate in candidates],
         )

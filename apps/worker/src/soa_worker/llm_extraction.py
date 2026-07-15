@@ -232,7 +232,12 @@ def register_local_llm_extraction(endpoint: str, model: str) -> None:
             languages=(ANY_LANGUAGE,),
             data_policy=LOCAL_DATA_POLICY,
         ),
-        lambda: OpenAiCompatibleExtractionProvider(endpoint=endpoint, model=model),
+        lambda **runtime: OpenAiCompatibleExtractionProvider(
+            endpoint=endpoint,
+            model=model,
+            instructions=runtime.get("instructions"),
+            instruction_reference=runtime.get("instruction_reference"),
+        ),
     )
 
 
@@ -273,8 +278,13 @@ def register_hosted_openai_extraction(
                 uses_content_for_training=False,
             ),
         ),
-        lambda: OpenAiCompatibleExtractionProvider(
-            endpoint=endpoint, model=model, name=name, api_key=api_key
+        lambda **runtime: OpenAiCompatibleExtractionProvider(
+            endpoint=endpoint,
+            model=model,
+            name=name,
+            api_key=runtime.get("credential_value") or api_key,
+            instructions=runtime.get("instructions"),
+            instruction_reference=runtime.get("instruction_reference"),
         ),
     )
 

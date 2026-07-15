@@ -12,6 +12,7 @@ from sqlalchemy import select
 from soa_api.app import create_app
 from soa_api.domain.uploads import UploadSession
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import Artifact
 from soa_db.documents import Document
@@ -38,7 +39,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions, MemoryO
     return TestClient(app, raise_server_exceptions=False), db, store
 
 
-def seed_stream(client: TestClient) -> None:
+async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
     assert (
         client.post(
             "/organizations", json={"name": "Northstar", "slug": "northstar"}, headers=ADMIN
@@ -61,6 +62,7 @@ def seed_stream(client: TestClient) -> None:
         ).status_code
         == 201
     )
+    await publish_runtime_config(client, db)
 
 
 def declare(
@@ -97,7 +99,7 @@ async def test_happy_path_and_idempotent_complete(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     payload = declare(client, client_reference="batch-42")
     assert payload["upload_method"] == "PUT"
     await upload_bytes(store, payload, PDF_BYTES)
@@ -143,7 +145,7 @@ async def test_wrong_bytes_block_completion_until_fixed(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, _db, store = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
     payload = declare(client)  # declares PDF_BYTES
     await upload_bytes(store, payload, b"entirely different bytes")
 
@@ -169,7 +171,7 @@ async def test_policy_gates_run_before_signing(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, _db, _store = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
 
     unsupported = client.post(
         "/orgs/northstar/streams/email/uploads",
@@ -218,7 +220,7 @@ async def test_unauthorized_stream_and_cross_tenant_sessions(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, _db, _store = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
     payload = declare(client)
 
     # No membership: stream existence must not leak.
@@ -251,7 +253,7 @@ async def test_expired_sessions_answer_410_and_stay_expired(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     payload = declare(client)
     await upload_bytes(store, payload, PDF_BYTES)
 
@@ -279,7 +281,7 @@ async def test_abort_discards_uploaded_bytes(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, _db, store = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
     payload = declare(client)
     await upload_bytes(store, payload, PDF_BYTES)
 

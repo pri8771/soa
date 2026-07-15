@@ -1,11 +1,9 @@
 """Fail-closed verification of the immutable configuration pinned to a run.
 
 The control-plane configuration tables intentionally live outside ``soa_db``.
-The worker therefore reads the published snapshot through a narrow SQL boundary
-instead of importing API service models.  This module does not pretend to turn
-that snapshot into runtime executors yet; it guarantees that a stage cannot run
-when its stream version is missing, belongs to another tenant, is mutable, or
-does not match the fingerprint captured at intake.
+The worker reads them through a narrow SQL boundary, authenticates every pin
+captured at intake, and constructs per-run executors. Mutable/current defaults
+are never substituted for historical IDs.
 """
 
 from __future__ import annotations
@@ -20,14 +18,16 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_config import SecretReference, SecretStore
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRun
 from soa_normalize import NormalizationContext
+from soa_rules import ConfidencePolicy
 from soa_storage import ObjectStore
 from soa_worker.extraction.provider import ExtractionProvider, FieldSpec
 from soa_worker.orchestrator import StageExecutor
 from soa_worker.pipeline import PipelineConfig, build_executors
-from soa_worker.providers import Capability, create_provider
+from soa_worker.providers import Capability, create_provider, provider_info
 
 
 class RunConfigError(ValueError):
@@ -39,11 +39,33 @@ class ResolvedRunConfig:
     fingerprint: str
     provider_name: str
     pipeline: PipelineConfig
+    instructions: dict[str, Any] | None
+    instruction_reference: str | None
+    credential_reference: SecretReference | None
 
 
 def snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
     """Return the API resolver's canonical SHA-256 fingerprint."""
     material = {key: value for key, value in snapshot.items() if key != "fingerprint"}
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def execution_fingerprint(run: ProcessingRun) -> str:
+    material = {
+        "stream_version_id": str(run.stream_version_id) if run.stream_version_id else None,
+        "config_fingerprint": run.config_fingerprint,
+        "instruction_version_id": (
+            str(run.instruction_version_id) if run.instruction_version_id else None
+        ),
+        "confidence_policy_version_id": (
+            str(run.confidence_policy_version_id) if run.confidence_policy_version_id else None
+        ),
+        "provider_policy_version_id": (
+            str(run.provider_policy_version_id) if run.provider_policy_version_id else None
+        ),
+        "provider_credential_ref": run.provider_credential_ref,
+    }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode()).hexdigest()
 
@@ -67,6 +89,10 @@ async def verify_run_config(
     """Load and authenticate the exact immutable stream snapshot for ``run``."""
     if run.stream_version_id is None or run.config_fingerprint is None:
         raise RunConfigError("the processing run is missing its immutable configuration pin")
+    if run.provider_policy_version_id is None or run.execution_fingerprint is None:
+        raise RunConfigError("the processing run is missing its provider or execution pin")
+    if execution_fingerprint(run) != run.execution_fingerprint:
+        raise RunConfigError("the processing run execution fingerprint is invalid")
     bind = session.get_bind()
     identifier: object = (
         run.stream_version_id.hex if bind.dialect.name == "sqlite" else run.stream_version_id
@@ -143,6 +169,65 @@ async def _version_definition(
     if row["state"] not in ("published", "superseded"):
         raise RunConfigError(f"the pinned {table.removesuffix('_versions')} version is mutable")
     return _json_object(row["definition"]), int(row["version_number"])
+
+
+async def _instruction_definition(
+    session: AsyncSession,
+    context: OrganizationContext,
+    run: ProcessingRun,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if run.instruction_version_id is None:
+        return None, None
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT content, version_number, state, stream_version_id "
+                    "FROM instruction_versions WHERE id = :version_id "
+                    "AND organization_id = :organization_id"
+                ),
+                {
+                    "version_id": _database_identifier(session, run.instruction_version_id),
+                    "organization_id": _database_identifier(session, context.organization_id),
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None or row["state"] not in ("published", "superseded"):
+        raise RunConfigError("the pinned instruction version is missing or mutable")
+    linked = uuid.UUID(str(row["stream_version_id"]))
+    if linked != run.stream_version_id:
+        raise RunConfigError("the pinned instruction belongs to another stream version")
+    return (
+        _json_object(row["content"]),
+        f"instruction:{run.instruction_version_id}:v{int(row['version_number'])}",
+    )
+
+
+def _confidence_policy(
+    definition: Mapping[str, Any] | None, version: int | None
+) -> ConfidencePolicy:
+    if definition is None:
+        return ConfidencePolicy()
+    floor = float(definition.get("floor", 0.85))
+    critical_floor = float(definition.get("critical_floor", max(0.98, floor)))
+    overrides = definition.get("field_overrides", {})
+    if not isinstance(overrides, dict):
+        raise RunConfigError("the pinned confidence policy has invalid field overrides")
+    return ConfidencePolicy(
+        version=f"policy:{version}",
+        critical_min_confidence=critical_floor,
+        standard_min_confidence=floor,
+        field_min_confidence={str(key): float(value) for key, value in overrides.items()},
+        critical_requires_evidence=bool(definition.get("critical_requires_evidence", True)),
+        critical_candidate_margin=float(definition.get("critical_candidate_margin", 0.20)),
+        standard_candidate_margin=float(definition.get("standard_candidate_margin", 0.05)),
+        review_on_indeterminate_error_rules=bool(
+            definition.get("review_on_indeterminate_error_rules", True)
+        ),
+    )
 
 
 def _required_uuid(config: Mapping[str, Any], key: str) -> uuid.UUID:
@@ -230,6 +315,28 @@ async def load_resolved_run_config(
         version_id=_required_uuid(config, "provider_policy_version_id"),
         policy_type="provider",
     )
+    expected_provider_policy = _required_uuid(config, "provider_policy_version_id")
+    if run.provider_policy_version_id != expected_provider_policy:
+        raise RunConfigError("the run's provider policy pin does not match its stream snapshot")
+    confidence_definition: dict[str, Any] | None = None
+    confidence_version: int | None = None
+    configured_confidence = config.get("confidence_policy_version_id")
+    if configured_confidence is not None:
+        expected_confidence = _required_uuid(config, "confidence_policy_version_id")
+        if run.confidence_policy_version_id != expected_confidence:
+            raise RunConfigError(
+                "the run's confidence policy pin does not match its stream snapshot"
+            )
+        confidence_definition, confidence_version = await _version_definition(
+            session,
+            context,
+            table="policy_versions",
+            version_id=expected_confidence,
+            policy_type="confidence",
+        )
+    elif run.confidence_policy_version_id is not None:
+        raise RunConfigError("the run pins a confidence policy absent from its snapshot")
+    instructions, instruction_reference = await _instruction_definition(session, context, run)
     specs, criticality, normalizers = _field_specs(schema)
     rules = rule_set.get("rules")
     if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
@@ -240,6 +347,29 @@ async def load_resolved_run_config(
         raise RunConfigError("the pinned provider policy has no provider name")
     if not isinstance(capabilities, list) or "field_extraction" not in capabilities:
         raise RunConfigError("the pinned provider policy cannot perform field extraction")
+    info = provider_info(Capability.FIELD_EXTRACTION, provider_name)
+    allow_third_party = bool(provider_policy.get("allow_third_party_processing", False))
+    allow_retention = bool(provider_policy.get("allow_content_retention", False))
+    allow_training = bool(provider_policy.get("allow_training_on_content", False))
+    if info.data_policy.sends_content_to_third_party and not allow_third_party:
+        raise RunConfigError("the pinned policy does not allow third-party processing")
+    if info.data_policy.retains_content and not allow_retention:
+        raise RunConfigError("the pinned policy does not allow provider retention")
+    if info.data_policy.uses_content_for_training and not allow_training:
+        raise RunConfigError("the pinned policy does not allow training on content")
+    credential_reference: SecretReference | None = None
+    policy_credential = provider_policy.get("credential_ref")
+    if policy_credential:
+        if run.provider_credential_ref != str(policy_credential):
+            raise RunConfigError("the run's credential pin does not match its provider policy")
+        try:
+            credential_reference = SecretReference.parse(str(policy_credential))
+        except ValueError as error:
+            raise RunConfigError("the pinned provider credential reference is invalid") from error
+    elif run.provider_credential_ref is not None:
+        raise RunConfigError("the run pins a credential absent from its provider policy")
+    if info.data_policy.sends_content_to_third_party and credential_reference is None:
+        raise RunConfigError("the hosted provider policy has no credential reference")
     languages = config.get("languages", ["en"])
     if (
         not isinstance(languages, list)
@@ -258,20 +388,25 @@ async def load_resolved_run_config(
         rules_version=str(rule_set.get("version", rule_version)),
         normalization=NormalizationContext(locale=locale, currency=currency),
         normalizer_overrides=normalizers,
+        confidence_policy=_confidence_policy(confidence_definition, confidence_version),
         languages=tuple(language.lower() for language in languages),
     )
     return ResolvedRunConfig(
         fingerprint=str(effective_snapshot["fingerprint"]),
         provider_name=provider_name,
         pipeline=pipeline,
+        instructions=instructions,
+        instruction_reference=instruction_reference,
+        credential_reference=credential_reference,
     )
 
 
 class ResolvedExecutorFactory:
     """Verify every stage and cache executors only for authenticated snapshots."""
 
-    def __init__(self, store: ObjectStore) -> None:
+    def __init__(self, store: ObjectStore, secret_store: SecretStore) -> None:
         self._store = store
+        self._secret_store = secret_store
         self._cache: dict[tuple[uuid.UUID, uuid.UUID, str], dict[str, StageExecutor]] = {}
 
     async def __call__(
@@ -283,7 +418,9 @@ class ResolvedExecutorFactory:
         snapshot = await verify_run_config(session, context, run)
         if run.stream_version_id is None or run.config_fingerprint is None:
             raise RunConfigError("the processing run is missing its immutable configuration pin")
-        key = (context.organization_id, run.stream_version_id, run.config_fingerprint)
+        if run.execution_fingerprint is None:
+            raise RunConfigError("the processing run is missing its execution fingerprint")
+        key = (context.organization_id, run.stream_version_id, run.execution_fingerprint)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
@@ -293,7 +430,24 @@ class ResolvedExecutorFactory:
             run,
             snapshot=snapshot,
         )
-        provider = create_provider(Capability.FIELD_EXTRACTION, resolved.provider_name)
+        credential_value = None
+        if resolved.credential_reference is not None:
+            try:
+                credential_value = await self._secret_store.resolve(resolved.credential_reference)
+            except Exception as error:
+                raise RunConfigError("the pinned provider credential cannot be resolved") from error
+        runtime: dict[str, Any] = {}
+        if resolved.provider_name != "mock":
+            runtime = {
+                "instructions": resolved.instructions,
+                "instruction_reference": resolved.instruction_reference,
+                "credential_value": credential_value,
+            }
+        provider = create_provider(
+            Capability.FIELD_EXTRACTION,
+            resolved.provider_name,
+            **runtime,
+        )
         if not isinstance(provider, ExtractionProvider):
             raise RunConfigError(
                 f"provider {resolved.provider_name!r} does not implement field extraction"
@@ -307,6 +461,7 @@ __all__ = [
     "ResolvedExecutorFactory",
     "ResolvedRunConfig",
     "RunConfigError",
+    "execution_fingerprint",
     "load_resolved_run_config",
     "snapshot_fingerprint",
     "verify_run_config",

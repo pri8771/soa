@@ -94,10 +94,10 @@ async def validate_process_draft(
     if schema_version is None:
         findings.append(
             ValidationFinding(
-                level="warning",
+                level="error",
                 path="schema",
-                message="no published extraction schema — documents cannot be "
-                "processed until one is published",
+                message="no published extraction schema — publishing would create "
+                "an unexecutable stream",
             )
         )
     else:
@@ -113,7 +113,15 @@ async def validate_process_draft(
             )
 
     rule_set = await RuleSetVersionRepository(session, context).get_published(process.id)
-    if rule_set is not None and field_types:
+    if rule_set is None:
+        findings.append(
+            ValidationFinding(
+                level="error",
+                path="rules",
+                message="no published rule set — publishing would create an unvalidated stream",
+            )
+        )
+    elif field_types:
         try:
             validate_rule_set(rule_set.definition, field_types)
         except RuleExpressionError as exc:
@@ -163,6 +171,26 @@ async def publish_process_draft_checked(
     report = await validate_process_draft(session, context, process=process, draft=draft)
     if not report.is_publishable:
         raise DraftNotPublishableError(report)
+    schema = await SchemaVersionRepository(session, context).get_published(process.id)
+    rules = await RuleSetVersionRepository(session, context).get_published(process.id)
+    provider = await PolicyVersionRepository(session, context).get_published(PolicyType.PROVIDER)
+    confidence = await PolicyVersionRepository(session, context).get_published(
+        PolicyType.CONFIDENCE
+    )
+    if schema is None or rules is None or provider is None:
+        raise DraftNotPublishableError(
+            await validate_process_draft(session, context, process=process, draft=draft)
+        )
+    # Materialize immutable cross-artifact references into the process
+    # definition before it is sealed. Stream snapshots can then execute
+    # without consulting whichever versions happen to be current later.
+    draft.definition = {
+        **draft.definition,
+        "schema_version_id": str(schema.id),
+        "rule_set_version_id": str(rules.id),
+        "provider_policy_version_id": str(provider.id),
+        **({"confidence_policy_version_id": str(confidence.id)} if confidence is not None else {}),
+    }
     published = await publish_draft(
         session, context, process=process, draft=draft, actor_id=actor_id
     )

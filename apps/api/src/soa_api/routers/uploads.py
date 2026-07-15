@@ -27,7 +27,7 @@ from soa_api.dependencies import (
     ObjectStoreDep,
     get_dependencies,
 )
-from soa_api.domain.streams import StreamRepository, StreamStatus, StreamVersionRepository
+from soa_api.domain.streams import StreamRepository, StreamStatus
 from soa_api.domain.uploads import (
     UploadPolicyError,
     UploadSession,
@@ -45,6 +45,7 @@ from soa_api.services.file_limits import (
     resolve_limits,
 )
 from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
+from soa_api.services.runtime_pins import RuntimePinError, RuntimePins, resolve_runtime_pins
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import (
     Document,
@@ -110,24 +111,18 @@ def _actor(authorized: AuthorizedContext) -> str:
     return f"user:{authorized.membership.user_id}"
 
 
-async def _stream_config_by_id(
+async def _runtime_pins_by_stream_id(
     session: DbSession, authorized: AuthorizedContext, stream_id: uuid.UUID
-) -> dict[str, object]:
-    """The stream's published resolved configuration, or {}."""
+) -> RuntimePins:
+    """Resolve a complete immutable execution contract for the stream."""
     stream = await StreamRepository(session, authorized.org_context).get(stream_id)
-    if stream is None or stream.active_version_id is None:
-        return {}
-    active = await StreamVersionRepository(session, authorized.org_context).get(
-        stream.active_version_id
+    if stream is None:
+        raise RuntimePinError("stream not found")
+    return await resolve_runtime_pins(
+        session,
+        authorized.org_context,
+        stream_version_id=stream.active_version_id,
     )
-    if active is None or not active.resolved_snapshot:
-        return {}
-    config = active.resolved_snapshot.get("config")
-    result = dict(config) if isinstance(config, dict) else {}
-    fingerprint = active.resolved_snapshot.get("fingerprint")
-    if isinstance(fingerprint, str):
-        result["fingerprint"] = fingerprint
-    return result
 
 
 @router.post(
@@ -166,8 +161,11 @@ async def create_upload(
         max_decompressed_bytes=deps.settings.max_decompressed_bytes,
         max_conversion_seconds=deps.settings.max_conversion_seconds,
     )
-    stream_config = await _stream_config_by_id(session, authorized, stream.id)
-    limits = resolve_limits(platform_limits, stream_config)
+    try:
+        pins = await _runtime_pins_by_stream_id(session, authorized, stream.id)
+    except RuntimePinError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
+    limits = resolve_limits(platform_limits, pins.config)
 
     repo = UploadSessionRepository(session, authorized.org_context)
     try:
@@ -314,8 +312,11 @@ async def complete_upload(
         )
 
     data = await store.get(record.object_key)
-    stream_config = await _stream_config_by_id(session, authorized, record.stream_id)
     parent_stream = await StreamRepository(session, authorized.org_context).get(record.stream_id)
+    try:
+        pins = await _runtime_pins_by_stream_id(session, authorized, record.stream_id)
+    except RuntimePinError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
     # The shared intake pipeline (ING-003/004/006/007): document + artifact
     # creation, inspection, scan, duplicate policy, and — when queued —
     # the exactly-once preprocess job and outbox event, all in this
@@ -325,7 +326,7 @@ async def complete_upload(
         authorized.org_context,
         declaration=IntakeDeclaration(
             stream_id=record.stream_id,
-            stream_config=stream_config,
+            stream_config=pins.config,
             source_channel=SourceChannel.UPLOAD,
             filename=record.declared_filename,
             content_type=record.declared_content_type,
@@ -336,9 +337,7 @@ async def complete_upload(
             source_metadata={"uploader": _actor(authorized)},
             document_id=record.document_id,
             stream_version_id=parent_stream.active_version_id if parent_stream else None,
-            config_fingerprint=(
-                str(stream_config["fingerprint"]) if "fingerprint" in stream_config else None
-            ),
+            config_fingerprint=pins.config_fingerprint,
         ),
         data=data,
         scanner=scanner,

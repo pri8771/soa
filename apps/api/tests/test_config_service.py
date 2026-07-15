@@ -14,6 +14,7 @@ from soa_api.domain.processes import (
     create_process,
     publish_draft,
 )
+from soa_api.domain.rules import create_rule_set_draft, publish_rule_set_draft
 from soa_api.domain.schemas import create_schema_draft, publish_schema_draft
 from soa_api.domain.versioning import VersionState
 from soa_api.services.config_service import (
@@ -31,6 +32,7 @@ ACTOR = "user:test-admin"
 
 SCHEMA = {"fields": [{"key": "po_number", "label": "PO", "type": "text", "required": True}]}
 PROVIDER = {"provider_name": "acme", "capabilities": ["ocr", "field_extraction"]}
+RULES = {"version": "1", "rules": []}
 
 
 @pytest.fixture
@@ -49,6 +51,21 @@ async def seed_ready_process(db: DatabaseSessions) -> uuid.UUID:
             session, ORG_A, process_id=process.id, definition=SCHEMA, actor_id=ACTOR
         )
         await publish_schema_draft(session, ORG_A, draft=schema, actor_id=ACTOR)
+        rules = await create_rule_set_draft(
+            session,
+            ORG_A,
+            process_id=process.id,
+            definition=RULES,
+            field_types={"po_number": "text"},
+            actor_id=ACTOR,
+        )
+        await publish_rule_set_draft(
+            session,
+            ORG_A,
+            draft=rules,
+            field_types={"po_number": "text"},
+            actor_id=ACTOR,
+        )
         policy = await create_policy_draft(
             session, ORG_A, policy_type=PolicyType.PROVIDER, definition=PROVIDER, actor_id=ACTOR
         )
@@ -85,9 +102,9 @@ async def test_missing_provider_policy_blocks_publish_with_clear_report(
         assert report["publishable"] is False
         paths = {f["path"] for f in report["findings"]}
         assert "policies.provider" in paths
-        # Missing schema is a warning, not a blocker.
+        # Missing schema is a blocker: it cannot produce executable runs.
         schema_findings = [f for f in report["findings"] if f["path"] == "schema"]
-        assert schema_findings and schema_findings[0]["level"] == "warning"
+        assert schema_findings and schema_findings[0]["level"] == "error"
         # The refused draft stays a draft.
         assert draft.state == VersionState.DRAFT
 
@@ -173,12 +190,12 @@ async def test_report_flags_rules_that_conflict_with_schema(db: DatabaseSessions
         # A published rule set referencing a field the schema doesn't have —
         # inserted directly to simulate drift created before the evolution
         # checks existed.
-        session.add(
-            RuleSetVersion(
-                organization_id=ORG_A.organization_id,
-                process_id=process_id,
-                version_number=1,
-                state=VersionState.DRAFT,
+        from sqlalchemy import update
+
+        await session.execute(
+            update(RuleSetVersion)
+            .where(RuleSetVersion.process_id == process_id)
+            .values(
                 definition={
                     "rules": [
                         {
@@ -188,15 +205,9 @@ async def test_report_flags_rules_that_conflict_with_schema(db: DatabaseSessions
                             "condition": {"op": "is_present", "key": "no_such_field"},
                         }
                     ]
-                },
+                }
             )
         )
-        await session.flush()
-    async with db.session_scope() as session:
-        from sqlalchemy import select
-
-        rule_set = (await session.execute(select(RuleSetVersion))).scalars().one()
-        rule_set.state = VersionState.PUBLISHED
     async with db.session_scope() as session:
         process = await ProcessRepository(session, ORG_A).get(process_id)
         assert process is not None

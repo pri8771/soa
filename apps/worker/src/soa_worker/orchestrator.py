@@ -136,6 +136,11 @@ class Orchestrator:
                 )
                 return
             raw_version = payload.get("stream_version_id")
+
+            def optional_uuid(key: str) -> uuid.UUID | None:
+                value = payload.get(key)
+                return uuid.UUID(str(value)) if value else None
+
             run = await start_run(
                 session,
                 context,
@@ -148,6 +153,19 @@ class Orchestrator:
                     else None
                 ),
                 triggered_by=ACTOR,
+                instruction_version_id=optional_uuid("instruction_version_id"),
+                confidence_policy_version_id=optional_uuid("confidence_policy_version_id"),
+                provider_policy_version_id=optional_uuid("provider_policy_version_id"),
+                provider_credential_ref=(
+                    str(payload["provider_credential_ref"])
+                    if payload.get("provider_credential_ref")
+                    else None
+                ),
+                execution_fingerprint=(
+                    str(payload["execution_fingerprint"])
+                    if payload.get("execution_fingerprint")
+                    else None
+                ),
             )
             await self._enqueue_stage(session, context, run, STAGE_SEQUENCE[0], attempt=1)
 

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from soa_api.app import create_app
 from soa_api.domain.policies import PolicyType, create_policy_draft, publish_policy_draft
+from soa_api.domain.rules import create_rule_set_draft, publish_rule_set_draft
 from soa_api.domain.schemas import create_schema_draft, publish_schema_draft
 from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
@@ -19,6 +20,7 @@ OUTSIDER = {"X-Dev-User": "user:supervisor"}  # no membership
 
 SCHEMA = {"fields": [{"key": "po_number", "label": "PO", "type": "text", "required": True}]}
 PROVIDER = {"provider_name": "acme", "capabilities": ["ocr", "field_extraction"]}
+RULES = {"version": "1", "rules": []}
 
 
 @pytest.fixture
@@ -50,6 +52,21 @@ async def seed_publish_prereqs(client: TestClient, db: DatabaseSessions) -> None
             session, context, process_id=process.id, definition=SCHEMA, actor_id="user:test"
         )
         await publish_schema_draft(session, context, draft=schema, actor_id="user:test")
+        rules = await create_rule_set_draft(
+            session,
+            context,
+            process_id=process.id,
+            definition=RULES,
+            field_types={"po_number": "text"},
+            actor_id="user:test",
+        )
+        await publish_rule_set_draft(
+            session,
+            context,
+            draft=rules,
+            field_types={"po_number": "text"},
+            actor_id="user:test",
+        )
         policy = await create_policy_draft(
             session,
             context,

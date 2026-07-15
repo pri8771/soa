@@ -101,7 +101,7 @@ class ProviderInfo:
         return ANY_LANGUAGE in self.languages or language.lower() in self.languages
 
 
-ProviderFactory = Callable[[], Any]
+ProviderFactory = Callable[..., Any]
 
 
 class UnknownProviderError(Exception):
@@ -154,13 +154,13 @@ def provider_info(capability: Capability, name: str) -> ProviderInfo:
     return registration.info
 
 
-def create_provider(capability: Capability, name: str) -> Any:
+def create_provider(capability: Capability, name: str, **runtime: Any) -> Any:
     """Build the provider instance. The instance must report the
     registered name — a mismatch is a wiring bug and fails loudly."""
     registration = _REGISTRY.get((capability, name))
     if registration is None:
         raise UnknownProviderError(capability, name, _names_for(capability))
-    instance = registration.factory()
+    instance = registration.factory(**runtime)
     reported = getattr(instance, "name", None)
     if reported != name:
         raise ValueError(

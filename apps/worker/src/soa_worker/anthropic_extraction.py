@@ -246,7 +246,13 @@ def register_anthropic_extraction(
                 uses_content_for_training=False,
             ),
         ),
-        lambda: AnthropicExtractionProvider(api_key=api_key, model=model, endpoint=endpoint),
+        lambda **runtime: AnthropicExtractionProvider(
+            api_key=runtime.get("credential_value") or api_key,
+            model=model,
+            endpoint=endpoint,
+            instructions=runtime.get("instructions"),
+            instruction_reference=runtime.get("instruction_reference"),
+        ),
     )
 
 

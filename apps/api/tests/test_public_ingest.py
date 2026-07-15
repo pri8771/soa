@@ -11,6 +11,7 @@ from sqlalchemy import select
 from soa_api.app import create_app
 from soa_api.domain.credentials import create_credential
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import Document
 from soa_db.jobs import Job
@@ -63,6 +64,14 @@ async def seed_org_stream_and_key(
             scopes=scopes if scopes is not None else ["documents.upload"],
             actor_id="user:test",
         )
+    await publish_runtime_config(
+        client,
+        db,
+        organization_slug=slug,
+        process_slug="purchase-orders",
+        stream_slug="email",
+        headers=headers,
+    )
     return raw_key
 
 
@@ -102,6 +111,11 @@ async def test_key_scoped_ingestion_runs_the_full_pipeline(
         assert document.client_reference == "erp-42"
         job = (await session.execute(select(Job))).scalars().one()
         assert job.job_type == "document.preprocess"
+        assert job.payload["stream_version_id"]
+        assert job.payload["provider_policy_version_id"]
+        assert job.payload["confidence_policy_version_id"]
+        assert len(job.payload["config_fingerprint"]) == 64
+        assert len(job.payload["execution_fingerprint"]) == 64
 
     # Bad and missing keys fail closed.
     assert ingest(client, "soa_deadbeefdeadbeef_wrong").status_code == 401

@@ -47,7 +47,7 @@ async def approve_provider(client: TestClient, db: DatabaseSessions, name: str) 
             definition={
                 "provider_name": name,
                 "capabilities": ["ocr", "field_extraction"],
-                "credential_ref": "credential:main",
+                "credential_ref": "secretref://memory/orgs/test/providers/main/v1",
             },
             actor_id="user:test",
         )
@@ -81,9 +81,11 @@ async def test_the_approved_provider_carries_only_the_credential_reference(
     response = client.get("/orgs/northstar/providers", headers=ADMIN)
     by_name = {item["name"]: item for item in response.json()["items"]}
     assert by_name["tesseract"]["approved"] is True
-    assert by_name["tesseract"]["credential_ref"] == "credential:main"
+    assert (
+        by_name["tesseract"]["credential_ref"] == "secretref://memory/orgs/test/providers/main/v1"
+    )
     # The REFERENCE is the only credential-shaped thing on this surface.
-    assert "secret" not in response.text.lower()
+    assert "sk-" not in response.text.lower()
 
 
 async def test_routing_preview_honours_local_only(
