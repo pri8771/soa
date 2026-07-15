@@ -21,6 +21,7 @@ import {
   fetchProcesses,
   fetchStreams,
 } from "../api/client";
+import { DASHBOARD_POLL_MS, liveQueryOptions } from "../app/liveQuery";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -55,13 +56,14 @@ export function GettingStarted() {
   const session = useShellSession();
   const slug = session.organization.slug;
 
+  const live = liveQueryOptions(DASHBOARD_POLL_MS);
   const [processes, streams, catalogs, integrations, documents] = useQueries({
     queries: [
-      { queryKey: ["processes", slug], queryFn: () => fetchProcesses(slug) },
-      { queryKey: ["streams", slug], queryFn: () => fetchStreams(slug) },
-      { queryKey: ["catalogs", slug], queryFn: () => fetchCatalogs(slug) },
-      { queryKey: ["integrations", slug], queryFn: () => fetchIntegrations(slug) },
-      { queryKey: ["documents", slug, "onboarding"], queryFn: () => fetchDocuments(slug) },
+      { queryKey: ["processes", slug], queryFn: () => fetchProcesses(slug), ...live },
+      { queryKey: ["streams", slug], queryFn: () => fetchStreams(slug), ...live },
+      { queryKey: ["catalogs", slug], queryFn: () => fetchCatalogs(slug), ...live },
+      { queryKey: ["integrations", slug], queryFn: () => fetchIntegrations(slug), ...live },
+      { queryKey: ["documents", slug, "onboarding"], queryFn: () => fetchDocuments(slug), ...live },
     ],
   });
 

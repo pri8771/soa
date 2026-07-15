@@ -324,6 +324,37 @@ describe("Review Studio approval actions (REV-013)", () => {
     expect(await screen.findByText("Order approved.")).toBeInTheDocument();
   });
 
+  it("approving invalidates the queues and dashboard the task appears on", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/approve", () =>
+        HttpResponse.json({
+          status: "approved",
+          idempotent: false,
+          task_version: 5,
+          warnings: [],
+          override_used: false,
+          task: { ...DEFAULT_WORKSPACE.task, state: "completed", outcome: "approved" },
+        }),
+      ),
+    );
+    const { queryClient } = await renderApp(PATH);
+    // Seed cached queue/dashboard entries as if the user had visited them.
+    const seeded = [
+      ["review-tasks", "northstar", "all", "priority"],
+      ["documents", "northstar", "all", "all", ""],
+      ["operations", "northstar"],
+    ] as const;
+    for (const key of seeded) queryClient.setQueryData(key, {});
+
+    await user.click(await screen.findByRole("button", { name: "Approve order…" }));
+    await user.click(screen.getByRole("button", { name: "Confirm approval" }));
+    await screen.findByText("Order approved.");
+    for (const key of seeded) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+  });
+
   it("escalates with a reason", async () => {
     const user = userEvent.setup();
     const posted: unknown[] = [];

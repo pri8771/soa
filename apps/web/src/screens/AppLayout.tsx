@@ -28,6 +28,8 @@ export function AppLayout() {
     queryKey: ["me"],
     queryFn: fetchMe,
     staleTime: 30_000,
+    // Membership and permission changes surface on the next focus.
+    refetchOnWindowFocus: true,
   });
 
   if (status === "pending") {
@@ -111,7 +113,12 @@ export function AppLayout() {
     <ShellSessionProvider key={membership.organization_id} session={session}>
       <Outlet />
       {import.meta.env.MODE === "development" && (
-        <DevConsole organizationSlug={membership.organization_slug} />
+        <>
+          {/* The console is position:fixed; the spacer keeps its bar from
+              occluding the bottom of the page content. */}
+          <div aria-hidden="true" style={{ height: 32 }} />
+          <DevConsole organizationSlug={membership.organization_slug} />
+        </>
       )}
     </ShellSessionProvider>
   );

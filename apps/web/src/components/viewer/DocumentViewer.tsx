@@ -355,7 +355,14 @@ export function DocumentViewer({
         ) : (
           <ul
             aria-label="Search results"
-            style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", gap: "0.5rem" }}
+            style={{
+              listStyle: "none",
+              margin: 0,
+              padding: 0,
+              display: "flex",
+              gap: "0.5rem",
+              flexWrap: "wrap",
+            }}
           >
             {searchState.hits.map((hit) => (
               <li key={hit.page_number}>

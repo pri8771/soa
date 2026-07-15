@@ -47,12 +47,13 @@ export function DevConsole({ organizationSlug }: { organizationSlug: string }) {
   const stats = useQuery({
     queryKey: ["dev", "jobStats", organizationSlug],
     queryFn: () => fetchJobStats(organizationSlug),
-    refetchInterval: 2000,
+    refetchInterval: collapsed ? false : 2000,
+    enabled: !collapsed,
   });
   const docs = useQuery({
     queryKey: ["dev", "documents", organizationSlug],
     queryFn: () => fetchDocuments(organizationSlug),
-    refetchInterval: 2000,
+    refetchInterval: collapsed ? false : 2000,
     enabled: !collapsed,
   });
 
@@ -120,7 +121,7 @@ export function DevConsole({ organizationSlug }: { organizationSlug: string }) {
       {!collapsed && (
         <div
           style={{
-            maxHeight: 200,
+            maxHeight: "min(200px, 30vh)",
             overflowY: "auto",
             padding: "8px 12px",
             borderTop: "1px solid #21262d",
@@ -135,8 +136,11 @@ export function DevConsole({ organizationSlug }: { organizationSlug: string }) {
             </div>
           ) : (
             (docs.data?.items ?? []).slice(0, 12).map((d) => (
-              <div key={d.id} style={{ display: "flex", gap: 10, padding: "2px 0" }}>
-                <span style={{ color: "#8b949e", minWidth: 160 }}>
+              <div
+                key={d.id}
+                style={{ display: "flex", gap: 10, padding: "2px 0", flexWrap: "wrap" }}
+              >
+                <span style={{ color: "#8b949e", minWidth: 90 }}>
                   {new Date(d.received_at).toLocaleTimeString()}
                 </span>
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>

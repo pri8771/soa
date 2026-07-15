@@ -7,7 +7,7 @@
   grid-template-areas:
     "nav topbar"
     "nav main";
-  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--soa-canvas);
   color: var(--soa-text-primary);
 }
@@ -98,6 +98,7 @@
 .soa-shell-org {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
   gap: var(--soa-space-2);
   height: 32px;
   padding: 0 var(--soa-space-3);
@@ -110,6 +111,14 @@
 }
 .soa-shell-topbar-spacer {
   flex: 1;
+}
+.soa-shell-user {
+  font: var(--soa-font-body-sm);
+  color: var(--soa-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16rem;
 }
 .soa-shell-dev-badge {
   font: var(--soa-font-caption);
@@ -162,18 +171,25 @@
   flex: 1;
 }
 
-/* ---------- Compact desktop (1024–1279): nav collapses ---------- */
-@media (max-width: 1279px) {
-  .soa-shell {
-    grid-template-columns: 72px 1fr;
+/* ---------- Compact layouts ----------
+   Rail width is controlled by [data-nav-collapsed] alone; AppShell
+   defaults it from the viewport (BREAKPOINT_COMPACT_NAV in
+   breakpoints.ts), so the expand toggle works at every width. Below
+   BREAKPOINT_COMPACT_LAYOUT (1023px) the topbar sheds secondary
+   content. */
+@media (max-width: 1023px) {
+  .soa-shell-user {
+    display: none;
   }
-  .soa-shell .soa-shell-nav-label,
-  .soa-shell .soa-shell-brand-name {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
+  .soa-palette-trigger {
+    min-width: 0;
+  }
+  .soa-palette-trigger-label {
+    display: none;
+  }
+  .soa-shell-topbar {
+    gap: var(--soa-space-2);
+    padding: 0 var(--soa-space-3);
   }
 }
 
@@ -210,7 +226,7 @@
   z-index: 150;
   display: flex;
   justify-content: center;
-  padding-top: 12vh;
+  padding-top: min(12vh, 96px);
   background: rgba(15, 20, 32, 0.45);
 }
 .soa-palette {
@@ -237,7 +253,7 @@
   list-style: none;
   margin: 0;
   padding: var(--soa-space-1);
-  max-height: 320px;
+  max-height: min(320px, 60vh);
   overflow: auto;
 }
 .soa-palette-item {

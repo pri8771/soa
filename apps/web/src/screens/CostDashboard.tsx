@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { fetchUsageSnapshot } from "../api/client";
+import { DASHBOARD_POLL_MS, liveQueryOptions } from "../app/liveQuery";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -26,6 +27,7 @@ export function CostDashboard() {
   const snapshot = useQuery({
     queryKey: ["usage", slug],
     queryFn: () => fetchUsageSnapshot(slug),
+    ...liveQueryOptions(DASHBOARD_POLL_MS),
   });
 
   if (snapshot.status === "pending") {
@@ -84,7 +86,10 @@ export function CostDashboard() {
           </Banner>
         )}
 
-        <section aria-label="Totals" style={{ display: "flex", gap: "var(--soa-space-4)" }}>
+        <section
+          aria-label="Totals"
+          style={{ display: "flex", gap: "var(--soa-space-4)", flexWrap: "wrap" }}
+        >
           <div>
             <div style={{ font: "var(--soa-font-caption)" }}>Estimated</div>
             <strong style={{ fontSize: "1.5rem" }}>{dollars(data.totals.estimated_cents)}</strong>

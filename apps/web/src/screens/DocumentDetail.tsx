@@ -311,6 +311,11 @@ export function DocumentDetail() {
   const detail = useQuery({
     queryKey: ["document", slug, documentId],
     queryFn: () => fetchDocumentDetail(slug, documentId),
+    // Live refresh while the pipeline is moving, so the summary state and
+    // timeline track the runs panel below instead of freezing at load time.
+    refetchInterval: (query) =>
+      query.state.data && LIVE_STATES.has(query.state.data.document.state) ? 4000 : false,
+    refetchOnWindowFocus: true,
   });
   const runs = useQuery({
     queryKey: ["document-runs", slug, documentId],
@@ -319,6 +324,7 @@ export function DocumentDetail() {
     // (no remount), so scroll position and open dialogs are preserved.
     refetchInterval: (query) =>
       query.state.data && LIVE_STATES.has(query.state.data.state) ? 4000 : false,
+    refetchOnWindowFocus: true,
   });
 
   const canonical = useQuery({
@@ -412,7 +418,12 @@ export function DocumentDetail() {
 
         <Panel title="Summary">
           <dl
-            style={{ display: "grid", gridTemplateColumns: "12rem 1fr", gap: "0.5rem", margin: 0 }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "12rem minmax(0, 1fr)",
+              gap: "0.5rem",
+              margin: 0,
+            }}
           >
             <dt>State</dt>
             <dd style={{ margin: 0, display: "flex", gap: "var(--soa-space-1)" }}>

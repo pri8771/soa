@@ -9,8 +9,9 @@
 
 import { Badge, Button } from "@soa/design-system";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
+import { BREAKPOINT_COMPACT_NAV } from "./breakpoints";
 import { CommandPalette } from "./CommandPalette";
 import { OrganizationSwitcher } from "./OrganizationSwitcher";
 import { useShellSession } from "./ShellContext";
@@ -113,13 +114,23 @@ export function AppShell({
   children: ReactNode;
 }) {
   const session = useShellSession();
-  const [collapsed, setCollapsed] = useState<boolean>(
-    () => globalThis.localStorage?.getItem(NAV_COLLAPSE_KEY) === "true",
-  );
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    // An explicit preference wins; otherwise compact viewports start
+    // collapsed. The toggle works at every width — nothing forces the rail.
+    const stored = globalThis.localStorage?.getItem(NAV_COLLAPSE_KEY);
+    if (stored !== null && stored !== undefined) return stored === "true";
+    return typeof globalThis.matchMedia === "function"
+      ? globalThis.matchMedia(`(max-width: ${BREAKPOINT_COMPACT_NAV}px)`).matches
+      : false;
+  });
 
-  useEffect(() => {
-    globalThis.localStorage?.setItem(NAV_COLLAPSE_KEY, String(collapsed));
-  }, [collapsed]);
+  //: Persist only explicit toggles — the viewport-derived default must not
+  //: become a sticky preference just by rendering.
+  const toggleCollapsed = () =>
+    setCollapsed((value) => {
+      globalThis.localStorage?.setItem(NAV_COLLAPSE_KEY, String(!value));
+      return !value;
+    });
 
   const visibleItems = NAV_ITEMS.filter((item) => session.permissions.has(item.permission));
 
@@ -145,7 +156,7 @@ export function AppShell({
           </Link>
         ))}
         <div className="soa-shell-nav-footer">
-          <Button variant="subtle" size="sm" onPress={() => setCollapsed((value) => !value)}>
+          <Button variant="subtle" size="sm" onPress={toggleCollapsed}>
             <span aria-hidden="true">{collapsed ? "»" : "«"}</span>
             <span className="soa-shell-nav-label">
               {collapsed ? "Expand navigation" : "Collapse navigation"}
@@ -163,9 +174,7 @@ export function AppShell({
         ) : null}
         <div className="soa-shell-topbar-spacer" />
         <CommandPalette />
-        <span style={{ font: "var(--soa-font-body-sm)", color: "var(--soa-text-secondary)" }}>
-          {session.userLabel}
-        </span>
+        <span className="soa-shell-user">{session.userLabel}</span>
       </header>
 
       <div className="soa-shell-main">

@@ -303,10 +303,15 @@ export function ReviewStudio() {
   };
 
   //: Completion actions (REV-013). Each refreshes the workspace so the
-  //: task state, decision, and read-only banner reflect the outcome.
+  //: task state, decision, and read-only banner reflect the outcome, and
+  //: invalidates the queues and dashboard this task appears on so they
+  //: don't show it as still open.
   const finishRefresh = () => {
     versionRef.current = null;
     void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
+    void queryClient.invalidateQueries({ queryKey: ["review-tasks", slug] });
+    void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
+    void queryClient.invalidateQueries({ queryKey: ["operations", slug] });
   };
   const failure = (verb: string) => (error: unknown) =>
     setCompletionMessage(

@@ -504,7 +504,12 @@ export function MappingStudio() {
             {constants.map((spec, index) => (
               <li
                 key={index}
-                style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "end" }}
+                style={{
+                  display: "flex",
+                  gap: "var(--soa-space-2)",
+                  alignItems: "end",
+                  flexWrap: "wrap",
+                }}
               >
                 <TextField
                   label="Target field"

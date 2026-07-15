@@ -275,7 +275,7 @@ export function StreamConfigure() {
               <dl
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "auto auto auto",
+                  gridTemplateColumns: "auto minmax(0, 1fr) auto",
                   gap: "var(--soa-space-2) var(--soa-space-5)",
                   justifyContent: "start",
                   margin: 0,
@@ -284,7 +284,9 @@ export function StreamConfigure() {
                 {Object.entries(resolve.data.resolved.values).map(([key, entry]) => (
                   <div key={key} style={{ display: "contents" }}>
                     <dt style={{ font: "var(--soa-font-body-strong)" }}>{key}</dt>
-                    <dd style={{ margin: 0 }}>{JSON.stringify(entry.value)}</dd>
+                    <dd style={{ margin: 0, overflowWrap: "anywhere" }}>
+                      {JSON.stringify(entry.value)}
+                    </dd>
                     <dd style={{ margin: 0 }}>{sourceBadge(entry.source)}</dd>
                   </div>
                 ))}

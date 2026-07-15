@@ -23,6 +23,7 @@ import {
   releaseReviewTask,
   type ReviewTaskEntry,
 } from "../api/client";
+import { liveQueryOptions, QUEUE_POLL_MS } from "../app/liveQuery";
 import { DataTable } from "../components/table/DataTable";
 import { AppShell } from "../shell/AppShell";
 import { HelpTip } from "../components/help/HelpTip";
@@ -86,6 +87,7 @@ export function ReviewQueue() {
       fetchReviewTasks(slug, { view, sort, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : null),
+    ...liveQueryOptions(QUEUE_POLL_MS),
   });
   const rows = tasks.data?.pages.flatMap((page) => page.items) ?? [];
 

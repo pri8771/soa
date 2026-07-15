@@ -13,6 +13,7 @@ import { Link } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
 
 import { fetchQualitySnapshot } from "../api/client";
+import { DASHBOARD_POLL_MS, liveQueryOptions } from "../app/liveQuery";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -45,6 +46,7 @@ export function QualityDashboard() {
   const snapshot = useQuery({
     queryKey: ["quality", slug],
     queryFn: () => fetchQualitySnapshot(slug),
+    ...liveQueryOptions(DASHBOARD_POLL_MS),
   });
 
   if (snapshot.status === "pending") {

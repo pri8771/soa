@@ -23,6 +23,9 @@ export function AuditTrail() {
   const events = useQuery({
     queryKey: ["audit-events", slug, applied],
     queryFn: () => fetchAuditEvents(slug, { action: applied || undefined }),
+    // Refresh on focus only — no interval, so rows never shift under an
+    // investigator mid-read.
+    refetchOnWindowFocus: true,
   });
   const exportBundle = useMutation({
     mutationFn: () => createAuditExport(slug, { action: applied || undefined }),
@@ -35,7 +38,14 @@ export function AuditTrail() {
       breadcrumbs={[{ label: session.organization.name }, { label: "Audit trail" }]}
     >
       <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
-        <div style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "end" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: "var(--soa-space-2)",
+            alignItems: "end",
+            flexWrap: "wrap",
+          }}
+        >
           <TextField
             label="Filter by action prefix"
             value={actionFilter}
@@ -75,7 +85,8 @@ export function AuditTrail() {
               Export {exportResult.export_id.slice(0, 8)} — {exportResult.event_count} event(s)
             </strong>
             <p style={{ margin: 0, font: "var(--soa-font-caption)" }}>
-              Manifest SHA-256: <code>{exportResult.manifest_sha256}</code> ·{" "}
+              Manifest SHA-256:{" "}
+              <code style={{ overflowWrap: "anywhere" }}>{exportResult.manifest_sha256}</code> ·{" "}
               <a href={exportResult.manifest_download_url}>Download manifest</a> (link expires{" "}
               {exportResult.manifest_expires_at})
             </p>

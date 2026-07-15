@@ -18,6 +18,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 
 import { cancelDocument, fetchDocuments, fetchStreams, type DocumentSummary } from "../api/client";
+import { liveQueryOptions, QUEUE_POLL_MS } from "../app/liveQuery";
 import { DataTable } from "../components/table/DataTable";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -122,6 +123,7 @@ export function DocumentsQueue() {
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : null),
+    ...liveQueryOptions(QUEUE_POLL_MS),
   });
   const rows = documents.data?.pages.flatMap((page) => page.items) ?? [];
 

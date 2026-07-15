@@ -13,7 +13,7 @@
  */
 
 import { Badge, Banner, Button, Select } from "@soa/design-system";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import {
@@ -108,6 +108,7 @@ export function UploadDocuments() {
   const inputRef = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
   const cancelledIds = useRef(new Set<number>());
+  const queryClient = useQueryClient();
 
   const streams = useQuery({ queryKey: ["streams", slug], queryFn: () => fetchStreams(slug) });
   const activeStreams = (streams.data ?? []).filter((s) => s.status !== "archived");
@@ -157,6 +158,8 @@ export function UploadDocuments() {
       const result = await completeUploadSession(slug, created.session_id);
       if (cancelledIds.current.has(queued.id)) return;
       patchFile(queued.id, { phase: "done", result });
+      // The documents queue now has a new row; refresh it on next mount.
+      void queryClient.invalidateQueries({ queryKey: ["documents", slug] });
     } catch (error) {
       // A cancelled file was already marked; don't overwrite it.
       setFiles((current) =>

@@ -12,9 +12,11 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { BREAKPOINT_COMPACT_LAYOUT } from "../../shell/breakpoints";
+
 //: Side-by-side needs roughly this much room; below it (tablets,
 //: split-screen desktops) the panels stack. 1280x720 stays side by side.
-const COMPACT_QUERY = "(max-width: 1023px)";
+const COMPACT_QUERY = `(max-width: ${BREAKPOINT_COMPACT_LAYOUT}px)`;
 const MIN_RATIO = 25;
 const MAX_RATIO = 75;
 const KEY_STEP = 5;

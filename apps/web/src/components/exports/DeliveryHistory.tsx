@@ -21,6 +21,7 @@ import {
   retryExport,
   type ExportJobEntry,
 } from "../../api/client";
+import { QUEUE_POLL_MS } from "../../app/liveQuery";
 
 const STATE_TONES: Record<string, "neutral" | "success" | "warning" | "critical" | "info"> = {
   pending: "info",
@@ -30,6 +31,10 @@ const STATE_TONES: Record<string, "neutral" | "success" | "warning" | "critical"
   failed_terminal: "critical",
   cancelled: "neutral",
 };
+
+//: Settled export-job states (the worker's export orchestrator treats
+//: these as no-ops); anything else may still change, so keep polling.
+const TERMINAL_STATES = new Set(["succeeded", "failed_terminal", "cancelled"]);
 
 function ExportJobRow({
   organizationSlug,
@@ -46,6 +51,8 @@ function ExportJobRow({
   const detail = useQuery({
     queryKey: ["export-detail", organizationSlug, job.id],
     queryFn: () => fetchExportDetail(organizationSlug, job.id),
+    // Attempts keep appending while the job is unsettled.
+    refetchInterval: TERMINAL_STATES.has(job.state) ? false : QUEUE_POLL_MS,
   });
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["exports"] });
@@ -180,6 +187,11 @@ export function DeliveryHistory({
   const exports = useQuery({
     queryKey: ["exports", organizationSlug, documentId],
     queryFn: () => fetchExports(organizationSlug, { documentId }),
+    // Poll only while a job is still moving; a settled history is static.
+    refetchInterval: (query) =>
+      query.state.data?.items.some((job) => !TERMINAL_STATES.has(job.state))
+        ? QUEUE_POLL_MS
+        : false,
   });
 
   if (exports.status === "pending") return <Skeleton height="4rem" />;
