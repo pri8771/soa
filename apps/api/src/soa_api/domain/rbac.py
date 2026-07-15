@@ -277,6 +277,35 @@ async def create_custom_role(
     return role
 
 
+async def update_role_permissions(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    role: Role,
+    permissions: Iterable[str],
+    actor_id: str,
+) -> Role:
+    """Replace a role's permission set (TEN-006 drift correction).
+
+    Lets newly-added registry permissions reach an existing org's role
+    without hand SQL. ``is_system`` is preserved so a system role stays a
+    system role. Permissions fail closed through :func:`validate_permissions`.
+    """
+    role.permissions = validate_permissions(permissions)
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor_id,
+        action="role.updated",
+        target_type="role",
+        target_id=str(role.id),
+        organization_id=context.organization_id,
+        summary={"slug": role.slug, "permissions": sorted(set(permissions))},
+    )
+    return role
+
+
 async def assign_role(
     session: AsyncSession,
     context: OrganizationContext,
