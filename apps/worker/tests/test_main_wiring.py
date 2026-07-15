@@ -45,6 +45,14 @@ def test_a_registered_local_llm_provider_is_selected_by_name() -> None:
         unregister_provider(Capability.FIELD_EXTRACTION, LOCAL_NAME)
 
 
+def test_the_default_local_llm_timeout_allows_minutes() -> None:
+    # Real local extraction was observed at 45-250s; a short default
+    # silently times out and retries the first real document. The default
+    # must give local models on shared hardware room to finish.
+    settings = WorkerSettings(environment=Environment.TEST)
+    assert settings.local_llm_timeout_seconds == 300.0
+
+
 def test_the_local_llm_timeout_setting_reaches_the_adapter() -> None:
     settings = WorkerSettings(
         environment=Environment.TEST,
