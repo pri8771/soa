@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useParams } from "@tanstack/react-router";
 
 import { fetchMe } from "../api/client";
+import { DevConsole } from "../components/dev/DevConsole";
 import { ShellSessionProvider, type ShellSession } from "../shell/ShellContext";
 
 function CenteredState({ children }: { children: React.ReactNode }) {
@@ -109,6 +110,9 @@ export function AppLayout() {
   return (
     <ShellSessionProvider key={membership.organization_id} session={session}>
       <Outlet />
+      {import.meta.env.MODE === "development" && (
+        <DevConsole organizationSlug={membership.organization_slug} />
+      )}
     </ShellSessionProvider>
   );
 }
