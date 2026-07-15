@@ -53,7 +53,7 @@ capability. Release claims require runtime wiring and evidence.
 
 | Gate | Result |
 |---|---|
-| Python suite | 1,499 passed, 35 skipped, 2 known warnings after config verification |
+| Python suite | 1,500 passed, 35 skipped, 2 known warnings after config execution |
 | Web unit/component | 200 passed |
 | Design system | 108 passed |
 | Browser accessibility E2E | 3 passed |
