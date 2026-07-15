@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession, ObjectStoreDep
+from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
 from soa_db.audit import ActorType
 from soa_db.data_deletion import delete_document_data
 from soa_db.documents import DocumentRepository, DocumentState, transition_document
@@ -72,6 +72,7 @@ async def delete_document(
     authorized: Annotated[AuthorizedContext, Depends(require_permission("data.delete"))],
     session: DbSession,
     store: ObjectStoreDep,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> dict[str, Any]:
     """Erase one document's stored data and settle it as ``deleted``.
 
@@ -81,6 +82,12 @@ async def delete_document(
     eligibility + approval queue) is a separate SEC-008/010 follow-on.
     The workflow writes the deletion audit event itself — counts only.
     """
+    # Abuse control (SEC-003): per-principal cap on deletions.
+    deps.rate_limiter.enforce(
+        "deletion",
+        f"user:{authorized.membership.user_id}",
+        deps.settings.rate_limit_deletions_per_minute,
+    )
     # Tenant scope first: a document outside the caller's organization is
     # indistinguishable from one that does not exist.
     document = await DocumentRepository(session, authorized.org_context).get(document_id)
