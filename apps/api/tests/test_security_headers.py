@@ -83,6 +83,37 @@ async def test_no_configuration_means_no_cors_at_all(tmp_path: Path) -> None:
     assert "access-control-allow-origin" not in response.headers
 
 
+async def test_signed_dev_blobs_are_cross_origin_loadable(tmp_path: Path) -> None:
+    """A signed dev blob (a page image) must carry Cross-Origin-Resource-Policy:
+    cross-origin so the web viewer can load it even when the web app and the API
+    are reached on different sites (localhost web vs 127.0.0.1 API). The default
+    same-site policy would block it with ERR_BLOCKED_BY_RESPONSE.NotSameSite —
+    the HMAC signature is the authorization, so cross-origin loading is correct."""
+    from urllib.parse import urlsplit
+
+    from soa_storage.filesystem import FilesystemObjectStore
+
+    store = FilesystemObjectStore(root=str(tmp_path / "blobs"))
+    key = "orgs/o/documents/d/page_image/p.png"
+    await store.put(key, b"PNGDATA", content_type="image/png")
+    signed = await store.signed_download_url(key, expires_in_seconds=300)
+
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/blob.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(environment=Environment.TEST),
+        db=DatabaseSessions(engine),
+        object_store=store,
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    parts = urlsplit(signed.url)
+    response = client.get(f"{parts.path}?{parts.query}")
+    assert response.status_code == 200
+    assert response.content == b"PNGDATA"
+    assert response.headers["Cross-Origin-Resource-Policy"] == "cross-origin"
+
+
 def test_wildcard_and_plain_http_origins_are_refused_at_startup() -> None:
     with pytest.raises(ValidationError, match="wildcard"):
         ApiSettings(environment=Environment.TEST, cors_allowed_origins=("*",))

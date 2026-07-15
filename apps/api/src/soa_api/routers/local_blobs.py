@@ -63,4 +63,17 @@ async def get_blob(key: str, request: Request) -> Response:
         meta = await store.head(key)
     except ObjectNotFoundError:
         return Response(status_code=404)
-    return RawResponse(content=data, media_type=meta.content_type)
+    # A signed blob is a standalone, HMAC-authorized resource the web app
+    # loads directly (page images in the review viewer), exactly like an
+    # S3/GCS object URL in production. The API's default
+    # Cross-Origin-Resource-Policy: same-site would block that load whenever
+    # the web app and this endpoint are reached on different sites — most
+    # commonly local dev served on `localhost` while the API is on
+    # `127.0.0.1` (distinct sites to the browser). The signature is the
+    # authorization, so an explicit cross-origin policy is correct here; the
+    # security-headers middleware only sets defaults and leaves this intact.
+    return RawResponse(
+        content=data,
+        media_type=meta.content_type,
+        headers={"Cross-Origin-Resource-Policy": "cross-origin"},
+    )
