@@ -18,6 +18,7 @@ from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
 from soa_worker.pipeline import build_executors
 from soa_worker.providers import Capability, create_provider
 from soa_worker.registry import HandlerRegistry, JobEnvelope
+from soa_worker.run_config import verify_run_config
 from soa_worker.settings import WorkerSettings, load_settings
 from soa_worker.worker import Worker
 
@@ -88,7 +89,11 @@ async def _run() -> None:
     provider = create_provider(Capability.FIELD_EXTRACTION, settings.extraction_provider)
     if not isinstance(provider, ExtractionProvider):
         raise TypeError(f"provider {settings.extraction_provider!r} does not implement extraction")
-    orchestrator = Orchestrator(db, build_executors(store, provider))
+    orchestrator = Orchestrator(
+        db,
+        build_executors(store, provider),
+        config_verifier=verify_run_config,
+    )
     registry = HandlerRegistry()
 
     @registry.register(PREPROCESS_JOB_TYPE)

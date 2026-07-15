@@ -17,7 +17,7 @@ from soa_api.domain.processes import Process, ProcessVersion
 from soa_api.domain.rbac import SYSTEM_ROLE_TEMPLATES, Role, RoleAssignment
 from soa_api.domain.rules import RuleSetVersion
 from soa_api.domain.schemas import SchemaVersion
-from soa_api.domain.streams import Stream, StreamVersion
+from soa_api.domain.streams import Stream, StreamVersion, resolve_snapshot
 from soa_api.domain.tenancy import Organization, Workspace
 from soa_api.domain.versioning import VersionState
 from soa_api.settings import load_settings
@@ -218,6 +218,7 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
         streams: list[Stream] = []
         for fixture in tenant.streams:
             stream_version_id = stable_id(f"stream-version:{_slug(fixture.alias)}:1")
+            overrides = {"languages": [fixture.data["language"]]}
             stream = await _add_once(
                 session,
                 Stream,
@@ -240,12 +241,8 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
                     "organization_id": context.organization_id,
                     "stream_id": stream.id,
                     "version_number": 1,
-                    "overrides": {"languages": [fixture.data["language"]]},
-                    "resolved_snapshot": {
-                        "process_version_id": str(process_version.id),
-                        "process_version_number": 1,
-                        "config": {"languages": [fixture.data["language"]]},
-                    },
+                    "overrides": overrides,
+                    "resolved_snapshot": resolve_snapshot(process_version, overrides),
                     "pinned_process_version_id": process_version.id,
                     "state": VersionState.PUBLISHED.value,
                     "change_summary": "Deterministic development seed",

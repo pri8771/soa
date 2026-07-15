@@ -18,6 +18,10 @@ capability. Release claims require runtime wiring and evidence.
   heartbeats active jobs, acknowledges success, retries transient failures,
   and dead-letters permanent/exhausted failures. Before this remediation the
   production entry point registered no handlers and supplied no job fetcher.
+- Every stage now authenticates its run's tenant-scoped immutable stream
+  version and recomputes the stored snapshot fingerprint. Missing, mutable,
+  cross-tenant, altered, or intake-mismatched configuration fails terminally
+  before document processing code executes.
 - Real extraction providers now receive actual per-page document text. Native
   PDF text is preferred; low-coverage/image pages use bounded local OCR. The
   recognized input is retained as a page artifact. Before this remediation,
@@ -44,7 +48,7 @@ capability. Release claims require runtime wiring and evidence.
 
 | Gate | Result |
 |---|---|
-| Python suite | 1,496 passed, 35 skipped, 2 warnings in 64.75 seconds |
+| Python suite | 1,499 passed, 35 skipped, 2 known warnings after config verification |
 | Web unit/component | 200 passed |
 | Design system | 108 passed |
 | Browser accessibility E2E | 3 passed |
@@ -60,9 +64,10 @@ capability. Release claims require runtime wiring and evidence.
 
 ### Code and integration blockers
 
-1. **Pinned stream configuration is not executed by the worker.** Intake pins a
-   stream version and fingerprint, but the running pipeline still uses one
-   deployment-wide `PipelineConfig` and extraction provider. Schema, rules,
+1. **Pinned stream configuration is verified but not executed by the worker.**
+   Intake pins a stream version and fingerprint and each stage now validates
+   both against the immutable tenant-scoped snapshot, but the running pipeline
+   still uses one deployment-wide `PipelineConfig` and extraction provider. Schema, rules,
    confidence, locale/language, instruction version, provider routing, and
    tenant credential references must resolve from the run's immutable snapshot.
 2. **Classification and packet splitting are explicit placeholders.** The
