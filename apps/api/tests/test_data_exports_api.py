@@ -14,8 +14,10 @@ from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
 from soa_db.data_export import EXPORT_CATEGORIES
+from soa_db.data_export_jobs import DataExportJob
 from soa_db.documents import SourceChannel, create_document
 from soa_db.extracted_fields import create_extracted_field
+from soa_db.jobs import Job
 from soa_db.repository import OrganizationContext
 from soa_db.runs import start_run
 from soa_storage import MemoryObjectStore
@@ -184,3 +186,36 @@ async def test_authorization_and_tenant_confinement(
     # A document that does not exist in the org is a 404 (no leak).
     missing = client.post(f"/orgs/northstar/documents/{uuid.uuid4()}/data-exports", headers=AUDITOR)
     assert missing.status_code == 404
+
+
+async def test_organization_export_is_durable_and_cancellable(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await seed_document_with_data(client, db)
+    response = client.post("/orgs/northstar/data-exports", headers=AUDITOR)
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["state"] == "pending"
+    export_id = uuid.UUID(body["id"])
+    async with db.session_scope() as session:
+        stored = (
+            await session.execute(select(DataExportJob).where(DataExportJob.id == export_id))
+        ).scalar_one()
+        queued = (
+            await session.execute(
+                select(Job).where(
+                    Job.job_type == "data_export.build",
+                    Job.payload["data_export_id"].as_string() == str(export_id),
+                )
+            )
+        ).scalar_one()
+        assert stored.scope == "organization"
+        assert queued.status == "pending"
+    cancelled = client.post(
+        f"/orgs/northstar/data-exports/{export_id}/cancel",
+        json={"reason": "requested in error"},
+        headers=AUDITOR,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "cancelled"

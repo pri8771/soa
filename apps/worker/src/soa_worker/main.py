@@ -23,6 +23,7 @@ PREPROCESS_JOB_TYPE = "document.preprocess"
 EXPORT_JOB_TYPE = "export.deliver"
 EVALUATION_JOB_TYPE = "evaluation.run"
 OUTBOX_JOB_TYPE = "outbox.publish"
+DATA_EXPORT_JOB_TYPE = "data_export.build"
 
 
 def _register_extraction_providers(settings: WorkerSettings) -> None:
@@ -154,6 +155,22 @@ async def _run() -> None:
                 )
         if result.outcome == "retryable_error":
             raise RuntimeError("outbox destination asked for a retry")
+
+    @registry.register(DATA_EXPORT_JOB_TYPE)
+    async def build_data_export(job: JobEnvelope) -> None:
+        from soa_db.repository import OrganizationContext
+        from soa_db.tenant_guard import bind_tenant
+        from soa_worker.data_export_orchestrator import execute_data_export_batch
+
+        organization_id = uuid.UUID(str(job.payload["organization_id"]))
+        async with db.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            await execute_data_export_batch(
+                session,
+                store,
+                OrganizationContext(organization_id=organization_id),
+                export_id=uuid.UUID(str(job.payload["data_export_id"])),
+            )
 
     worker_id = f"{socket.gethostname()}:{uuid.uuid4()}"
     queue = DatabaseJobQueue(db, worker_id=worker_id)

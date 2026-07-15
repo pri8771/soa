@@ -23,16 +23,144 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.data_export import EXPORT_CATEGORIES, collect_document_export
+from soa_db.data_export_jobs import (
+    DataExportJob,
+    DataExportJobRepository,
+    DataExportState,
+    new_data_export_job,
+)
 from soa_db.documents import DocumentRepository
+from soa_db.jobs import enqueue_job
 from soa_db.types import utcnow
 
 router = APIRouter(tags=["data-exports"])
+
+
+class CancelExportRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+async def _durable_response(job: DataExportJob, store: Any, ttl: int) -> dict[str, Any]:
+    manifest_url = None
+    manifest_expires_at = None
+    if (
+        job.state == DataExportState.SUCCEEDED
+        and job.manifest_object_key
+        and job.expires_at > utcnow()
+    ):
+        signed = await store.signed_download_url(
+            job.manifest_object_key,
+            expires_in_seconds=min(ttl, max(1, int((job.expires_at - utcnow()).total_seconds()))),
+        )
+        manifest_url = signed.url
+        manifest_expires_at = signed.expires_at.isoformat()
+    return {
+        "id": str(job.id),
+        "scope": job.scope,
+        "state": job.state,
+        "total_documents": job.total_documents,
+        "processed_documents": job.processed_documents,
+        "progress": (
+            round(job.processed_documents / job.total_documents, 4) if job.total_documents else 0.0
+        ),
+        "total_records": job.total_records,
+        "safe_error": job.safe_error,
+        "expires_at": job.expires_at.isoformat(),
+        "manifest_download_url": manifest_url,
+        "manifest_expires_at": manifest_expires_at,
+    }
+
+
+@router.post(
+    "/orgs/{organization_slug}/data-exports",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_organization_data_export(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("data.export"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> dict[str, Any]:
+    job = new_data_export_job(
+        organization_id=authorized.org_context.organization_id,
+        scope="organization",
+        created_by=authorized.principal.subject,
+    )
+    session.add(job)
+    await session.flush()
+    await enqueue_job(
+        session,
+        job_type="data_export.build",
+        organization_id=authorized.org_context.organization_id,
+        payload={
+            "organization_id": str(authorized.org_context.organization_id),
+            "data_export_id": str(job.id),
+        },
+        dedupe_key=f"data-export:{job.id}:start",
+        max_attempts=5,
+    )
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=authorized.principal.subject,
+        action="organization.data_export_requested",
+        target_type="data_export_job",
+        target_id=str(job.id),
+        organization_id=authorized.org_context.organization_id,
+        summary={"scope": "organization", "expires_at": job.expires_at.isoformat()},
+    )
+    return await _durable_response(job, store, deps.settings.download_url_ttl_seconds)
+
+
+@router.get("/orgs/{organization_slug}/data-exports/{export_id}")
+async def get_durable_data_export(
+    export_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("data.export"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> dict[str, Any]:
+    job = await DataExportJobRepository(session, authorized.org_context).get(export_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Data export not found.")
+    return await _durable_response(job, store, deps.settings.download_url_ttl_seconds)
+
+
+@router.post("/orgs/{organization_slug}/data-exports/{export_id}/cancel")
+async def cancel_durable_data_export(
+    export_id: uuid.UUID,
+    body: CancelExportRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("data.export"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> dict[str, Any]:
+    job = await DataExportJobRepository(session, authorized.org_context).get(export_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Data export not found.")
+    if job.state not in (DataExportState.PENDING, DataExportState.RUNNING):
+        raise HTTPException(status_code=409, detail="Only pending or running exports cancel.")
+    job.state = DataExportState.CANCELLED
+    job.safe_error = f"cancelled by operator: {body.reason}"
+    job.finished_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=authorized.principal.subject,
+        action="organization.data_export_cancelled",
+        target_type="data_export_job",
+        target_id=str(job.id),
+        organization_id=authorized.org_context.organization_id,
+        summary={"reason": body.reason, "processed_documents": job.processed_documents},
+    )
+    return await _durable_response(job, store, deps.settings.download_url_ttl_seconds)
 
 
 @router.post(
