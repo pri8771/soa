@@ -28,9 +28,7 @@ def upgrade() -> None:
         "processing_runs",
         sa.Column("provider_policy_version_id", sa.Uuid(as_uuid=True), nullable=True),
     )
-    op.add_column(
-        "processing_runs", sa.Column("provider_credential_ref", sa.Text(), nullable=True)
-    )
+    op.add_column("processing_runs", sa.Column("provider_credential_ref", sa.Text(), nullable=True))
     op.add_column(
         "processing_runs", sa.Column("execution_fingerprint", sa.String(64), nullable=True)
     )
@@ -42,9 +40,7 @@ def upgrade() -> None:
     op.add_column(
         "extracted_fields", sa.Column("instruction_reference", sa.String(200), nullable=True)
     )
-    op.add_column(
-        "extracted_fields", sa.Column("config_fingerprint", sa.String(64), nullable=True)
-    )
+    op.add_column("extracted_fields", sa.Column("config_fingerprint", sa.String(64), nullable=True))
     op.add_column(
         "extracted_fields", sa.Column("execution_fingerprint", sa.String(64), nullable=True)
     )

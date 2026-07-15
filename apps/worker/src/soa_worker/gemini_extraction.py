@@ -190,7 +190,7 @@ class GeminiExtractionProvider:
 
 
 def register_gemini_extraction(
-    api_key: str,
+    api_key: str | None,
     *,
     model: str = DEFAULT_MODEL,
     endpoint_base: str = DEFAULT_ENDPOINT_BASE,
@@ -221,7 +221,7 @@ def register_gemini_extraction(
             ),
         ),
         lambda **runtime: GeminiExtractionProvider(
-            api_key=runtime.get("credential_value") or api_key,
+            api_key=runtime.get("credential_value") or api_key or "",
             model=model,
             endpoint_base=endpoint_base,
             instructions=runtime.get("instructions"),

@@ -109,7 +109,9 @@ async def test_key_scoped_ingestion_runs_the_full_pipeline(
         document = (await session.execute(select(Document))).scalars().one()
         assert document.source_channel == "api"
         assert document.client_reference == "erp-42"
-        job = (await session.execute(select(Job))).scalars().one()
+        job = (
+            await session.execute(select(Job).where(Job.job_type == "document.preprocess"))
+        ).scalar_one()
         assert job.job_type == "document.preprocess"
         assert job.payload["stream_version_id"]
         assert job.payload["provider_policy_version_id"]

@@ -212,7 +212,7 @@ class AnthropicExtractionProvider:
 
 
 def register_anthropic_extraction(
-    api_key: str,
+    api_key: str | None,
     *,
     model: str = DEFAULT_MODEL,
     endpoint: str = DEFAULT_ENDPOINT,
@@ -247,7 +247,7 @@ def register_anthropic_extraction(
             ),
         ),
         lambda **runtime: AnthropicExtractionProvider(
-            api_key=runtime.get("credential_value") or api_key,
+            api_key=runtime.get("credential_value") or api_key or "",
             model=model,
             endpoint=endpoint,
             instructions=runtime.get("instructions"),

@@ -32,6 +32,7 @@ from sqlalchemy import select
 from soa_api.app import create_app
 from soa_api.domain.credentials import create_credential
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_config import MemorySecretStore
 from soa_config.logging import JsonFormatter
 from soa_config.telemetry import configure_telemetry
@@ -132,6 +133,7 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
             ),
         ):
             assert track(client.post(path, json=body, headers=ADMIN)).status_code == 201
+        await publish_runtime_config(client, db, headers=ADMIN)
 
         # Integration credential set + rotation (SEC-005 path).
         assert (

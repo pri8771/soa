@@ -1,12 +1,175 @@
 [
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000001","split":"validation","expected_class":"sales_order","cohort":"digital_usd","ground_truth":{"fields":{"po_number":"PO-1001","order_date":"2026-01-15","customer_name":"Acme US","currency":"USD","total_amount":"125.00"},"lines":[{"sku":"WID-1","quantity":"5","unit_price":"25.00"}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000002","split":"test","expected_class":"sales_order","cohort":"digital_eur","ground_truth":{"fields":{"po_number":"4500012","order_date":"2026-02-01","customer_name":"Muster GmbH","currency":"EUR","total_amount":"1200.50"},"lines":[{"sku":"DE-77","quantity":"10","unit_price":"120.05"}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000003","split":"test","expected_class":"sales_order","cohort":"scan_low_quality","ground_truth":{"fields":{"po_number":"SCAN-003","order_date":"2026-03-12","customer_name":"Northwind","currency":"USD","total_amount":"89.99"},"lines":[{"sku":"A-9","quantity":"1","unit_price":"89.99"}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000004","split":"test","expected_class":"sales_order","cohort":"multi_page","ground_truth":{"fields":{"po_number":"MP-004","order_date":"2026-04-20","customer_name":"Contoso","currency":"GBP","total_amount":"9999.00"},"lines":[{"sku":"X-1","quantity":"10","unit_price":"499.95"},{"sku":"X-2","quantity":"5","unit_price":"999.90"}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000005","split":"validation","expected_class":"sales_order","cohort":"missing_optional","ground_truth":{"fields":{"po_number":"MISS-005","order_date":"2026-05-05","customer_name":"Optional Co","currency":"USD","total_amount":null},"lines":[{"sku":"OPT-1","quantity":"2","unit_price":null}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000006","split":"test","expected_class":"sales_order","cohort":"ambiguous_sku","ground_truth":{"fields":{"po_number":"AMB-006","order_date":"2026-06-06","customer_name":"Alias Buyer","currency":"USD","total_amount":"42.00"},"lines":[{"sku":"CUSTOMER-WIDGET","quantity":"3","unit_price":"14.00"}],"validations":["catalog.material_match"]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000007","split":"test","expected_class":"sales_order","cohort":"duplicate_po","ground_truth":{"fields":{"po_number":"PO-1001","order_date":"2026-07-07","customer_name":"Acme US","currency":"USD","total_amount":"130.00"},"lines":[{"sku":"WID-1","quantity":"5","unit_price":"26.00"}],"validations":["catalog.duplicate_po"]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000008","split":"validation","expected_class":"sales_order","cohort":"large_lines","ground_truth":{"fields":{"po_number":"LARGE-008","order_date":"2026-08-08","customer_name":"Bulk Buyer","currency":"USD","total_amount":"1000.00"},"lines":[{"sku":"BULK-1","quantity":"1000","unit_price":"1.00"}],"validations":[]}},
-  {"document_sha256":"0000000000000000000000000000000000000000000000000000000000000009","split":"test","expected_class":"sales_order","cohort":"date_locale","ground_truth":{"fields":{"po_number":"DATE-009","order_date":"2026-09-30","customer_name":"Euro Dates","currency":"EUR","total_amount":"10.50"},"lines":[{"sku":"D-1","quantity":"1","unit_price":"10.50"}],"validations":[]}},
-  {"document_sha256":"000000000000000000000000000000000000000000000000000000000000000a","split":"test","expected_class":"sales_order","cohort":"negative_case","ground_truth":{"fields":{"po_number":null,"order_date":"2026-10-10","customer_name":null,"currency":"USD","total_amount":"0.00"},"lines":[],"validations":["required.po_number","required.customer_name"]}}
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+    "split": "validation",
+    "expected_class": "sales_order",
+    "cohort": "digital_usd",
+    "ground_truth": {
+      "fields": {
+        "po_number": "PO-1001",
+        "order_date": "2026-01-15",
+        "customer_name": "Acme US",
+        "currency": "USD",
+        "total_amount": "125.00"
+      },
+      "lines": [{ "sku": "WID-1", "quantity": "5", "unit_price": "25.00" }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "digital_eur",
+    "ground_truth": {
+      "fields": {
+        "po_number": "4500012",
+        "order_date": "2026-02-01",
+        "customer_name": "Muster GmbH",
+        "currency": "EUR",
+        "total_amount": "1200.50"
+      },
+      "lines": [{ "sku": "DE-77", "quantity": "10", "unit_price": "120.05" }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "scan_low_quality",
+    "ground_truth": {
+      "fields": {
+        "po_number": "SCAN-003",
+        "order_date": "2026-03-12",
+        "customer_name": "Northwind",
+        "currency": "USD",
+        "total_amount": "89.99"
+      },
+      "lines": [{ "sku": "A-9", "quantity": "1", "unit_price": "89.99" }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "multi_page",
+    "ground_truth": {
+      "fields": {
+        "po_number": "MP-004",
+        "order_date": "2026-04-20",
+        "customer_name": "Contoso",
+        "currency": "GBP",
+        "total_amount": "9999.00"
+      },
+      "lines": [
+        { "sku": "X-1", "quantity": "10", "unit_price": "499.95" },
+        { "sku": "X-2", "quantity": "5", "unit_price": "999.90" }
+      ],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+    "split": "validation",
+    "expected_class": "sales_order",
+    "cohort": "missing_optional",
+    "ground_truth": {
+      "fields": {
+        "po_number": "MISS-005",
+        "order_date": "2026-05-05",
+        "customer_name": "Optional Co",
+        "currency": "USD",
+        "total_amount": null
+      },
+      "lines": [{ "sku": "OPT-1", "quantity": "2", "unit_price": null }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "ambiguous_sku",
+    "ground_truth": {
+      "fields": {
+        "po_number": "AMB-006",
+        "order_date": "2026-06-06",
+        "customer_name": "Alias Buyer",
+        "currency": "USD",
+        "total_amount": "42.00"
+      },
+      "lines": [{ "sku": "CUSTOMER-WIDGET", "quantity": "3", "unit_price": "14.00" }],
+      "validations": ["catalog.material_match"]
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000007",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "duplicate_po",
+    "ground_truth": {
+      "fields": {
+        "po_number": "PO-1001",
+        "order_date": "2026-07-07",
+        "customer_name": "Acme US",
+        "currency": "USD",
+        "total_amount": "130.00"
+      },
+      "lines": [{ "sku": "WID-1", "quantity": "5", "unit_price": "26.00" }],
+      "validations": ["catalog.duplicate_po"]
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+    "split": "validation",
+    "expected_class": "sales_order",
+    "cohort": "large_lines",
+    "ground_truth": {
+      "fields": {
+        "po_number": "LARGE-008",
+        "order_date": "2026-08-08",
+        "customer_name": "Bulk Buyer",
+        "currency": "USD",
+        "total_amount": "1000.00"
+      },
+      "lines": [{ "sku": "BULK-1", "quantity": "1000", "unit_price": "1.00" }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "0000000000000000000000000000000000000000000000000000000000000009",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "date_locale",
+    "ground_truth": {
+      "fields": {
+        "po_number": "DATE-009",
+        "order_date": "2026-09-30",
+        "customer_name": "Euro Dates",
+        "currency": "EUR",
+        "total_amount": "10.50"
+      },
+      "lines": [{ "sku": "D-1", "quantity": "1", "unit_price": "10.50" }],
+      "validations": []
+    }
+  },
+  {
+    "document_sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+    "split": "test",
+    "expected_class": "sales_order",
+    "cohort": "negative_case",
+    "ground_truth": {
+      "fields": {
+        "po_number": null,
+        "order_date": "2026-10-10",
+        "customer_name": null,
+        "currency": "USD",
+        "total_amount": "0.00"
+      },
+      "lines": [],
+      "validations": ["required.po_number", "required.customer_name"]
+    }
+  }
 ]

@@ -14,6 +14,7 @@ from soa_api.services.file_inspection import (
     inspect_file,
 )
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import Document
 from soa_storage import MemoryObjectStore, sha256_hex
@@ -84,7 +85,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions, MemoryO
 ADMIN = {"X-Dev-User": "user:reviewer"}
 
 
-def seed_stream(client: TestClient) -> None:
+async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
     for call in (
         ("/organizations", {"name": "Northstar", "slug": "northstar"}),
         ("/orgs/northstar/processes", {"name": "POs", "slug": "purchase-orders"}),
@@ -94,6 +95,7 @@ def seed_stream(client: TestClient) -> None:
         ),
     ):
         assert client.post(call[0], json=call[1], headers=ADMIN).status_code == 201
+    await publish_runtime_config(client, db)
 
 
 async def run_upload(
@@ -129,7 +131,7 @@ async def test_type_confusion_upload_lands_rejected_with_recorded_reason(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     # PNG bytes declared and named as PDF.
     png_as_pdf = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
     result = await run_upload(
@@ -147,7 +149,7 @@ async def test_unrecognized_bytes_land_quarantined(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     result = await run_upload(
         client,
         store,
@@ -165,7 +167,7 @@ async def test_honest_pdf_lands_queued(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, _db, store = harness
-    seed_stream(client)
+    await seed_stream(client, _db)
     result = await run_upload(
         client, store, data=PDF, declared_type="application/pdf", filename="po.pdf"
     )

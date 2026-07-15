@@ -1,12 +1,31 @@
-# Session Handoff — 2026-07-12
+# Session Handoff — 2026-07-15
+
+> **Ten-task remediation checkpoint:** `codex/production-remediation` now
+> contains immutable complete run configuration and model-call provenance,
+> runtime catalog/business validation, an enforced one-order input contract,
+> durable evaluations and publish gates, a synthetic gold-set manifest, an
+> idempotent replayable outbox publisher, and durable organization exports.
+> Migrations `0038` through `0041` introduce the execution pins, catalog-match
+> evidence, evaluation runs, and export jobs. The full Python and frontend test,
+> lint, format, type-check, and production-build matrix passes locally.
+>
+> The branch is **not production-approved**. Before release, repeat JavaScript
+> verification on the required Node 22 runtime and execute PostgreSQL/RLS,
+> object-storage, container, staging migration/rollback/restore, load, security,
+> and pilot gates. Populate the gold manifest with rights-cleared source bytes
+> and run candidate inference through the durable evaluation path. Configure
+> tenant secret references, provider endpoints/models, and the HTTPS outbox
+> destination. See
+> [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md).
 
 > **2026-07-15 correction:** the earlier statement that every agent-buildable
 > task was complete described isolated backlog implementations, not a verified
 > production system. A clean runtime audit found and fixed an inert worker,
 > empty non-mock model inputs, broken seed/dev/eval/E2E commands, a false-green
 > security scan, macOS sandbox-test failures, SQLite connection leaks, and a
-> monolithic web bundle. Material worker config/evaluation/catalog/outbox wiring
-> and external staging/security/pilot gates remain. Treat
+> monolithic web bundle. The material worker config/evaluation/catalog/outbox
+> wiring identified there is now implemented; external staging/security/pilot
+> gates remain. Treat
 > [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md) as the current
 > release-readiness source of truth; the historical narrative below remains for
 > decision context.

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from soa_api.app import create_app
 from soa_api.services.rate_limit import SlidingWindowRateLimiter
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_storage import MemoryObjectStore
 
@@ -69,13 +70,14 @@ async def harness(tmp_path: Path) -> TestClient:
     engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/ratelimit.db")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    db = DatabaseSessions(engine)
     app = create_app(
         ApiSettings(
             environment=Environment.TEST,
             rate_limit_uploads_per_minute=2,
             rate_limit_reprocess_per_minute=1,
         ),
-        db=DatabaseSessions(engine),
+        db=db,
         object_store=MemoryObjectStore(),
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -88,6 +90,7 @@ async def harness(tmp_path: Path) -> TestClient:
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
+    await publish_runtime_config(client, db, stream_slug="uploads", headers=ADMIN)
     return client
 
 

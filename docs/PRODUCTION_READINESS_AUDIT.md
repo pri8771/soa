@@ -1,13 +1,47 @@
 # Production Readiness Audit
 
 **Last verified:** 2026-07-15
-**Baseline:** `38a7a2736390e0a53f6a7c487a1030a4e9a98eed` plus the unmerged
-`codex/production-remediation` changes described below
+**Baseline:** `codex/production-remediation` through the 2026-07-15 ten-task
+capability checkpoint
 **Decision:** **not production-ready yet**
 
 This is the corrective source of truth for release readiness. A backlog item
 being implemented in isolation is not equivalent to a working production
 capability. Release claims require runtime wiring and evidence.
+
+## 2026-07-15 ten-task capability checkpoint
+
+The ten code and integration gaps from the prior audit are implemented and
+verified locally:
+
+1. Intake pins instruction, confidence, provider/data policy, credential
+   reference, and execution fingerprint alongside schema and rules.
+2. Workers authenticate and execute those immutable pins, pass the published
+   instruction and tenant credential into model calls, and persist field-level
+   call provenance.
+3. Catalog/customer/product/UOM, line, duplicate-PO, and business validation
+   execute in the validating stage and participate in review routing.
+4. P0 enforces a single-sales-order input contract at publication and runtime;
+   mixed packets are deliberately unsupported rather than silently mishandled.
+5. Evaluation runs, checkpoints, reports, candidate/baseline comparisons, and
+   simulation views are durable and tenant-isolated.
+6. Repeat stream publication is gated by a successful evaluation for the exact
+   candidate fingerprint when the evaluation gate is enabled.
+7. A versioned ten-cohort synthetic gold-set manifest covers representative
+   formats, currencies, ambiguities, boundary values, and negative cases.
+8. Domain events are transactionally scheduled for an idempotent HTTP outbox
+   publisher with retry, dead-letter, inspection, and replay controls.
+9. Organization-scale exports are durable, batched, cancellable, resumable,
+   progress-reporting jobs with manifests and expiring downloads.
+10. Hosted-provider bootstrap accepts tenant-resolved secret references without
+    requiring a deployment-global API key; explicit empty credentials still
+    fail closed.
+
+This is a **code-complete checkpoint, not production approval**. The gold set
+currently contains the cohort/expected-result manifest rather than redistributable
+source document bytes, and evaluation execution consumes candidate predictions
+submitted by the inference workflow. Deployment configuration and the external
+evidence gates below remain mandatory.
 
 ## What works now
 
@@ -53,7 +87,7 @@ capability. Release claims require runtime wiring and evidence.
 
 | Gate | Result |
 |---|---|
-| Python suite | 1,500 passed, 35 skipped, 2 known warnings after config execution |
+| Python suite | full suite passed at 100%; only deliberate platform/security-test warnings remain |
 | Web unit/component | 200 passed |
 | Design system | 108 passed |
 | Browser accessibility E2E | 3 passed |
@@ -67,35 +101,16 @@ capability. Release claims require runtime wiring and evidence.
 
 ## Release blockers
 
-### Code and integration blockers
+### Remaining product and operational gaps
 
-1. **The remaining model-call configuration is not fully pinned.** The worker
-   now executes the authenticated snapshot's schema, authored rules,
-   normalizers, language/locale, and field-extraction provider. Published
-   instruction versions can still change after intake and are not stored on the
-   run; confidence policy versions and tenant credential references are not yet
-   resolved into runtime calls. Pin those immutable IDs at intake, construct
-   instruction-aware providers per run, and persist full call provenance.
-2. **Classification and packet splitting are explicit placeholders.** The
-   current P0 stream assumes one sales-order document per upload. Either ship a
-   validated single-document product constraint or implement and evaluate the
-   configured classifier/splitter before advertising mixed-packet support.
-3. **Evaluation is not a production workflow.** The offline runner and
-   promotion-gate library exist, but evaluation runs/checkpoints/reports are not
-   persisted, the simulation endpoint has no runs to display, and publishing is
-   not transactionally gated on an approved comparison.
-4. **Catalog/business validation libraries are not wired into the validating
-   stage.** Customer/ship-to/material/UOM matching, line validation, and
-   duplicate-PO checks exist as libraries/UI behavior but do not yet run from
-   each pinned stream configuration.
-5. **Outbox delivery has no running publisher.** Durable domain events are
-   stored, but notification/integration consumers beyond directly scheduled
-   export jobs are not drained by a production process.
-6. **Large audit/customer exports remain synchronous and capped.** Add durable
-   export jobs, progress, cancellation, retention, and worker execution for
-   organization-scale requests.
-7. **The settings route is still a placeholder**, integration creation is API
-   only, and production OIDC administration/support-access UX is incomplete.
+1. Replace the synthetic gold manifest's placeholder source hashes with a
+   rights-cleared corpus and run inference-to-evaluation end to end in staging.
+2. Configure the production outbox destination, tenant secret references,
+   hosted provider endpoints/models, and an expired-export object cleanup job.
+3. Complete settings/integration administration UX and production OIDC
+   administration/support-access UX.
+4. Keep the single-sales-order constraint visible in product copy. Mixed-packet
+   classification/splitting is a separately evaluated post-P0 capability.
 
 ### Environment, owner, and external-evidence blockers
 
@@ -115,25 +130,15 @@ capability. Release claims require runtime wiring and evidence.
 
 ## Ordered next work
 
-1. Extend the worker-owned `ResolvedRunConfig` loader with pinned instruction,
-   confidence-policy, data-policy, and credential-reference resolution; add
-   historical-instruction, secret-reference, and restart tests.
-2. Wire the pinned published instructions and safe request construction into every model
-   call; persist provider/model/instruction/config provenance on results.
-3. Wire catalog matching, line validation, duplicate-PO validation, confidence,
-   and review routing into the validating transaction with deterministic gold
-   cases.
-4. Add evaluation-run persistence and migration, durable execution/checkpoint
-   jobs, comparison API, simulation data, and a publish-time promotion gate.
-5. Make the P0 input contract explicit: enforce one PO per input now, then add
-   classifier/splitter providers and packet gold tests as a separately gated
-   expansion.
-6. Add a claimed/leased outbox publisher and durable large-export handlers with
-   retry, dead-letter, metrics, and operator controls.
-7. Finish settings/integration administration UX and production identity
-   integration.
-8. Execute the external staging/security/pilot gates above. Production approval
-   follows evidence; it does not precede it.
+1. Assemble the rights-cleared source-byte gold corpus and run the complete
+   inference/evaluation/promotion path against it.
+2. Deploy with Node 22, PostgreSQL/RLS, GCS, Cloud Run, production secrets, and
+   the outbox destination; execute migration, rollback, restore, and failover.
+3. Add expired-export lifecycle cleanup and operator dashboards/alerts for
+   evaluations, outbox delivery, and export throughput.
+4. Finish settings/integration/identity administration UX.
+5. Execute load, security, accessibility/usability, and pilot-acceptance gates.
+   Production approval follows evidence; it does not precede it.
 
 ## Local verification limitations for this audit
 

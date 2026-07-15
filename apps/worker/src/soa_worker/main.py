@@ -40,30 +40,32 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
 
         register_local_llm_extraction(settings.local_llm_endpoint, settings.local_llm_model)
 
-    if settings.anthropic_api_key is not None:
-        from soa_worker.anthropic_extraction import register_anthropic_extraction
+    from soa_worker.anthropic_extraction import register_anthropic_extraction
+    from soa_worker.gemini_extraction import register_gemini_extraction
 
-        register_anthropic_extraction(
-            settings.anthropic_api_key.get_secret_value(),
-            model=settings.anthropic_model,
-        )
+    # Register hosted capabilities even when the deployment has no shared key:
+    # the run's pinned tenant SecretReference supplies the credential at use time.
+    register_anthropic_extraction(
+        settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key else None,
+        model=settings.anthropic_model,
+    )
+    register_gemini_extraction(
+        settings.gemini_api_key.get_secret_value() if settings.gemini_api_key else None,
+        model=settings.gemini_model,
+    )
 
-    if settings.gemini_api_key is not None:
-        from soa_worker.gemini_extraction import register_gemini_extraction
-
-        register_gemini_extraction(
-            settings.gemini_api_key.get_secret_value(),
-            model=settings.gemini_model,
-        )
-
-    if settings.hosted_openai_api_key is not None and settings.hosted_openai_endpoint:
+    if settings.hosted_openai_endpoint:
         from soa_worker.llm_extraction import register_hosted_openai_extraction
 
         register_hosted_openai_extraction(
             name=settings.hosted_openai_provider_name,
             endpoint=settings.hosted_openai_endpoint,
             model=settings.hosted_openai_model,
-            api_key=settings.hosted_openai_api_key.get_secret_value(),
+            api_key=(
+                settings.hosted_openai_api_key.get_secret_value()
+                if settings.hosted_openai_api_key
+                else None
+            ),
             region=settings.hosted_openai_region,
         )
 

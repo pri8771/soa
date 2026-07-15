@@ -57,6 +57,7 @@ async def publish_runtime_config(
     process_slug: str = "purchase-orders",
     stream_slug: str = "email",
     headers: dict[str, str] | None = None,
+    stream_overrides: dict[str, object] | None = None,
 ) -> uuid.UUID:
     effective_headers = headers or {"X-Dev-User": "user:reviewer"}
     organization_id = uuid.UUID(
@@ -129,7 +130,7 @@ async def publish_runtime_config(
             session,
             context,
             stream=stream,
-            overrides={"languages": ["en"]},
+            overrides={"languages": ["en"], **(stream_overrides or {})},
             actor_id="test:config",
         )
         await publish_stream_draft(

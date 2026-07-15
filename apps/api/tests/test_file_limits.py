@@ -1,7 +1,6 @@
 """File resource limit tests (ING-005): clamped stream configuration,
 oversized/high-pixel/archive-bomb checks, audited violations."""
 
-import uuid
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from soa_api.app import create_app
-from soa_api.domain.streams import Stream, StreamVersion
 from soa_api.services.file_limits import (
     FileLimits,
     LimitViolation,
@@ -20,6 +18,7 @@ from soa_api.services.file_limits import (
     resolve_limits,
 )
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
 from soa_storage import MemoryObjectStore
@@ -103,24 +102,7 @@ async def seed_stream_with_limit(client: TestClient, db: DatabaseSessions) -> No
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
-    async with db.session_scope() as session:
-        stream = (await session.execute(select(Stream).where(Stream.slug == "email"))).scalar_one()
-        version = StreamVersion(
-            organization_id=stream.organization_id,
-            stream_id=stream.id,
-            version_number=1,
-            state="published",
-            overrides={"max_upload_bytes": 1000},
-            resolved_snapshot={
-                "process_version_id": str(uuid.uuid4()),
-                "process_version_number": 1,
-                "config": {"max_upload_bytes": 1000},
-            },
-            pinned_process_version_id=None,
-        )
-        session.add(version)
-        await session.flush()
-        stream.active_version_id = version.id
+    await publish_runtime_config(client, db, stream_overrides={"max_upload_bytes": 1000})
 
 
 async def test_stream_lowered_size_limit_is_enforced_and_audited(

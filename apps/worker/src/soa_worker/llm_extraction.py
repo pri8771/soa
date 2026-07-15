@@ -246,17 +246,17 @@ def register_hosted_openai_extraction(
     name: str,
     endpoint: str,
     model: str,
-    api_key: str,
+    api_key: str | None,
     region: str,
 ) -> None:
     """Register a HOSTED OpenAI-compatible provider (OpenAI, or Gemini's
     OpenAI-compatible endpoint) under its own ``name``. Unlike the local
     profile, this one sends content to a third party — the data policy
     says so honestly, keyed off the declared ``region``, so tenant policy
-    is enforced against the truth. Call this ONLY when both a key and an
-    endpoint are configured (worker startup does); a missing key means the
-    provider simply does not exist (AIO-006 fail-closed)."""
-    if not api_key:
+    is enforced against the truth. The endpoint must be deployment-configured;
+    the key may come from either deployment settings or the run's pinned tenant
+    SecretReference. An explicitly empty deployment key remains invalid."""
+    if api_key == "":
         raise ValueError("a hosted OpenAI-compatible provider needs an API key")
     from soa_worker.providers.capabilities import (
         ANY_LANGUAGE,
@@ -282,7 +282,7 @@ def register_hosted_openai_extraction(
             endpoint=endpoint,
             model=model,
             name=name,
-            api_key=runtime.get("credential_value") or api_key,
+            api_key=runtime.get("credential_value") or api_key or "",
             instructions=runtime.get("instructions"),
             instruction_reference=runtime.get("instruction_reference"),
         ),
