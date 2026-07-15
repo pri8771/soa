@@ -35,6 +35,8 @@ export function ShellSessionProvider({
   return <ShellSessionContext.Provider value={session}>{children}</ShellSessionContext.Provider>;
 }
 
+// Context hooks conventionally live beside their provider.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useShellSession(): ShellSession {
   const session = useContext(ShellSessionContext);
   if (session === null) {

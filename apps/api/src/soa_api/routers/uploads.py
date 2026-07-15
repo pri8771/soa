@@ -123,7 +123,11 @@ async def _stream_config_by_id(
     if active is None or not active.resolved_snapshot:
         return {}
     config = active.resolved_snapshot.get("config")
-    return dict(config) if isinstance(config, dict) else {}
+    result = dict(config) if isinstance(config, dict) else {}
+    fingerprint = active.resolved_snapshot.get("fingerprint")
+    if isinstance(fingerprint, str):
+        result["fingerprint"] = fingerprint
+    return result
 
 
 @router.post(

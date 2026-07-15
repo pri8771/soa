@@ -38,14 +38,11 @@ verify-artifacts: ## Reconcile artifact records against object storage (STO-005)
 
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data
-	@echo "ERROR: soa-fixtures defines the demo tenant, but the database SeedSink is not built yet (arrives with the ING epic's intake fixtures)." && exit 1
+	uv run python -m soa_api.ops.seed
 
 .PHONY: dev
 dev: ## Run web, API, and worker with reload
-	@echo "ERROR: combined dev runner not built yet — run these in separate terminals for now:" && \
-	 echo "  uv run uvicorn soa_api.main:app --reload" && \
-	 echo "  uv run soa-worker" && \
-	 echo "  pnpm --filter @soa/web run dev" && exit 1
+	python3 scripts/dev.py
 
 .PHONY: lint
 lint: ## Lint Python and TypeScript
@@ -76,8 +73,12 @@ test-integration: ## PostgreSQL-only tests (SET SOA_TEST_POSTGRES_URL; make loca
 	uv run pytest -m postgres -v
 
 .PHONY: test-e2e
-test-e2e: ## End-to-end tests
-	@echo "ERROR: e2e suite not implemented yet (REV/ING epics)." && exit 1
+test-e2e: ## Portable functional/accessibility browser tests
+	pnpm --filter @soa/web run test:e2e
+
+.PHONY: test-visual
+test-visual: ## Pixel regression tests (run on the pinned Linux CI renderer)
+	pnpm --filter @soa/web run test:visual
 
 .PHONY: test-security
 test-security: ## Security and cross-tenant tests (RLS tests skip without SOA_TEST_POSTGRES_URL)
@@ -85,7 +86,7 @@ test-security: ## Security and cross-tenant tests (RLS tests skip without SOA_TE
 
 .PHONY: eval
 eval: ## Golden document evaluation
-	@echo "ERROR: evaluation runner not implemented yet (AIO-016)." && exit 1
+	uv run soa-eval
 
 .PHONY: build
 build: ## Build all apps
@@ -109,8 +110,15 @@ docker-build: ## Build the API, worker, and web container images (REL-001)
 security-scan: ## Dependency + secret scans and the supply-chain policy gate (SEC-011)
 	@set -euo pipefail; \
 	uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/soa-requirements.txt; \
-	uvx pip-audit -r /tmp/soa-requirements.txt --format json --output /tmp/soa-pip-audit.json || true; \
-	pnpm audit --json > /tmp/soa-pnpm-audit.json || true; \
+	rm -f /tmp/soa-pip-audit.json /tmp/soa-pnpm-audit.json; \
+	set +e; \
+	uvx pip-audit -r /tmp/soa-requirements.txt --no-deps --disable-pip --format json --output /tmp/soa-pip-audit.json; pip_status=$$?; \
+	pnpm audit --json > /tmp/soa-pnpm-audit.json; pnpm_status=$$?; \
+	set -e; \
+	if [ $$pip_status -gt 1 ]; then echo "ERROR: pip-audit failed with status $$pip_status"; exit $$pip_status; fi; \
+	if [ $$pnpm_status -gt 1 ]; then echo "ERROR: pnpm audit failed with status $$pnpm_status"; exit $$pnpm_status; fi; \
+	python3 -m json.tool /tmp/soa-pip-audit.json >/dev/null; \
+	python3 -m json.tool /tmp/soa-pnpm-audit.json >/dev/null; \
 	python3 scripts/supply_chain.py check-exceptions; \
 	python3 scripts/supply_chain.py evaluate \
 		--pip-audit /tmp/soa-pip-audit.json --pnpm-audit /tmp/soa-pnpm-audit.json

@@ -92,6 +92,7 @@ async def test_overrides_win_and_inherited_values_flow_through(db: DatabaseSessi
         assert snapshot["config"]["language"] == "en", "inherited from process"
         assert snapshot["config"]["provider"] == "default-ocr"
         assert snapshot["process_version_id"] == str(process_version_id)
+        assert len(snapshot["fingerprint"]) == 64
         # Only explicit overrides are stored on the version itself.
         assert published.overrides == {"confidence_floor": 0.95}
 

@@ -23,6 +23,9 @@ from soa_worker.settings import WorkerSettings
 logger = logging.getLogger(__name__)
 
 FetchJob = Callable[[], Awaitable[JobEnvelope | None]]
+JobSucceeded = Callable[[JobEnvelope], Awaitable[None]]
+JobFailed = Callable[[JobEnvelope, BaseException], Awaitable[None]]
+HeartbeatJob = Callable[[JobEnvelope], Awaitable[None]]
 
 
 class WorkerState(StrEnum):
@@ -40,11 +43,17 @@ class Worker:
         registry: HandlerRegistry,
         fetch_job: FetchJob | None = None,
         telemetry: Telemetry | None = None,
+        on_job_succeeded: JobSucceeded | None = None,
+        on_job_failed: JobFailed | None = None,
+        heartbeat_job: HeartbeatJob | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
         self._fetch_job = fetch_job
         self._telemetry = telemetry if telemetry is not None else Telemetry.noop()
+        self._on_job_succeeded = on_job_succeeded
+        self._on_job_failed = on_job_failed
+        self._heartbeat_job = heartbeat_job
         self._stop_event = asyncio.Event()
         self.state = WorkerState.CREATED
         self.jobs_completed = 0
@@ -77,6 +86,14 @@ class Worker:
         while True:
             self.last_heartbeat_at = time.monotonic()
             self._touch_liveness_file()
+            if self.active_job is not None and self._heartbeat_job is not None:
+                try:
+                    await self._heartbeat_job(self.active_job)
+                except Exception:
+                    logger.exception(
+                        "could not heartbeat active job",
+                        extra={"job_type": self.active_job.job_type},
+                    )
             logger.debug("worker heartbeat")
             await asyncio.sleep(self._settings.heartbeat_interval_seconds)
 
@@ -112,10 +129,14 @@ class Worker:
                     attributes={"soa.job_type": job.job_type},
                 ):
                     await handler(job)
-            except Exception:
+            except Exception as error:
                 self.jobs_failed += 1
                 logger.exception("job handler failed", extra={"job_type": job.job_type})
+                if self._on_job_failed is not None:
+                    await self._on_job_failed(job, error)
             else:
+                if self._on_job_succeeded is not None:
+                    await self._on_job_succeeded(job)
                 self.jobs_completed += 1
                 logger.info("job completed", extra={"job_type": job.job_type})
             finally:

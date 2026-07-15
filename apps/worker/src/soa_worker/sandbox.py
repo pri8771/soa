@@ -50,6 +50,13 @@ ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "TZ", "TESSDATA_PREFIX")
 #: loading, with slack. Far below typical inherited limits.
 MAX_OPEN_FILES = 128
 
+# macOS exposes RLIMIT_AS but rejects attempts to lower it for a running
+# Python process (``ValueError: current limit exceeds maximum limit``).
+# Linux — the production container target — supports and enforces it.
+# Keep this capability explicit so local development does not crash every
+# parser child while production never silently loses the address-space cap.
+ADDRESS_SPACE_LIMIT_SUPPORTED = sys.platform != "darwin"
+
 
 def child_environment(tmpdir: str, *, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Minimal environment for a sandbox child: the passthrough list,
@@ -84,7 +91,8 @@ def set_resource_limits(cpu_seconds: int, memory_bytes: int) -> None:
     CPU seconds, address space, no core dumps, single written file
     capped at the memory budget, and a small open-file budget."""
     resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    if ADDRESS_SPACE_LIMIT_SUPPORTED:
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (memory_bytes, memory_bytes))
     _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -131,6 +139,7 @@ def _disable_process_creation() -> None:
 
 
 __all__ = [
+    "ADDRESS_SPACE_LIMIT_SUPPORTED",
     "ENV_PASSTHROUGH",
     "MAX_OPEN_FILES",
     "child_environment",

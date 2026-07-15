@@ -51,7 +51,7 @@ what survives those checks and is still hostile.
 | Control | Value | Why |
 | --- | --- | --- |
 | `RLIMIT_CPU` | budget per run (default 30 s) | infinite-loop content burns out, kernel-enforced |
-| `RLIMIT_AS` | budget per run (default 1 GiB) | decompression bombs get `MemoryError`, not the host's RAM |
+| `RLIMIT_AS` | budget per run (default 1 GiB; Linux production) | decompression bombs get `MemoryError`, not the host's RAM |
 | `RLIMIT_CORE` | 0 | a core dump of untrusted document memory is a data leak |
 | `RLIMIT_FSIZE` | = memory budget | a single written file cannot exceed the run's budget |
 | `RLIMIT_NOFILE` | 128 | input + page outputs + library loading, nothing more |
@@ -80,6 +80,12 @@ and active-content classification, bounded rasters).
   not a separate service). Moving conversion to a dedicated
   network-isolated service is a deployment-time option the profile below
   already anticipates.
+- macOS exposes `RLIMIT_AS` but rejects lowering it for a running Python
+  process. Local macOS runs therefore enforce every other process control
+  but skip this one limit; Linux CI and production containers enforce it,
+  and the production cgroup memory limit remains mandatory. This exception
+  is explicit in `ADDRESS_SPACE_LIMIT_SUPPORTED` and covered by the sandbox
+  hardening test rather than being silently swallowed.
 
 ## 3. Container layer (deployment requirement)
 

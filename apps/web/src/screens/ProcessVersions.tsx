@@ -35,6 +35,8 @@ import { useShellSession } from "../shell/ShellContext";
 
 const SECRET_KEY_PATTERN = /secret|token|password|credential|api[_-]?key|private[_-]?key/i;
 
+// Pure version-history helpers are exported for focused unit tests.
+// eslint-disable-next-line react-refresh/only-export-components
 export function displayValue(key: string, value: unknown): string {
   if (SECRET_KEY_PATTERN.test(key)) return "•••••• (redacted)";
   return value === undefined ? "—" : JSON.stringify(value);
@@ -47,6 +49,7 @@ export interface DiffRow {
   to: unknown;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function structuredDiff(
   from: Record<string, unknown>,
   to: Record<string, unknown>,

@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 soa-worker = "soa_worker.main:main"
+soa-eval = "soa_worker.evaluation_cli:main"
 
 [tool.uv.sources]
 soa-config = { workspace = true }

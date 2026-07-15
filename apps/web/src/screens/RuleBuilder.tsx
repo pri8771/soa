@@ -62,6 +62,8 @@ const OP_SYMBOLS: Record<string, string> = {
 
 /** Deterministic, readable rendering of the condition tree — what the
  * acceptance criterion calls the "generated deterministic expression". */
+// Pure deterministic renderer exported for focused rule-builder tests.
+// eslint-disable-next-line react-refresh/only-export-components
 export function renderExpression(node: RuleCondition): string {
   switch (node.op) {
     case "field":

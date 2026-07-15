@@ -25,9 +25,12 @@ Organization
 
 A stream is an active operational bucket such as `UK Sales Orders`, `Spain Sales Orders`, `Pittsburgh Invoices`, or `North America Remittances`. Streams inherit process configuration and may override language, fields, models, rules, catalogs, permissions, thresholds, retention, and integrations.
 
-## Phase 0 status
+## Current status
 
-The repository is being established around a **local-first, free-first, paid-ready** architecture. The complete mock vertical slice must run locally without cloud dependencies. Development and a controlled demonstration should fit mostly within free allowances, while customer pilots and production can upgrade services without redesigning the product.
+The repository contains a broad working vertical slice, but it is **not yet
+approved for production customer documents**. Runtime remediation is active;
+the remaining release blockers and verified gates are tracked in
+[`docs/PRODUCTION_READINESS_AUDIT.md`](docs/PRODUCTION_READINESS_AUDIT.md).
 
 ## Getting started
 
@@ -35,14 +38,22 @@ Prerequisites: Node 22 (`.nvmrc`), pnpm 10, Python 3.11 (`.python-version`), [uv
 
 ```bash
 make bootstrap       # install toolchains/dependencies and copy env template
+make local-up        # start PostgreSQL, MinIO, and local supporting services
+make migrate         # apply database migrations
+make seed            # idempotently load the Northstar demo tenant
+make dev             # supervise web, API, and durable worker
 make lint            # ruff + eslint + prettier checks
 make typecheck       # mypy + tsc
 make test            # fast unit and component tests
+make test-e2e        # portable browser accessibility/functional gate
+make test-visual     # pinned-Linux pixel regression gate
+make eval            # offline deterministic evaluation smoke
 make build           # build all apps
 make help            # list every command
 ```
 
-Commands whose backing capability is not yet implemented (for example `make migrate` before DB-001) fail loudly with a pointer to the backlog task that delivers them. The full command contract is defined in [`docs/DELIVERY_PLAN.md`](docs/DELIVERY_PLAN.md) §7.1.
+The full command contract is defined in
+[`docs/DELIVERY_PLAN.md`](docs/DELIVERY_PLAN.md) §7.1.
 
 ## Canonical implementation documentation
 
@@ -96,8 +107,10 @@ Recommended execution order begins at `FND-001` in [`docs/BUILD_BACKLOG.md`](doc
 
 Product research and planning also exist in the Notion **Sales Order Automation — Restart Hub**. Repository documentation is the implementation-facing contract; Notion remains the research, backlog-discussion, and project-planning workspace. Requirements should not be duplicated into new documents when an authoritative repository section already exists.
 
-## Current phase
+## Release rule
 
-**Phase 0 — Foundation, product lock, and implementation handoff**
-
-No production customer documents should be processed until the accuracy, security, privacy, reliability, provider-contract, backup, usability, and release requirements in this repository are satisfied.
+No production customer documents should be processed until the accuracy,
+security, privacy, reliability, provider-contract, backup, usability, and
+release requirements in the
+[production-readiness audit](docs/PRODUCTION_READINESS_AUDIT.md) are satisfied
+with environment evidence.

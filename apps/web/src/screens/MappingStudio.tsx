@@ -239,8 +239,10 @@ export function MappingStudio() {
     versions.find((record) => record.state === "draft") ?? versions.at(-1) ?? null;
   const readOnly = !canManage || working === null || working.state !== "draft";
 
-  const effectiveDefinition: MappingDefinition = draft?.definition ??
-    working?.definition ?? { fields: [], constants: [] };
+  const effectiveDefinition: MappingDefinition = useMemo(
+    () => draft?.definition ?? working?.definition ?? { fields: [], constants: [] },
+    [draft?.definition, working?.definition],
+  );
   const requiredTargets =
     draft?.requiredTargets ??
     ((working?.target_schema["required"] as string[] | undefined) ?? []).join(", ");

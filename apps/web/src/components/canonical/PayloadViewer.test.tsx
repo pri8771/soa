@@ -80,12 +80,14 @@ describe("Canonical payload viewer (CAN-004)", () => {
     const user = userEvent.setup();
     const createObjectURL = vi.fn(() => "blob:mock");
     const revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     render(<PayloadViewer data={response()} />);
     await user.click(screen.getByRole("button", { name: "Download" }));
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock");
     expect(screen.getByText("Payload downloaded.")).toBeInTheDocument();
+    click.mockRestore();
   });
 
   it("copy/download are permission-gated with the reason visible, and redaction announces itself", () => {

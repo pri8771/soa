@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:visual": "playwright test"
+    "test:e2e": "playwright test accessibility.spec.ts",
+    "test:visual": "playwright test workbench.visual.spec.ts"
   },
   "dependencies": {
     "@soa/design-system": "workspace:*",

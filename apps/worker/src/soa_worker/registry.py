@@ -5,6 +5,7 @@ claiming arrive with the JOB epic; the registry contract is stable now so
 handlers written later do not change shape.
 """
 
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,7 @@ class JobEnvelope:
     job_type: str
     payload: dict[str, Any] = field(default_factory=dict)
     correlation_id: str | None = None
+    job_id: uuid.UUID | None = None
 
 
 JobHandler = Callable[[JobEnvelope], Awaitable[None]]

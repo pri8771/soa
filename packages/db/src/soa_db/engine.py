@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 
 def create_database_engine(
@@ -28,8 +29,13 @@ def create_database_engine(
 ) -> AsyncEngine:
     url = database_url.get_secret_value() if isinstance(database_url, SecretStr) else database_url
     kwargs: dict[str, object] = {"echo": echo, "pool_pre_ping": True}
-    # SQLite (tests) does not accept pool sizing arguments.
-    if not url.startswith("sqlite"):
+    # SQLite is used for isolated tests/local smoke runs. Do not retain its
+    # aiosqlite worker threads across event-loop lifetimes: an un-disposed
+    # pooled connection can otherwise try to signal a loop pytest has
+    # already closed. PostgreSQL keeps the bounded production pool.
+    if url.startswith("sqlite"):
+        kwargs["poolclass"] = NullPool
+    else:
         kwargs["pool_size"] = pool_size
         kwargs["max_overflow"] = max_overflow
     return create_async_engine(url, **kwargs)

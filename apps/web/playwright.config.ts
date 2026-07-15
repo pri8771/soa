@@ -8,7 +8,11 @@ import { defineConfig, devices } from "@playwright/test";
  * - Fixed viewport and device scale; animations disabled per screenshot.
  * - Reduced motion emulated globally.
  *
- * Updating baselines is an explicit act:
+ * Functional/accessibility checks are portable across supported developer
+ * hosts. Pixel snapshots are authoritative only on the pinned Linux CI
+ * renderer; macOS font rasterization is expected to differ slightly.
+ *
+ * Updating baselines is an explicit act on that renderer:
  *   pnpm run test:visual -- --update-snapshots
  * and the resulting image diff is reviewed in the PR like any code change.
  */
@@ -24,11 +28,6 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     contextOptions: { reducedMotion: "reduce" },
-    // The container preinstalls Chromium here; version-pinned downloads are
-    // disabled (PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD). CI installs its own.
-    launchOptions: process.env.CI
-      ? {}
-      : { executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" },
   },
   expect: {
     toHaveScreenshot: {

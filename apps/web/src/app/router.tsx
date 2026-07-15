@@ -5,38 +5,119 @@ import {
   Outlet,
   type RouterHistory,
 } from "@tanstack/react-router";
+import { lazy, Suspense, type ComponentType } from "react";
 
 import { AppLayout } from "../screens/AppLayout";
-import { Home } from "../screens/Home";
-import { JobsQueue } from "../screens/JobsQueue";
-import { Processes } from "../screens/Processes";
-import { ProcessVersions } from "../screens/ProcessVersions";
-import { RuleBuilder } from "../screens/RuleBuilder";
-import { SchemaBuilder } from "../screens/SchemaBuilder";
-import { StreamConfigure } from "../screens/StreamConfigure";
-import { StreamDetail } from "../screens/StreamDetail";
-import { Streams } from "../screens/Streams";
-import { DocumentDetail } from "../screens/DocumentDetail";
-import { DocumentsQueue } from "../screens/DocumentsQueue";
-import { GettingStarted } from "../screens/GettingStarted";
-import { Support } from "../screens/Support";
-import { Integrations } from "../screens/Integrations";
-import { MappingStudio } from "../screens/MappingStudio";
-import { ReviewQueue } from "../screens/ReviewQueue";
-import { ReviewStudio } from "../screens/ReviewStudio";
-import { UploadDocuments } from "../screens/UploadDocuments";
 import { NotFound } from "../screens/NotFound";
 import { makePlaceholderScreen } from "../screens/Placeholder";
-import { SelectOrganization } from "../screens/SelectOrganization";
-import { CatalogManager } from "../screens/CatalogManager";
-import { Catalogs } from "../screens/Catalogs";
-import { Providers } from "../screens/Providers";
-import { AuditTrail } from "../screens/AuditTrail";
-import { CostDashboard } from "../screens/CostDashboard";
-import { Operations } from "../screens/Operations";
-import { QualityDashboard } from "../screens/QualityDashboard";
-import { Simulation } from "../screens/Simulation";
-import { Workbench } from "../screens/Workbench";
+
+function lazyScreen(loader: () => Promise<{ default: ComponentType }>) {
+  const Screen = lazy(loader);
+  return function LazyScreen() {
+    return (
+      <Suspense fallback={<div role="status">Loading page…</div>}>
+        <Screen />
+      </Suspense>
+    );
+  };
+}
+
+const Home = lazyScreen(() => import("../screens/Home").then(({ Home }) => ({ default: Home })));
+const Workbench = lazyScreen(() =>
+  import("../screens/Workbench").then(({ Workbench }) => ({ default: Workbench })),
+);
+const SelectOrganization = lazyScreen(() =>
+  import("../screens/SelectOrganization").then(({ SelectOrganization }) => ({
+    default: SelectOrganization,
+  })),
+);
+const JobsQueue = lazyScreen(() =>
+  import("../screens/JobsQueue").then(({ JobsQueue }) => ({ default: JobsQueue })),
+);
+const Processes = lazyScreen(() =>
+  import("../screens/Processes").then(({ Processes }) => ({ default: Processes })),
+);
+const ProcessVersions = lazyScreen(() =>
+  import("../screens/ProcessVersions").then(({ ProcessVersions }) => ({
+    default: ProcessVersions,
+  })),
+);
+const RuleBuilder = lazyScreen(() =>
+  import("../screens/RuleBuilder").then(({ RuleBuilder }) => ({ default: RuleBuilder })),
+);
+const SchemaBuilder = lazyScreen(() =>
+  import("../screens/SchemaBuilder").then(({ SchemaBuilder }) => ({ default: SchemaBuilder })),
+);
+const StreamConfigure = lazyScreen(() =>
+  import("../screens/StreamConfigure").then(({ StreamConfigure }) => ({
+    default: StreamConfigure,
+  })),
+);
+const StreamDetail = lazyScreen(() =>
+  import("../screens/StreamDetail").then(({ StreamDetail }) => ({ default: StreamDetail })),
+);
+const Streams = lazyScreen(() =>
+  import("../screens/Streams").then(({ Streams }) => ({ default: Streams })),
+);
+const DocumentDetail = lazyScreen(() =>
+  import("../screens/DocumentDetail").then(({ DocumentDetail }) => ({ default: DocumentDetail })),
+);
+const DocumentsQueue = lazyScreen(() =>
+  import("../screens/DocumentsQueue").then(({ DocumentsQueue }) => ({
+    default: DocumentsQueue,
+  })),
+);
+const GettingStarted = lazyScreen(() =>
+  import("../screens/GettingStarted").then(({ GettingStarted }) => ({
+    default: GettingStarted,
+  })),
+);
+const Support = lazyScreen(() =>
+  import("../screens/Support").then(({ Support }) => ({ default: Support })),
+);
+const Integrations = lazyScreen(() =>
+  import("../screens/Integrations").then(({ Integrations }) => ({ default: Integrations })),
+);
+const MappingStudio = lazyScreen(() =>
+  import("../screens/MappingStudio").then(({ MappingStudio }) => ({ default: MappingStudio })),
+);
+const ReviewQueue = lazyScreen(() =>
+  import("../screens/ReviewQueue").then(({ ReviewQueue }) => ({ default: ReviewQueue })),
+);
+const ReviewStudio = lazyScreen(() =>
+  import("../screens/ReviewStudio").then(({ ReviewStudio }) => ({ default: ReviewStudio })),
+);
+const UploadDocuments = lazyScreen(() =>
+  import("../screens/UploadDocuments").then(({ UploadDocuments }) => ({
+    default: UploadDocuments,
+  })),
+);
+const CatalogManager = lazyScreen(() =>
+  import("../screens/CatalogManager").then(({ CatalogManager }) => ({ default: CatalogManager })),
+);
+const Catalogs = lazyScreen(() =>
+  import("../screens/Catalogs").then(({ Catalogs }) => ({ default: Catalogs })),
+);
+const Providers = lazyScreen(() =>
+  import("../screens/Providers").then(({ Providers }) => ({ default: Providers })),
+);
+const AuditTrail = lazyScreen(() =>
+  import("../screens/AuditTrail").then(({ AuditTrail }) => ({ default: AuditTrail })),
+);
+const CostDashboard = lazyScreen(() =>
+  import("../screens/CostDashboard").then(({ CostDashboard }) => ({ default: CostDashboard })),
+);
+const Operations = lazyScreen(() =>
+  import("../screens/Operations").then(({ Operations }) => ({ default: Operations })),
+);
+const QualityDashboard = lazyScreen(() =>
+  import("../screens/QualityDashboard").then(({ QualityDashboard }) => ({
+    default: QualityDashboard,
+  })),
+);
+const Simulation = lazyScreen(() =>
+  import("../screens/Simulation").then(({ Simulation }) => ({ default: Simulation })),
+);
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,

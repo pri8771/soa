@@ -30,6 +30,8 @@ function readStoredRatio(storageKey: string): number {
   return 60;
 }
 
+// Exported for responsive-behavior tests; it intentionally shares the component module.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useCompactLayout(): boolean {
   const [compact, setCompact] = useState<boolean>(() =>
     typeof window.matchMedia === "function" ? window.matchMedia(COMPACT_QUERY).matches : false,

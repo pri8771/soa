@@ -137,7 +137,7 @@ async def create_draft_endpoint(
             actor_id=_actor(authorized),
         )
     except InstructionValidationError as error:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from None
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from None
     return InstructionVersionResponse.from_model(draft)
 
 
@@ -169,7 +169,7 @@ async def update_draft_endpoint(
             actor_id=_actor(authorized),
         )
     except InstructionValidationError as error:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from None
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from None
     except InvalidVersionStateError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
     return InstructionVersionResponse.from_model(updated)
@@ -187,7 +187,7 @@ async def publish_endpoint(
             session, authorized.org_context, draft=record, actor_id=_actor(authorized)
         )
     except InstructionValidationError as error:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from None
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from None
     except InvalidVersionStateError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
     return InstructionVersionResponse.from_model(published)

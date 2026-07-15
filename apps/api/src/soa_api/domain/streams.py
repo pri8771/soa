@@ -9,6 +9,8 @@ frozen inside the published StreamVersion. (The full provenance-tracking
 resolver with fingerprints is CFG-006; this merge is its storage contract.)
 """
 
+import hashlib
+import json
 import uuid
 from datetime import datetime
 from enum import StrEnum
@@ -116,11 +118,14 @@ class StreamVersionRepository(ScopedRepository[StreamVersion]):
 def resolve_snapshot(process_version: ProcessVersion, overrides: dict[str, Any]) -> dict[str, Any]:
     """Merge process defaults with explicit stream overrides (top-level keys;
     the provenance-aware deep resolver is CFG-006)."""
-    return {
+    snapshot = {
         "process_version_id": str(process_version.id),
         "process_version_number": process_version.version_number,
         "config": {**process_version.definition, **overrides},
     }
+    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    snapshot["fingerprint"] = hashlib.sha256(encoded.encode()).hexdigest()
+    return snapshot
 
 
 async def create_stream(

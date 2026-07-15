@@ -344,7 +344,10 @@ export function ReviewStudio() {
     onError: failure("Escalation"),
   });
 
-  const headerFields: WorkspaceField[] = workspace.data?.fields ?? [];
+  const headerFields: WorkspaceField[] = useMemo(
+    () => workspace.data?.fields ?? [],
+    [workspace.data?.fields],
+  );
   const evidence: EvidenceHighlight[] = useMemo(
     () =>
       headerFields.flatMap((field) =>

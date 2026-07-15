@@ -32,6 +32,11 @@ from soa_worker.extraction.mock import (
     MockExtractionProvider,
     MockMode,
 )
+from soa_worker.extraction.provider import (
+    ExtractedField,
+    ExtractionRequest,
+    ExtractionResult,
+)
 from soa_worker.orchestrator import STAGE_SEQUENCE, Orchestrator
 from soa_worker.pipeline import build_executors
 
@@ -184,6 +189,44 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         assert validating.output_summary["evaluation"]["blocking"] is False
         assert validating.output_summary["rules_version"] == "1.1.0"
         assert by_stage["extracting"].provider == "mock"
+
+
+async def test_real_model_provider_receives_recognized_document_text(
+    db: DatabaseSessions,
+) -> None:
+    class CapturingProvider:
+        name = "capturing-model"
+
+        def __init__(self) -> None:
+            self.request: ExtractionRequest | None = None
+
+        async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+            self.request = request
+            return ExtractionResult(
+                provider=self.name,
+                fields=tuple(
+                    ExtractedField(field_key=spec.key, raw_value=None, confidence=0.0)
+                    for spec in request.fields
+                    if spec.field_type != "table"
+                ),
+            )
+
+    data = (Path(__file__).parent / "fixtures" / "pdfs" / "digital-po.pdf").read_bytes()
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store, data=data)
+    provider = CapturingProvider()
+    orchestrator = Orchestrator(db, build_executors(store, provider))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    assert provider.request is not None
+    assert "PURCHASE ORDER PO-4711" in (provider.request.pages[0].text or "")
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        pages = await DocumentPageRepository(session, CONTEXT).list_for_run(run.id)
+        assert all(page.text_artifact_id is not None for page in pages)
+        artifacts = await ArtifactRepository(session, CONTEXT).list_for_document(document_id)
+        assert len([item for item in artifacts if item.kind == ArtifactKind.OCR_TEXT.value]) == 2
 
 
 async def test_worker_kill_mid_pipeline_resumes_from_the_database(

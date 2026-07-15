@@ -15,6 +15,7 @@ import pytest
 import soa_worker.rendering as rendering
 from soa_worker.rendering import RenderError, RenderFailure, RenderLimits, render_document
 from soa_worker.sandbox import (
+    ADDRESS_SPACE_LIMIT_SUPPORTED,
     ENV_PASSTHROUGH,
     MAX_OPEN_FILES,
     child_environment,
@@ -99,13 +100,13 @@ for attempt in (
 assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
 assert resource.getrlimit(resource.RLIMIT_FSIZE) == ({memory}, {memory})
 assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] <= {MAX_OPEN_FILES}
-assert resource.getrlimit(resource.RLIMIT_AS) == ({memory}, {memory})
-
-try:
-    hog = bytearray({memory} * 2)
-    raise SystemExit("ESCAPED: allocated past the address-space limit")
-except MemoryError:
-    pass
+if {ADDRESS_SPACE_LIMIT_SUPPORTED!r}:
+    assert resource.getrlimit(resource.RLIMIT_AS) == ({memory}, {memory})
+    try:
+        hog = bytearray({memory} * 2)
+        raise SystemExit("ESCAPED: allocated past the address-space limit")
+    except MemoryError:
+        pass
 
 print("LOCKED")
 """

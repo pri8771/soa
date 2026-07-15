@@ -65,6 +65,20 @@ from soa_worker.extraction.provider import (
     PageInput,
 )
 from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
+from soa_worker.provider_router import (
+    NATIVE_COVERAGE_THRESHOLD,
+    DocumentFacts,
+    RoutingPolicy,
+    route,
+)
+from soa_worker.providers import Capability, create_provider
+from soa_worker.providers.native_text import (
+    NativeTextError,
+    NativeTextFailure,
+    NativeTextProvider,
+    NativeTextRequest,
+)
+from soa_worker.providers.ocr import OcrPageInput, OcrProvider, OcrProviderError, OcrRequest
 from soa_worker.rendering import RenderError, RenderLimits, render_document
 
 ACTOR = "system:pipeline"
@@ -85,6 +99,7 @@ class PipelineConfig:
     normalizer_overrides: Mapping[str, str] = dataclass_field(default_factory=dict)
     confidence_policy: ConfidencePolicy = dataclass_field(default_factory=ConfidencePolicy)
     render_limits: RenderLimits = dataclass_field(default_factory=RenderLimits)
+    languages: tuple[str, ...] = ("en",)
 
     def normalizer_for(self, spec: FieldSpec) -> str | None:
         override = self.normalizer_overrides.get(spec.key)
@@ -242,12 +257,27 @@ class _Pipeline:
         pages = await DocumentPageRepository(session, context).list_for_run(run.id)
         if not pages:
             raise StageExecutionError("no rendered pages to extract from", retryable=False)
+        text_by_page: dict[int, str] = {}
+        text_warnings: list[str] = []
+        # Model providers read page text; passing empty PageInput values
+        # would produce a syntactically valid request containing no
+        # document. The deterministic fixture mock intentionally does not
+        # need text, but every real provider does.
+        if self._provider.name != "mock":
+            text_by_page, text_warnings = await self._recognize_page_text(
+                session, context, run, document, pages
+            )
         request = ExtractionRequest(
             document_id=document.id,
             document_sha256=document.content_sha256,
             content_type=document.content_type,
             pages=tuple(
-                PageInput(page_number=p.page_number, width_px=p.width_px, height_px=p.height_px)
+                PageInput(
+                    page_number=p.page_number,
+                    width_px=p.width_px,
+                    height_px=p.height_px,
+                    text=text_by_page.get(p.page_number),
+                )
                 for p in pages
             ),
             fields=self._config.field_specs,
@@ -286,10 +316,159 @@ class _Pipeline:
             )
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
         summary = confidence_summary(rows)
-        summary["warnings"] = list(result.warnings)
+        summary["warnings"] = [*text_warnings, *result.warnings]
         return StageOutcome(
             output_summary=summary, cost_cents=result.cost_cents, provider=result.provider
         )
+
+    async def _recognize_page_text(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        pages: list[Any],
+    ) -> tuple[dict[int, str], list[str]]:
+        """Native text first, OCR only for image/low-coverage pages.
+
+        The recognized text is persisted per page and attached to the page
+        row, so a model call is attributable and reprocessing does not hide
+        what input the model actually saw.
+        """
+        artifacts = await ArtifactRepository(session, context).list_for_document(document.id)
+        original = next((item for item in artifacts if item.kind == ArtifactKind.ORIGINAL), None)
+        if original is None:
+            raise StageExecutionError("the document has no original artifact", retryable=False)
+        try:
+            original_bytes = await self._store.get(original.object_key)
+        except ObjectNotFoundError:
+            raise StageExecutionError("the original object is missing", retryable=True) from None
+
+        texts: dict[int, str] = {}
+        warnings: list[str] = []
+        needs_ocr = {page.page_number for page in pages}
+        if document.content_type == "application/pdf":
+            native = create_provider(Capability.NATIVE_TEXT, "pdfium-native-text")
+            if not isinstance(native, NativeTextProvider):
+                raise StageExecutionError("native text provider is misconfigured", retryable=False)
+            try:
+                native_result = await native.read(
+                    NativeTextRequest(
+                        document_id=document.id,
+                        document_sha256=document.content_sha256,
+                        content_type=document.content_type,
+                        data=original_bytes,
+                        max_pages=len(pages),
+                    )
+                )
+            except NativeTextError as error:
+                if error.failure in (NativeTextFailure.ENCRYPTED, NativeTextFailure.CORRUPT):
+                    raise StageExecutionError(str(error), retryable=False) from None
+                if error.failure is NativeTextFailure.UNAVAILABLE:
+                    raise StageExecutionError(str(error), retryable=error.retryable) from None
+                warnings.append(f"native text unavailable ({error.failure.value}); using OCR")
+            else:
+                warnings.extend(native_result.warnings)
+                for result_page in native_result.pages:
+                    if result_page.coverage >= NATIVE_COVERAGE_THRESHOLD:
+                        texts[result_page.page_number] = "\n".join(
+                            span.text for span in result_page.spans
+                        )
+                        needs_ocr.discard(result_page.page_number)
+                    else:
+                        warnings.append(
+                            f"page {result_page.page_number} native text coverage is "
+                            f"{result_page.coverage:.0%}; using OCR"
+                        )
+
+        if needs_ocr:
+            facts = DocumentFacts(language=self._config.languages[0])
+            try:
+                decision = route(
+                    Capability.OCR,
+                    policy=RoutingPolicy(local_only=True),
+                    facts=facts,
+                )
+                ocr = create_provider(Capability.OCR, decision.provider.name)
+            except Exception as error:
+                raise StageExecutionError(
+                    f"OCR is required but no local provider is available ({type(error).__name__})",
+                    retryable=False,
+                ) from None
+            if not isinstance(ocr, OcrProvider):
+                raise StageExecutionError("OCR provider is misconfigured", retryable=False)
+            by_artifact_id = {item.id: item for item in artifacts}
+            inputs: list[OcrPageInput] = []
+            for page in pages:
+                if page.page_number not in needs_ocr:
+                    continue
+                image_artifact = by_artifact_id.get(page.image_artifact_id)
+                if image_artifact is None:
+                    raise StageExecutionError(
+                        f"page {page.page_number} has no image artifact", retryable=False
+                    )
+                try:
+                    image = await self._store.get(image_artifact.object_key)
+                except ObjectNotFoundError:
+                    raise StageExecutionError(
+                        f"page {page.page_number} image is missing", retryable=True
+                    ) from None
+                inputs.append(
+                    OcrPageInput(
+                        page_number=page.page_number,
+                        width_px=page.width_px,
+                        height_px=page.height_px,
+                        image=image,
+                        content_type="image/png",
+                    )
+                )
+            try:
+                ocr_result = await ocr.recognize(
+                    OcrRequest(
+                        document_id=document.id,
+                        document_sha256=document.content_sha256,
+                        pages=tuple(inputs),
+                        languages=self._config.languages,
+                    )
+                )
+            except OcrProviderError as error:
+                raise StageExecutionError(str(error), retryable=error.retryable) from None
+            warnings.extend(ocr_result.warnings)
+            for ocr_page in ocr_result.pages:
+                texts[ocr_page.page_number] = "\n".join(
+                    line.text for block in ocr_page.blocks for line in block.lines
+                )
+
+        for page in pages:
+            text = texts.get(page.page_number, "")
+            if not text.strip():
+                raise StageExecutionError(
+                    f"page {page.page_number} produced no readable text",
+                    retryable=False,
+                )
+            key = artifact_key(
+                context.organization_id,
+                document.id,
+                kind="ocr_text",
+                filename=f"page-{page.page_number:04}.txt",
+            )
+            encoded = text.encode("utf-8")
+            metadata = await self._store.put(key, encoded, content_type="text/plain; charset=utf-8")
+            artifact = await create_artifact(
+                session,
+                context,
+                document_id=document.id,
+                kind=ArtifactKind.OCR_TEXT,
+                object_key=key,
+                sha256=metadata.sha256,
+                size_bytes=len(encoded),
+                content_type="text/plain; charset=utf-8",
+                produced_by_run_id=run.id,
+                produced_by_stage="extracting",
+                actor_id=ACTOR,
+            )
+            page.text_artifact_id = artifact.id
+        return texts, warnings
 
     # -- normalizing: raw -> canonical, never overwriting raw ------------------
 

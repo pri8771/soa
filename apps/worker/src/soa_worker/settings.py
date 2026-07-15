@@ -4,7 +4,9 @@ Values load from ``SOA_WORKER_``-prefixed environment variables. Production
 safety rules (no debug, no dev secrets/credentials) live in ``soa_config``.
 """
 
-from pydantic import Field, SecretStr
+from typing import Literal, Self
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from soa_config import BaseServiceSettings, Environment
@@ -24,6 +26,26 @@ class WorkerSettings(BaseServiceSettings):
     #: factor. Unset disables the file (the default outside containers).
     liveness_file: str | None = None
     liveness_staleness_factor: float = Field(default=3.0, gt=1)
+
+    # The worker must read the exact objects the API wrote. Local
+    # development therefore points both services at MinIO; production uses
+    # S3-compatible storage or GCS.
+    storage_backend: Literal["s3", "gcs"] = "s3"
+    storage_endpoint_url: str | None = None
+    storage_access_key: str | None = None
+    storage_secret_key: str | None = None
+    storage_bucket: str = "soa-artifacts"
+    storage_region: str = "us-east-1"
+    storage_force_path_style: bool = True
+    storage_sse: str | None = None
+    storage_sse_kms_key_id: str | None = None
+    storage_gcs_project: str | None = None
+    storage_gcs_kms_key_name: str | None = None
+
+    # Global bootstrap choice until each published stream supplies its
+    # resolved provider policy. Production may never use the fixture mock.
+    extraction_provider: str = "mock"
+    export_destination_allowlist: tuple[str, ...] = ()
     #: Optional local OpenAI-compatible extraction endpoint (AIO-007).
     #: Unset (the default) means the profile never registers. Point this
     #: at Ollama/vLLM/llama.cpp; see docs/LLM_PROVIDERS.md.
@@ -55,6 +77,25 @@ class WorkerSettings(BaseServiceSettings):
     #: in — declared honestly so tenant data policy is enforced against
     #: the truth (a lowercase region slug, e.g. "us", "eu").
     hosted_openai_region: str = "us"
+
+    @model_validator(mode="after")
+    def _validate_runtime_dependencies(self) -> Self:
+        if self.is_production:
+            problems: list[str] = []
+            if self.extraction_provider == "mock":
+                problems.append("production requires a real extraction_provider")
+            if self.storage_backend == "gcs":
+                if not self.storage_gcs_project:
+                    problems.append("GCS storage requires storage_gcs_project")
+            elif not (
+                self.storage_endpoint_url and self.storage_access_key and self.storage_secret_key
+            ):
+                problems.append("S3 storage requires endpoint, access key, and secret key")
+            if not self.export_destination_allowlist:
+                problems.append("production requires an export_destination_allowlist")
+            if problems:
+                raise ValueError("; ".join(problems))
+        return self
 
 
 def load_settings() -> WorkerSettings:

@@ -1,5 +1,16 @@
 # Session Handoff — 2026-07-12
 
+> **2026-07-15 correction:** the earlier statement that every agent-buildable
+> task was complete described isolated backlog implementations, not a verified
+> production system. A clean runtime audit found and fixed an inert worker,
+> empty non-mock model inputs, broken seed/dev/eval/E2E commands, a false-green
+> security scan, macOS sandbox-test failures, SQLite connection leaks, and a
+> monolithic web bundle. Material worker config/evaluation/catalog/outbox wiring
+> and external staging/security/pilot gates remain. Treat
+> [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md) as the current
+> release-readiness source of truth; the historical narrative below remains for
+> decision context.
+
 > **Purpose:** capture decisions and state from the planning session so any new Claude Code session (or engineer) can resume without re-litigating. Read this together with `AGENTS.md` and `docs/BUILD_BACKLOG.md` before writing code.
 
 ## 1. Current state
