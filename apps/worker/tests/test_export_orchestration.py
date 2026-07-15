@@ -34,7 +34,8 @@ from soa_db.integrations import (
 )
 from soa_db.repository import OrganizationContext
 from soa_storage import MemoryObjectStore
-from soa_worker.export_orchestrator import execute_export
+from soa_worker.export_orchestrator import EXPORT_JOB_TYPE, execute_export
+from soa_worker.export_runner import ExportDeliveryHandler
 from soa_worker.webhook import IDEMPOTENCY_HEADER, SIGNATURE_HEADER, verify_webhook_signature
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
@@ -309,5 +310,54 @@ async def test_missing_credential_is_a_named_terminal_failure(db: DatabaseSessio
     result = await run_export(db, store, job_id, lambda _r: httpx.Response(200))
     assert result.outcome == "terminal_error"
     assert result.detail is not None and "no live credential" in result.detail
+    job_state, document_state, _ = await job_and_document_state(db, job_id)
+    assert (job_state, document_state) == ("failed_terminal", "failed_terminal")
+
+
+# -- ExportDeliveryHandler: the worker-side export.deliver job handler (EXP-008/010) --
+
+
+def test_worker_export_job_type_matches_the_api() -> None:
+    # The API enqueues under its own EXPORT_JOB_TYPE and the worker
+    # registers a handler under the worker's; the two packages never
+    # import each other, so this test is what keeps the literal in sync.
+    from soa_api.services.export_orchestration import EXPORT_JOB_TYPE as API_EXPORT_JOB_TYPE
+
+    assert EXPORT_JOB_TYPE == API_EXPORT_JOB_TYPE == "export.deliver"
+
+
+async def test_delivery_handler_processes_a_queue_job_end_to_end(db: DatabaseSessions) -> None:
+    job_id = await seed(db)
+    store = MemoryObjectStore()
+    received: list[httpx.Request] = []
+
+    def receiver(request: httpx.Request) -> httpx.Response:
+        received.append(request)
+        return httpx.Response(200)
+
+    async with make_client(receiver) as client:
+        handler = ExportDeliveryHandler(
+            db, store, client, SECRETS, ALLOWLIST, resolve=public_resolver
+        )
+        await handler.handle({"organization_id": str(ORG), "export_job_id": str(job_id)})
+
+    assert len(received) == 1
+    job_state, document_state, attempts = await job_and_document_state(db, job_id)
+    assert (job_state, document_state, attempts) == ("succeeded", "completed", 1)
+
+
+async def test_delivery_handler_fails_closed_on_an_empty_allowlist(db: DatabaseSessions) -> None:
+    # The fail-closed default: with no egress allowlist, the destination
+    # is refused before any network call — a clean terminal failure an
+    # operator fixes by configuring the allowlist, never an SSRF attempt.
+    job_id = await seed(db)
+    store = MemoryObjectStore()
+    reached: list[httpx.Request] = []
+
+    async with make_client(lambda r: reached.append(r) or httpx.Response(200)) as client:
+        handler = ExportDeliveryHandler(db, store, client, SECRETS, (), resolve=public_resolver)
+        await handler.handle({"organization_id": str(ORG), "export_job_id": str(job_id)})
+
+    assert reached == []  # nothing left the process
     job_state, document_state, _ = await job_and_document_state(db, job_id)
     assert (job_state, document_state) == ("failed_terminal", "failed_terminal")

@@ -85,6 +85,13 @@ class WorkerSettings(BaseServiceSettings):
     #: startup instead of silently falling back to the mock.
     extraction_provider: str = "mock"
 
+    #: SSRF egress allowlist for export delivery (EXP-010): the ONLY hosts
+    #: an outbound webhook/ERP delivery may reach. Empty (the default) means
+    #: no delivery is permitted — every attempt fails closed with a clear
+    #: "host not on the destination allowlist" terminal error until an
+    #: operator names the integration's real hosts here. Never a wildcard.
+    export_delivery_allowlist: tuple[str, ...] = ()
+
 
 def load_settings() -> WorkerSettings:
     """Load and validate settings from the environment."""

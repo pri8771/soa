@@ -3,8 +3,11 @@
 import asyncio
 import logging
 
+import httpx
+
 from soa_config.logging import configure_logging
 from soa_db import DatabaseSessions, create_database_engine
+from soa_storage.secrets_gcp import build_secret_store
 from soa_storage.store import ObjectStore
 from soa_worker.extraction.provider import ExtractionProvider
 from soa_worker.settings import WorkerSettings, load_settings
@@ -118,6 +121,8 @@ async def _run() -> None:
     # provider named by ``extraction_provider`` (PRC-006; the deterministic
     # mock by default) — the AIO-013 per-stream router that resolves each
     # run's tenant provider policy is the follow-on.
+    from soa_worker.export_orchestrator import EXPORT_JOB_TYPE
+    from soa_worker.export_runner import ExportDeliveryHandler
     from soa_worker.job_runner import DbJobProcessor
     from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
     from soa_worker.pipeline import build_executors
@@ -131,17 +136,35 @@ async def _run() -> None:
     db = DatabaseSessions(engine)
     store = _build_object_store(settings)
     orchestrator = Orchestrator(db, build_executors(store, provider))
-    processor = DbJobProcessor(
-        db,
-        {
-            "document.preprocess": orchestrator.handle_preprocess,
-            STAGE_JOB_TYPE: orchestrator.handle_stage,
-        },
+
+    # Export delivery (EXP-008/010): the worker is what CLAIMS the
+    # export.deliver jobs the API enqueues at approval and runs one
+    # delivery attempt each. The SSRF egress allowlist is fail-closed —
+    # empty by default, so nothing is delivered until an operator names
+    # the integration's real hosts. The HTTP client lives for the
+    # worker's lifetime and is closed on shutdown.
+    secret_store = build_secret_store(
+        backend=settings.secrets_backend,
+        directory=settings.secrets_directory,
+        aws_region=settings.secrets_aws_region,
+        gcp_project=settings.secrets_gcp_project,
     )
-    registry = processor.build_registry()
-    worker = Worker(settings, registry, fetch_job=processor.fetch_job)
-    worker.install_signal_handlers(asyncio.get_running_loop())
-    await worker.run()
+    async with httpx.AsyncClient() as export_client:
+        export_handler = ExportDeliveryHandler(
+            db, store, export_client, secret_store, settings.export_delivery_allowlist
+        )
+        processor = DbJobProcessor(
+            db,
+            {
+                "document.preprocess": orchestrator.handle_preprocess,
+                STAGE_JOB_TYPE: orchestrator.handle_stage,
+                EXPORT_JOB_TYPE: export_handler.handle,
+            },
+        )
+        registry = processor.build_registry()
+        worker = Worker(settings, registry, fetch_job=processor.fetch_job)
+        worker.install_signal_handlers(asyncio.get_running_loop())
+        await worker.run()
 
 
 def main() -> None:
