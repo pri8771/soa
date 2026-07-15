@@ -121,6 +121,36 @@ async def test_filters_and_search(harness: tuple[TestClient, DatabaseSessions]) 
     assert missing.status_code == 404
 
 
+async def test_unfiltered_list_hides_deleted_documents_but_the_explicit_filter_finds_them(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    ids = await seed(client, db, count=3)
+    # Deletion needs a settled state; cancel it first (received ->
+    # cancelled is an allowed transition).
+    cancelled = client.post(
+        f"/orgs/northstar/documents/{ids[0]}/cancel",
+        json={"reason": "test cleanup"},
+        headers=ADMIN,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    deletion = client.post(
+        f"/orgs/northstar/documents/{ids[0]}/deletion",
+        json={"reason": "test cleanup"},
+        headers=ADMIN,
+    )
+    assert deletion.status_code == 201, deletion.text
+
+    unfiltered = client.get("/orgs/northstar/documents", headers=ADMIN).json()
+    assert ids[0] not in {i["id"] for i in unfiltered["items"]}
+    assert len(unfiltered["items"]) == 2
+
+    deleted_only = client.get(
+        "/orgs/northstar/documents?document_state=deleted", headers=ADMIN
+    ).json()
+    assert [i["id"] for i in deleted_only["items"]] == [ids[0]]
+
+
 async def test_field_projection(harness: tuple[TestClient, DatabaseSessions]) -> None:
     client, db = harness
     await seed(client, db, count=1)

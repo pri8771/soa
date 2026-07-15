@@ -161,6 +161,12 @@ async def list_documents(
     stmt = select(Document).where(Document.organization_id == organization_id)
     if document_state is not None:
         stmt = stmt.where(Document.state == document_state)
+    else:
+        # Deleted documents are a tombstone, not active work (SEC-010): an
+        # unfiltered list hides them, same as any soft-delete convention.
+        # ?document_state=deleted (or the UI's "Deleted" filter) still
+        # finds them — nothing is unreachable, just off the default view.
+        stmt = stmt.where(Document.state != DocumentState.DELETED.value)
     if stream_id is not None:
         stmt = stmt.where(Document.stream_id == stream_id)
     if source_channel is not None:

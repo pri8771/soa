@@ -1188,7 +1188,10 @@ export const handlers = [
     const channel = url.searchParams.get("source_channel");
     const search = url.searchParams.get("search");
     let items = DEFAULT_DOCUMENTS;
+    // Deleted documents are a tombstone, not active work: an unfiltered
+    // list hides them, mirroring the real API (routers/documents.py).
     if (state) items = items.filter((d) => d.state === state);
+    else items = items.filter((d) => d.state !== "deleted");
     if (channel) items = items.filter((d) => d.source_channel === channel);
     if (search) items = items.filter((d) => d.original_filename.includes(search));
     return HttpResponse.json({ items, has_more: false, next_cursor: null });

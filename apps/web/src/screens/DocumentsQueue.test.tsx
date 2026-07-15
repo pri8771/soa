@@ -12,16 +12,16 @@ describe("Documents queue (ING-010)", () => {
     await renderApp(PATH);
     expect(await screen.findByText("po-4711.pdf")).toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Documents" });
-    // Stream name resolved, not the raw id.
-    expect(within(table).getAllByText("Email intake").length).toBe(5);
-    // Distinct outcomes: queued, queued+duplicate flag, quarantined+reason,
-    // deleted+reason.
+    // Stream name resolved, not the raw id. The deleted fixture is a
+    // tombstone, not active work — the default view hides it (see the
+    // dedicated "deleted" filter test below).
+    expect(within(table).getAllByText("Email intake").length).toBe(4);
+    // Distinct outcomes: queued, queued+duplicate flag, quarantined+reason.
     expect(within(table).getAllByText("queued").length).toBe(2);
     expect(within(table).getByText("duplicate")).toBeInTheDocument();
     expect(within(table).getByText("quarantined")).toBeInTheDocument();
     expect(within(table).getByText(/malware detected/)).toBeInTheDocument();
-    expect(within(table).getByText("deleted")).toBeInTheDocument();
-    expect(within(table).getByText(/customer erasure request/)).toBeInTheDocument();
+    expect(within(table).queryByText("deleted")).not.toBeInTheDocument();
     // Upload entry point.
     expect(screen.getByRole("link", { name: "Upload documents" })).toBeInTheDocument();
   });
