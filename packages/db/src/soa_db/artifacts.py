@@ -14,6 +14,7 @@ Shared between the API (reads, signed downloads) and the worker
 
 import re
 import uuid
+from collections.abc import Sequence
 from enum import StrEnum
 
 from sqlalchemy import BigInteger, String, event
@@ -106,6 +107,21 @@ class ArtifactRepository(ScopedRepository[Artifact]):
             .order_by(Artifact.created_at)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_for_documents(
+        self, document_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Artifact]]:
+        grouped: dict[uuid.UUID, list[Artifact]] = {document_id: [] for document_id in document_ids}
+        if not document_ids:
+            return grouped
+        stmt = (
+            self._scoped_select()
+            .where(Artifact.document_id.in_(document_ids))
+            .order_by(Artifact.document_id, Artifact.created_at)
+        )
+        for artifact in (await self._session.execute(stmt)).scalars().all():
+            grouped.setdefault(artifact.document_id, []).append(artifact)
+        return grouped
 
 
 async def export_manifest(session: AsyncSession, context: OrganizationContext) -> dict[str, str]:

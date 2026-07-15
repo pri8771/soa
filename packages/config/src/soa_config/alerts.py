@@ -119,12 +119,15 @@ CATALOG: tuple[AlertDefinition, ...] = (
         category=AlertCategory.PROVIDER,
         severity=AlertSeverity.CRITICAL,
         owner=Owner.PLATFORM_ONCALL,
-        signal="pending:AIO-013",
-        condition="provider error+timeout ratio > 25% over 5m",
+        signal="soa_db.provider_runtime_metrics",
+        condition=(
+            "all attempted configured extraction providers are degraded/unreachable and "
+            "none has succeeded for 5m"
+        ),
         rationale=(
-            "The provider router (AIO-013) fails over between providers, but a high "
-            "error ratio across all of them halts the pipeline; extraction is the "
-            "core product path, so this pages."
+            "The provider router (AIO-013) fails over between providers, but having "
+            "no recently successful configured provider halts the pipeline; extraction "
+            "is the core product path, so this pages."
         ),
         runbook="provider-outage",
         test_signal="stub all providers to error; assert the router surfaces exhaustion",

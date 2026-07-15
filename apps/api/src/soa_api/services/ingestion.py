@@ -21,8 +21,8 @@ from soa_api.services.duplicates import (
     get_duplicate_policy,
     mark_duplicate,
 )
-from soa_api.services.file_inspection import InspectionVerdict, inspect_file
-from soa_api.services.malware import MalwareScanner, ScanVerdict
+from soa_api.services.file_inspection import InspectionResult, InspectionVerdict, inspect_file
+from soa_api.services.malware import MalwareScanner, ScanResult, ScanVerdict
 from soa_api.services.runtime_pins import resolve_runtime_pins
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import ActorType
@@ -58,18 +58,43 @@ class IntakeDeclaration:
     config_fingerprint: str | None = None
 
 
+@dataclass(frozen=True)
+class IntakeSafetyResult:
+    """Content checks that may run without a database transaction."""
+
+    inspection: InspectionResult
+    scan: ScanResult | None
+
+
+async def evaluate_intake_safety(
+    declaration: IntakeDeclaration,
+    data: bytes,
+    scanner: MalwareScanner,
+) -> IntakeSafetyResult:
+    inspection = inspect_file(
+        head=data[:64],
+        declared_type=declaration.content_type,
+        filename=declaration.filename,
+    )
+    scan = await scanner.scan(data) if inspection.verdict is InspectionVerdict.PASSED else None
+    return IntakeSafetyResult(inspection=inspection, scan=scan)
+
+
 async def finalize_document_intake(
     session: AsyncSession,
     context: OrganizationContext,
     *,
     declaration: IntakeDeclaration,
-    data: bytes,
-    scanner: MalwareScanner,
+    safety: IntakeSafetyResult,
     actor_id: str,
     actor_type: ActorType = ActorType.USER,
 ) -> Document:
-    """Register the stored bytes as a document and run the safety
-    pipeline. Returns the document in its final intake state."""
+    """Register bytes whose external safety checks have already completed.
+
+    Requiring ``safety`` keeps malware-scanner network I/O out of this SQL
+    unit of work by construction. Callers must evaluate the bytes before
+    opening the registration transaction.
+    """
     pins = await resolve_runtime_pins(
         session,
         context,
@@ -113,11 +138,7 @@ async def finalize_document_intake(
         actor_id=actor_id,
         actor_type=actor_type,
     )
-    inspection = inspect_file(
-        head=data[:64],
-        declared_type=declaration.content_type,
-        filename=declaration.filename,
-    )
+    inspection = safety.inspection
     if inspection.verdict is not InspectionVerdict.PASSED:
         outcome = {
             InspectionVerdict.REJECTED: DocumentState.REJECTED,
@@ -132,7 +153,9 @@ async def finalize_document_intake(
             actor_id="system:file-inspection",
         )
 
-    scan = await scanner.scan(data)
+    scan = safety.scan
+    if scan is None:
+        raise RuntimeError("a passed file inspection requires a malware scan result")
     if scan.verdict is ScanVerdict.INFECTED:
         return await transition_document(
             session,

@@ -152,7 +152,7 @@ describe("Review Studio header field editor (REV-007)", () => {
     const user = userEvent.setup();
     await renderApp(PATH);
     const input = await screen.findByLabelText("po number");
-    input.focus();
+    await user.click(input);
     await user.keyboard("{Alt>}{ArrowDown}{/Alt}");
     expect(screen.getByLabelText("total amount")).toHaveFocus();
     await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
@@ -174,6 +174,118 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(screen.getAllByText(/assigned to user:u-2/).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("po number")).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
+  });
+});
+
+describe("Review Studio required keyboard shortcuts", () => {
+  it("uses J/K for review reasons, shows ? help, and never hijacks typing", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", () =>
+        HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          task: {
+            ...DEFAULT_WORKSPACE.task,
+            reasons: [
+              ...DEFAULT_WORKSPACE.task.reasons,
+              {
+                code: "low_confidence",
+                message: "total needs a second look",
+                field_key: "total_amount",
+                row_index: null,
+                rule_key: null,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    await screen.findByRole("region", { name: "Header fields" });
+
+    await user.keyboard("j");
+    await waitFor(() => expect(screen.getByLabelText("po number")).toHaveFocus());
+    await user.click(screen.getByText("Current decision:"));
+    await user.keyboard("j");
+    await waitFor(() => expect(screen.getByLabelText("total amount")).toHaveFocus());
+    await user.click(screen.getByText("Current decision:"));
+    await user.keyboard("k");
+    await waitFor(() => expect(screen.getByLabelText("po number")).toHaveFocus());
+
+    // Question mark and navigation letters remain ordinary text inside a
+    // typing surface; no global action fires there.
+    const search = screen.getByLabelText("Search text");
+    await user.click(search);
+    await user.keyboard("j?");
+    expect(search).toHaveValue("j?");
+    expect(
+      screen.queryByRole("dialog", { name: "Review keyboard shortcuts" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Current decision:"));
+    await user.keyboard("?");
+    expect(screen.getByRole("dialog", { name: "Review keyboard shortcuts" })).toBeInTheDocument();
+  });
+
+  it("E focuses evidence and M focuses matching for the active field", async () => {
+    const user = userEvent.setup();
+    await renderApp(PATH);
+
+    await user.click(await screen.findByLabelText("po number"));
+    await screen.findByRole("button", { name: /Evidence for po_number/ });
+    await user.click(screen.getByText("Current decision:"));
+    await user.keyboard("e");
+    expect(screen.getByRole("button", { name: /Evidence for po_number/ })).toHaveFocus();
+
+    await user.click(screen.getByLabelText("sku row 0"));
+    await screen.findByRole("region", { name: "Catalog match for SKU" });
+    await user.click(screen.getByText("2 row(s)"));
+    await user.keyboard("m");
+    expect(screen.getByLabelText("Search catalog for SKU")).toHaveFocus();
+  });
+
+  it("C opens a working comment composer", async () => {
+    const user = userEvent.setup();
+    const posted: unknown[] = [];
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/comments", async ({ request }) => {
+        posted.push(await request.json());
+        return HttpResponse.json(
+          {
+            id: "comment-1",
+            task_id: DEFAULT_WORKSPACE.task.id,
+            document_id: DEFAULT_WORKSPACE.document.id,
+            author: "user:u-1",
+            body: "Please verify this with @sam",
+            mentions: ["sam"],
+            created_at: "2026-07-12T10:05:00+00:00",
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    await renderApp(PATH);
+    await screen.findByRole("heading", { name: "Discussion" });
+
+    await user.keyboard("c");
+    const comment = screen.getByLabelText("Add comment");
+    expect(comment).toHaveFocus();
+    await user.type(comment, "Please verify this with @sam");
+    await user.click(screen.getByRole("button", { name: "Add comment" }));
+    await waitFor(() => expect(posted).toEqual([{ body: "Please verify this with @sam" }]));
+    expect(await screen.findByText("Please verify this with @sam")).toBeInTheDocument();
+  });
+
+  it("A opens approval and R opens the available reject/escalate path", async () => {
+    const user = userEvent.setup();
+    await renderApp(PATH);
+    await screen.findByRole("button", { name: "Approve order…" });
+
+    await user.keyboard("a");
+    expect(screen.getByRole("button", { name: "Confirm approval" })).toBeInTheDocument();
+    await user.keyboard("r");
+    // The default reviewer cannot reject, so R falls back to escalation.
+    expect(screen.getByLabelText(/Escalation reason/)).toBeInTheDocument();
   });
 });
 
@@ -296,6 +408,83 @@ describe("Review Studio conflict resolver (REV-014)", () => {
 });
 
 describe("Review Studio approval actions (REV-013)", () => {
+  it("blocks the edit-blur approval race until the queued save completes", async () => {
+    const user = userEvent.setup();
+    let correctionPosts = 0;
+    let approvalPosts = 0;
+    let releaseSave: (() => void) | undefined;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/corrections", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        correctionPosts += 1;
+        await saveGate;
+        return HttpResponse.json({
+          correction: {
+            id: "cor-delayed",
+            field_key: body["field_key"],
+            row_index: body["row_index"] ?? null,
+            previous_raw_value: "PO-1000A2",
+            corrected_raw_value: body["value"],
+            corrected_normalized_value: body["value"],
+            normalization_error: null,
+            corrected_by: "user:u-1",
+          },
+          task_version: 4,
+          revalidation: null,
+        });
+      }),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/approve", () => {
+        approvalPosts += 1;
+        return HttpResponse.json({});
+      }),
+    );
+
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "PO-DELAYED");
+
+    // Pointer-down moves focus away from the field. Its blur queues the
+    // save before React Aria can dispatch the button press.
+    const approveButton = screen.getByRole("button", { name: "Approve order…" });
+    await user.click(approveButton);
+    await waitFor(() => expect(correctionPosts).toBe(1));
+    expect(approvalPosts).toBe(0);
+    expect(approveButton).toBeDisabled();
+    expect(screen.getByText(/queued or saving change/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm approval" })).not.toBeInTheDocument();
+
+    releaseSave?.();
+    await waitFor(() => expect(approveButton).toBeEnabled());
+  });
+
+  it("keeps approval disabled after a field save fails", async () => {
+    const user = userEvent.setup();
+    let approvalPosts = 0;
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/corrections", () =>
+        HttpResponse.json({ error: { message: "temporary correction outage" } }, { status: 503 }),
+      ),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/approve", () => {
+        approvalPosts += 1;
+        return HttpResponse.json({});
+      }),
+    );
+
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "PO-FAILED{Enter}");
+    expect(await screen.findByText(/Not saved: temporary correction outage/)).toBeInTheDocument();
+    const approveButton = screen.getByRole("button", { name: "Approve order…" });
+    expect(approveButton).toBeDisabled();
+    expect(screen.getByText(/failed to save.*Retry/i)).toBeInTheDocument();
+    expect(approvalPosts).toBe(0);
+  });
+
   it("approves via the two-step confirm and announces the outcome", async () => {
     const user = userEvent.setup();
     const posted: unknown[] = [];

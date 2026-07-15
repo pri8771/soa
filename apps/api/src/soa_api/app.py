@@ -2,7 +2,8 @@
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from soa_api.routers import (
     audit,
     catalogs,
     data_exports,
+    deletions,
     documents,
     email_intake,
     evaluations,
@@ -32,9 +34,14 @@ from soa_api.routers import (
     providers,
     public_ingest,
     review,
+    service_credentials,
     uploads,
 )
 from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
+from soa_api.services.rate_limit import (
+    DatabaseSlidingWindowRateLimiter,
+    SlidingWindowRateLimiter,
+)
 from soa_api.settings import ApiSettings, load_settings
 from soa_config import SecretStore
 from soa_config.logging import correlation_context
@@ -105,6 +112,22 @@ def create_app(
             otlp_endpoint=resolved.otlp_endpoint,
         )
     )
+    owns_telemetry = telemetry is None
+
+    owns_db = db is None
+    resolved_db = db
+    if resolved_db is None:
+        resolved_db = DatabaseSessions(create_database_engine(resolved.database_url))
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if owns_telemetry:
+                resolved_telemetry.shutdown()
+            if owns_db:
+                await resolved_db.dispose()
 
     app = FastAPI(
         title="SOA API",
@@ -112,10 +135,8 @@ def create_app(
         docs_url="/docs" if not resolved.is_production else None,
         redoc_url=None,
         openapi_url="/openapi.json" if not resolved.is_production else None,
+        lifespan=lifespan,
     )
-    resolved_db = db
-    if resolved_db is None:
-        resolved_db = DatabaseSessions(create_database_engine(resolved.database_url))
 
     resolved_store = object_store
     if resolved_store is None:
@@ -175,6 +196,16 @@ def create_app(
             gcp_project=resolved.secrets_gcp_project,
         )
 
+    resolved_rate_limiter = (
+        SlidingWindowRateLimiter()
+        if resolved.is_development_like
+        else DatabaseSlidingWindowRateLimiter(
+            resolved_db,
+            resolved.secret_key,
+            cleanup_batch_size=resolved.rate_limit_cleanup_batch_size,
+        )
+    )
+
     deps = Dependencies(
         settings=resolved,
         telemetry=resolved_telemetry,
@@ -183,8 +214,26 @@ def create_app(
         object_store=resolved_store,
         malware_scanner=resolved_scanner,
         secret_store=resolved_secret_store,
+        rate_limiter=resolved_rate_limiter,
     )
     deps.register_readiness_check("database", resolved_db.ping)
+    if isinstance(resolved_rate_limiter, DatabaseSlidingWindowRateLimiter):
+        deps.register_readiness_check("rate-limiter", resolved_rate_limiter.ready)
+
+    if resolved_store is not None:
+
+        async def object_store_ready() -> bool:
+            # A deliberately empty namespace makes this a bounded metadata
+            # request while still exercising credentials, network and bucket
+            # access. Listing is already required by reconciliation jobs.
+            await resolved_store.list_keys("__soa_readiness__/")
+            return True
+
+        deps.register_readiness_check("object-storage", object_store_ready)
+    if resolved_scanner is not None:
+        deps.register_readiness_check("malware-scanner", resolved_scanner.ready)
+    if oidc_validator is not None:
+        deps.register_readiness_check("oidc-jwks", oidc_validator.ready)
     app.state.dependencies = deps
 
     # Cross-origin access (SEC-002): strict allowlist only; the settings
@@ -222,19 +271,28 @@ def create_app(
             request.state.correlation_id = correlation_id
             started = time.perf_counter()
             with resolved_telemetry.span(
-                f"HTTP {request.method} {request.url.path}",
+                f"HTTP {request.method}",
                 attributes={
                     "http.request.method": request.method,
-                    "url.path": request.url.path,
                 },
-            ):
-                response = await call_next(request)
+            ) as trace:
+                try:
+                    response = await call_next(request)
+                finally:
+                    matched_route = request.scope.get("route")
+                    route_template = getattr(matched_route, "path", None)
+                    if not isinstance(route_template, str):
+                        route_template = "unmatched"
+                    trace.update_name(f"HTTP {request.method} {route_template}")
+                    trace.set_attribute("http.route", route_template)
             response.headers[CORRELATION_HEADER] = correlation_id
             logger.info(
                 "request completed",
                 extra={
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    # Route templates keep tenant slugs, document UUIDs, and
+                    # query values out of logs while preserving aggregation.
+                    "http_route": route_template,
                     "http_status": response.status_code,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 },
@@ -254,6 +312,7 @@ def create_app(
     app.include_router(processes.router)
     app.include_router(catalogs.router)
     app.include_router(providers.router)
+    app.include_router(service_credentials.router)
     app.include_router(artifacts.router)
     app.include_router(uploads.router)
     app.include_router(documents.router)
@@ -261,6 +320,7 @@ def create_app(
     app.include_router(analytics.router)
     app.include_router(audit.router)
     app.include_router(data_exports.router)
+    app.include_router(deletions.router)
     app.include_router(evaluations.router)
     app.include_router(instructions.router)
     app.include_router(integrations.router)

@@ -1,7 +1,8 @@
 # Performance budgets and testing (REL-009)
 
-How the platform sets performance targets, measures them, and blocks
-releases that regress.
+How the platform sets performance targets and measures deterministic hot
+paths. Only the three CI microbenchmarks are enforced today; the deployed
+system/load gate described below is still release work.
 
 The source of truth is `packages/config/src/soa_config/performance.py`
 (budgets, benchmark harness, regression gate) with the suite in
@@ -33,23 +34,24 @@ in `tests/performance/` under **generous absolute ceilings** (roughly
 accidental O(n²), a per-row re-parse) on any runner without failing on
 timing noise. These run in the normal Python CI job.
 
-**Staging (relative, per-release).** The system-level workloads (API,
-queue, viewer, worker concurrency, export burst) need a deployed system
-and are exercised by the staging load tests that REL-002 infrastructure
-stands up — faking them in a unit run would be dishonest, so their
-budgets are marked `ci_measured=False`. There, each release is compared
-against `perf/baseline.json` with `compare_to_baseline` (25% tolerance);
-anything slower **blocks the release** unless a time-limited waiver in
-`perf/waivers.json` (owner + reason + expiry, mirroring the SEC-011
-vulnerability-exception model) covers it. An expired waiver stops
-excusing the regression.
+**Staging (required, not implemented as an automated runner).** The
+system-level workloads (API, queue, viewer, worker concurrency, export burst)
+need a deployed system, representative objects/documents, traffic generation,
+and metric collection. They are therefore marked `ci_measured=False`. The
+repository defines their budgets and a generic `compare_to_baseline` policy,
+but it does not contain a staging load driver or system-level baseline for
+those five workloads. Before release, add the executable scenarios, capture a
+production-equivalent baseline, wire the comparison into the release gate, and
+exercise time-limited waivers (owner + reason + expiry). Until then these
+budgets are targets, not passed checks.
 
 ## Updating the baseline
 
-When a legitimate, reviewed change moves a measured cost, refresh the
-relevant number in `perf/baseline.json` in the same PR and say why. The
-baseline is a record of what "normal" is; it should change deliberately,
-never drift.
+When a legitimate, reviewed change moves a CI-measured cost, refresh the
+relevant number in `perf/baseline.json` in the same PR and say why. Add
+system-level baseline keys only when the corresponding executable staging
+scenario produces them. A baseline is a record of what "normal" is; it should
+change deliberately, never drift.
 
 ## Running locally
 

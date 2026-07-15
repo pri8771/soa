@@ -14,10 +14,12 @@ soa_rules.baseline — the same ones the worker pipeline runs — until
 per-stream config resolution lands.
 """
 
+from datetime import date
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_db.catalog_selections import resolve_catalog_identities
 from soa_db.corrections import FieldCorrection, FieldCorrectionRepository, latest_corrections
 from soa_db.documents import Document
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository, ValidationStatus
@@ -87,9 +89,11 @@ async def revalidate_run(
     header: dict[str, Any] = {}
     tables: dict[str, dict[int, dict[str, Any]]] = {}
     signals: list[FieldSignal] = []
+    effective_values: dict[tuple[str, int | None], Any | None] = {}
     for field in fields:
         correction = corrections.get((field.field_key, field.row_index))
         value, corrected = _effective(field, correction)
+        effective_values[(field.field_key, field.row_index)] = value
         if field.row_index is None:
             header[field.field_key] = value
         else:
@@ -123,6 +127,7 @@ async def revalidate_run(
             if correction.corrected_normalized_value is not None
             else correction.corrected_raw_value
         )
+        effective_values[(key, row)] = value
         table = key.partition(".")[0]
         tables.setdefault(table, {}).setdefault(row, {})[key] = value
         signals.append(
@@ -155,12 +160,26 @@ async def revalidate_run(
     )
     evaluation = evaluate_rule_set(baseline_sales_order_rules(), data)
     decision = decide_route(signals, evaluation)
+    order_date = header.get("order_date")
+    try:
+        as_of = date.fromisoformat(str(order_date)) if order_date else document.received_at.date()
+    except ValueError:
+        as_of = document.received_at.date()
+    catalog_resolution = await resolve_catalog_identities(
+        session,
+        context,
+        stream_id=document.stream_id,
+        run_id=run_id,
+        values=effective_values,
+        as_of=as_of,
+    )
+    catalog_reasons = [issue.to_reason() for issue in catalog_resolution.issues]
 
     flagged = {
         (reason.field_key, reason.row_index)
         for reason in decision.reasons
         if reason.field_key is not None
-    }
+    } | {(issue.field_key, issue.row_index) for issue in catalog_resolution.issues}
     for field in fields:
         correction = corrections.get((field.field_key, field.row_index))
         value, _corrected = _effective(field, correction)
@@ -169,4 +188,23 @@ async def revalidate_run(
         elif value is not None:
             field.validation_status = ValidationStatus.PASSED.value
 
-    return {"evaluation": evaluation.summary(), "decision": decision.to_json()}
+    evaluation_summary = evaluation.summary()
+    decision_json = decision.to_json()
+    if catalog_reasons:
+        evaluation_summary["blocking"] = True
+        evaluation_summary["review_required"] = True
+        evaluation_summary["catalog_identity_issues"] = len(catalog_reasons)
+        evaluation_summary["triggered_by_severity"]["error"] += len(catalog_reasons)
+        decision_json["route"] = "review_required"
+        decision_json["reasons"].extend(catalog_reasons)
+    else:
+        evaluation_summary["catalog_identity_issues"] = 0
+    return {
+        "evaluation": evaluation_summary,
+        "decision": decision_json,
+        "catalog_identity": {
+            "selected": len(catalog_resolution.identities),
+            "confirmed_no_match": len(catalog_resolution.confirmed_no_match),
+            "issues": catalog_reasons,
+        },
+    }

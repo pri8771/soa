@@ -65,4 +65,5 @@ CI; see [`SUPPLY_CHAIN_SECURITY.md`](SUPPLY_CHAIN_SECURITY.md). The
 deploy-time runtime hardening these images must run under (read-only
 root filesystem, dropped capabilities, seccomp, no network for
 converters) is specified in [`SANDBOX_PROFILE.md`](SANDBOX_PROFILE.md)
-and enforced by REL-002 infrastructure.
+and must be verified against the target platform before release. An image
+build/non-root check does not by itself prove those runtime controls.

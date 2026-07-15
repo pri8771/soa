@@ -9,6 +9,7 @@ import {
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { AuthProvider } from "../auth/AuthContext";
 import { AppShell, NAV_ITEMS } from "./AppShell";
 import { ShellSessionProvider, type ShellSession } from "./ShellContext";
 
@@ -41,7 +42,9 @@ async function renderShell(permissions: string[]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthProvider testStatus="test">
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }

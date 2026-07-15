@@ -5,13 +5,13 @@ document is the runnable protocol: session script, measures, the
 manual-entry baseline it is compared against, pilot targets, and the
 severity rubric under which **critical UX issues block release**.
 
-> **Status — protocol ready, execution pending humans.** Everything a
-> study needs that can be prepared in the repository exists: the
-> script below, the seeded fixture documents, and the results
-> templates. The study itself requires 5–8 human participants working
-> real sessions; it cannot be simulated, and no results are recorded
-> here until it runs (planned inside the PIL epic, before pilot
-> go-live). Recording fabricated results would defeat the gate.
+> **Status — protocol only; study materials and execution pending.** The
+> repository does not contain the three study-ready source documents, their
+> reconciled answer keys, the manual-entry spreadsheet, consent/recording
+> materials, or completed results. The ordinary Northstar development seed is
+> not a substitute. Prepare rights-cleared materials, then run 5–8 human
+> sessions before pilot go-live. Recording fabricated or mock-only results
+> would defeat the gate.
 
 ## 1. What is being measured
 
@@ -37,8 +37,9 @@ nor document difficulty biases the comparison.
 
 ## 3. Fixtures
 
-Three seeded documents, all derived from the deterministic mock
-provider so every participant sees identical data:
+Prepare three versioned, rights-cleared study documents. Pin the source hashes,
+answer keys, starting extraction/review state, and participant rotation so each
+session is reproducible:
 
 1. **Clean-but-flagged** — one low-confidence critical field
    (`po_number`), everything else passing. Exercises: evidence lookup,
@@ -50,8 +51,9 @@ provider so every participant sees identical data:
    recognizing non-actionable input, reject with a reason (or escalate
    where the participant lacks reject permission).
 
-The answer key for each fixture lives with the study materials, not in
-the app.
+The answer key and manual-entry template live with controlled study materials,
+not in the application. Their location/version/hash must be recorded with the
+study result before this gate can pass.
 
 ## 4. Session script (~45 minutes per participant)
 
@@ -92,10 +94,10 @@ fix. Critical issues additionally link the release gate they block.
 
 ## 7. What already reduces the risk this study measures
 
-The automated suites cover the mechanical halves of these measures:
-keyboard reachability and screen-reader announcements (DSN-009, REV-013
-tests), two-step approval safety, conflict resolution without data
-loss (REV-014 tests), evidence overlay honesty (REV-005 tests), and
-responsive stacking with nothing hidden (REV-015 tests). What only the
-study can measure is whether real reviewers UNDERSTAND the flags,
+The automated suites cover the mechanical halves of these measures: keyboard
+interactions, ARIA/live-region markup, and axe checks (DSN-009, REV-013 tests),
+two-step approval safety, conflict resolution without data loss (REV-014
+tests), evidence overlay honesty (REV-005 tests), and responsive stacking with
+nothing hidden (REV-015 tests). What only manual assistive-technology checks
+and the study can measure is whether real reviewers UNDERSTAND the flags,
 trust the evidence, and finish faster than typing.

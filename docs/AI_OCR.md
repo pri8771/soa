@@ -4,6 +4,16 @@
 
 SOA must use a hybrid document-understanding pipeline. It must not send every page directly to one LLM and treat the response as truth.
 
+**Current launch boundary:** the worker prefers native page text and falls back
+to bounded Tesseract OCR, then sends recognized text (not page images) through
+the pinned schema-constrained extraction provider. It enforces one sales order
+per input. Layout-aware/multimodal extraction, managed OCR, classification, and
+packet splitting remain target capabilities that require separate corpus
+evaluation.
+
+The following is the target hybrid pipeline; stages that are outside the
+current launch boundary above stay disabled until implemented and evaluated:
+
 ```text
 File inspection
 → Native text extraction where reliable
@@ -33,7 +43,7 @@ Define separate provider contracts for:
 
 Do not collapse these responsibilities into one provider-specific service.
 
-## 3. Default free-first processing policy
+## 3. Target free-first processing policy
 
 ### Digital PDF
 
@@ -228,6 +238,11 @@ Confidence is calibrated against actual correctness. Thresholds are field-specif
 Auto-approval policy must be based on risk and criticality, not only overall document confidence.
 
 ## 12. Golden datasets
+
+The repository contains a versioned synthetic cohort/expected-result manifest,
+but not rights-cleared representative source bytes. That manifest exercises the
+evaluation machinery; it is not evidence of production accuracy. The pilot
+gate must populate and reconcile the source corpus below.
 
 Maintain representative labeled documents across:
 

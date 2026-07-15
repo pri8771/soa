@@ -16,7 +16,7 @@ describe("Streams list (CFG-010)", () => {
 
 describe("Stream detail (CFG-010)", () => {
   it("keeps hierarchy visible and shows the published configuration", async () => {
-    await renderApp("/app/northstar/streams/email");
+    const { router } = await renderApp("/app/northstar/streams/email");
     expect(await screen.findByRole("heading", { name: "Email intake" })).toBeInTheDocument();
     // Hierarchy: breadcrumb back to Streams + parent process named.
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Streams");
@@ -24,10 +24,19 @@ describe("Stream detail (CFG-010)", () => {
     // Resolved configuration values from the published snapshot.
     expect(screen.getByText("confidence_floor")).toBeInTheDocument();
     expect(screen.getByText("0.95")).toBeInTheDocument();
-    // Honest placeholders.
-    expect(screen.getByText(/arrives with intake/)).toBeInTheDocument();
+    // Implemented intake surfaces replace the former placeholder.
+    expect(
+      screen.getByRole("link", { name: "Upload documents in the browser" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/POST \/v1\/streams\/email\/documents/)).toBeInTheDocument();
     // Version history with pin context.
     expect(screen.getAllByText(/pins process v3/).length).toBe(2);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("link", { name: "Upload documents in the browser" }));
+    await waitFor(() =>
+      expect((router.state.location.search as { stream?: string }).stream).toBe("email"),
+    );
   });
 
   it("archive requires an impact explanation before it is enabled", async () => {

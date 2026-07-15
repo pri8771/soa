@@ -14,6 +14,7 @@
 
 import { Badge, Banner, Button, Select } from "@soa/design-system";
 import { useQuery } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 
 import {
@@ -105,6 +106,7 @@ export function UploadDocuments() {
   const session = useShellSession();
   const slug = session.organization.slug;
   const canUpload = session.permissions.has("documents.upload");
+  const search = useSearch({ strict: false }) as { stream?: string };
   const inputRef = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
   const cancelledIds = useRef(new Set<number>());
@@ -112,7 +114,10 @@ export function UploadDocuments() {
   const streams = useQuery({ queryKey: ["streams", slug], queryFn: () => fetchStreams(slug) });
   const activeStreams = (streams.data ?? []).filter((s) => s.status !== "archived");
   const [streamSlug, setStreamSlug] = useState<string | null>(null);
-  const selectedStream = streamSlug ?? activeStreams[0]?.slug ?? null;
+  const requestedStream = activeStreams.some((stream) => stream.slug === search.stream)
+    ? (search.stream ?? null)
+    : null;
+  const selectedStream = streamSlug ?? requestedStream ?? activeStreams[0]?.slug ?? null;
 
   const [files, setFiles] = useState<QueuedFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -148,7 +153,7 @@ export function UploadDocuments() {
       const put = await fetch(created.upload_url, {
         method: created.upload_method,
         body: bytes,
-        headers: { "Content-Type": queued.file.type },
+        headers: { "Content-Type": queued.file.type, ...created.upload_headers },
       });
       if (!put.ok) {
         throw new ApiError(put.status, `Storage refused the upload (${put.status}).`);

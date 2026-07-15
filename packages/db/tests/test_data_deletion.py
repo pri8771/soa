@@ -13,6 +13,7 @@ from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import AuditEvent
 from soa_db.canonical_payloads import record_canonical_payload
+from soa_db.catalog_selections import CatalogFieldSelection
 from soa_db.data_deletion import (
     DeletionNotApprovedError,
     DeletionTombstone,
@@ -88,6 +89,27 @@ async def seed(db: DatabaseSessions, store: MemoryObjectStore) -> uuid.UUID:
             confidence=0.98,
             provider="mock",
         )
+        session.add(
+            CatalogFieldSelection(
+                organization_id=ORG,
+                document_id=document.id,
+                run_id=run.id,
+                task_id=None,
+                field_key="lines.sku",
+                row_index=0,
+                status="selected",
+                selection_source="machine",
+                catalog_id=uuid.uuid4(),
+                catalog_version_id=uuid.uuid4(),
+                catalog_record_id=uuid.uuid4(),
+                source_id="WID-100",
+                display_name="Widget",
+                matched_value="WID-100",
+                value_fingerprint="f" * 64,
+                decision_json=None,
+                selected_by="worker",
+            )
+        )
         await record_canonical_payload(
             session,
             CONTEXT,
@@ -122,6 +144,7 @@ async def test_complete_deletion_erases_objects_rows_and_leaves_a_tombstone(
     assert result.category_counts["artifacts"] == 3
     assert result.category_counts["extracted_fields"] == 1
     assert result.category_counts["canonical_payloads"] == 1
+    assert result.category_counts["catalog_field_selections"] == 1
     assert result.category_counts["processing_runs"] == 1
 
     # Objects are gone from the store.

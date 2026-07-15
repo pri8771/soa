@@ -17,6 +17,7 @@ decisions.
 """
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -91,6 +92,10 @@ class ProcessingRun(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin
     provider_credential_ref: Mapped[str | None] = mapped_column(Text(), nullable=True)
     #: Hash of every immutable id/reference above plus config_fingerprint.
     execution_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: What actually executed: renderer, native/OCR engines, adapter,
+    #: model, and a sanitized endpoint digest. Set once by extraction.
+    runtime_provenance: Mapped[dict[str, Any] | None] = mapped_column(PORTABLE_JSON, nullable=True)
+    runtime_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     #: Fingerprint of the input the run consumed (the original's SHA-256).
     input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     triggered_by: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -177,6 +182,21 @@ class StageRunRepository(ScopedRepository[StageRun]):
             .order_by(StageRun.stage, StageRun.attempt)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_for_runs(self, run_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[StageRun]]:
+        """Fetch ordered stage attempts for many runs in one scoped query."""
+
+        grouped: dict[uuid.UUID, list[StageRun]] = {run_id: [] for run_id in run_ids}
+        if not run_ids:
+            return grouped
+        stmt = (
+            self._scoped_select()
+            .where(StageRun.run_id.in_(run_ids))
+            .order_by(StageRun.run_id, StageRun.stage, StageRun.attempt)
+        )
+        for stage in (await self._session.execute(stmt)).scalars().all():
+            grouped.setdefault(stage.run_id, []).append(stage)
+        return grouped
 
     async def latest_attempt(self, run_id: uuid.UUID, stage: str) -> int:
         from sqlalchemy import func, select
@@ -288,18 +308,27 @@ async def fail_stage(
     session: AsyncSession,
     *,
     stage_run: StageRun,
+    run: ProcessingRun | None = None,
     safe_error: str,
     failure_class: StageFailureClass,
     latency_ms: int | None = None,
+    cost_cents: int = 0,
     now: datetime | None = None,
 ) -> StageRun:
     if stage_run.state != StageState.RUNNING.value:
         raise RunStateError(f"stage run {stage_run.id} is {stage_run.state}; cannot fail")
+    if cost_cents < 0:
+        raise RunStateError("stage cost cannot be negative")
     stage_run.state = StageState.FAILED.value
     stage_run.finished_at = now or utcnow()
     stage_run.latency_ms = latency_ms
     stage_run.safe_error = safe_error[:500]
     stage_run.failure_class = failure_class.value
+    stage_run.cost_cents = cost_cents
+    if run is not None:
+        if run.id != stage_run.run_id:
+            raise RunStateError("stage run belongs to a different processing run")
+        run.total_cost_cents += cost_cents
     await session.flush()
     return stage_run
 

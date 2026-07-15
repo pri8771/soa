@@ -173,6 +173,23 @@ async def test_full_mock_workflow_reaches_approved(db: DatabaseSessions) -> None
         assert len(runs) == 1
 
 
+async def test_executor_resolver_receives_the_exact_stage(db: DatabaseSessions) -> None:
+    document_id = await seed_queued_document(db)
+    executors, _ = make_executors(route="approved")
+    resolved_stages: list[str] = []
+
+    async def resolve(session, context, run, stage):
+        del session, context, run
+        resolved_stages.append(stage)
+        return executors
+
+    orchestrator = Orchestrator(db, {}, executor_resolver=resolve)
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    assert resolved_stages == list(STAGE_SEQUENCE)
+
+
 async def test_review_route_parks_in_review_required(db: DatabaseSessions) -> None:
     document_id = await seed_queued_document(db)
     executors, _counts = make_executors(route="review_required")

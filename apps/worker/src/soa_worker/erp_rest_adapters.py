@@ -3,10 +3,9 @@
 The ERP connectors after QuickBooks Online, all implementing the EXP-010
 generic contract so orchestration reaches them like any other
 destination. They share one shape — OAuth2 bearer auth over a JSON/OData
-REST endpoint — so the transport, auth, response classification, and safe
-error handling live ONCE in :class:`_BearerRestErpAdapter`; each vendor is
-a thin subclass supplying its slug, idempotency mechanism, and a
-read-only connection-test URL.
+REST endpoint — so connection testing and fail-closed delivery behavior
+live once in :class:`_BearerRestErpAdapter`; each vendor is a thin subclass
+supplying only its slug and display name.
 
 Same discipline as the QuickBooks adapter:
 
@@ -14,19 +13,25 @@ Same discipline as the QuickBooks adapter:
   sent as ``Authorization: Bearer`` and never logged or echoed;
 - the mapped payload (``request.body``) is produced by the mapping
   profile (EXP-002/003) — the adapter is transport, not business mapping;
-- delivery is classified 2xx delivered / 429+5xx retryable / other 4xx
-  (auth or validation) terminal;
+- delivery is disabled until each vendor has an executable idempotent
+  upsert/precondition contract; a generic POST would duplicate orders;
 - error text is display-safe: only the status, never the vendor body
   (which can echo submitted content) or the token.
 
-Idempotency is each vendor's native mechanism, set by the mapping on the
-payload (an external id / alternate key / ETag), so a retried delivery
-does not create a duplicate order. The connection test is a READ-ONLY
-metadata request that proves the token without creating anything.
+The connection test remains a READ-ONLY metadata request that proves the
+token without creating anything. Passing it does not imply delivery is
+production-ready.
 """
 
 import httpx
 
+from soa_integrations import (
+    ConnectionTestRequest,
+    DestinationRefusedError,
+    capabilities_for,
+    validate_destination,
+)
+from soa_integrations import test_connection as run_connection_test
 from soa_worker.erp_adapter import (
     AdapterCapabilities,
     AdapterDeliveryRequest,
@@ -38,107 +43,75 @@ from soa_worker.erp_adapter import (
 
 
 class _BearerRestErpAdapter:
-    """Shared transport for OAuth2-bearer JSON/OData ERP endpoints."""
+    """Shared read-only probe and fail-closed ERP adapter behavior."""
 
     slug: str = ""
     vendor: str = ""
-    idempotency: str = ""
 
     def capabilities(self) -> AdapterCapabilities:
+        shared = capabilities_for(self.slug)
         return AdapterCapabilities(
-            supports_connection_test=True,
-            supports_health_check=True,
-            idempotency_mechanism=self.idempotency,
+            supports_connection_test=shared.supports_connection_test,
+            supports_health_check=shared.supports_health_check,
+            idempotency_mechanism=shared.idempotency_mechanism,
             formats=("json",),
+            production_ready=shared.production_ready,
         )
-
-    def _headers(self, secret: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {secret}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-    def _connection_test_url(self, delivery_url: str) -> str | None:
-        """A read-only metadata URL derived from the delivery URL, or None
-        if one cannot be determined. Overridden per vendor."""
-        raise NotImplementedError
 
     async def test_connection(
         self, client: httpx.AsyncClient, request: AdapterDeliveryRequest
     ) -> ConnectionTestResult:
-        url = self._connection_test_url(request.url)
-        if url is None:
-            return ConnectionTestResult(
-                ok=False,
-                detail=f"could not derive a {self.vendor} metadata URL from the endpoint",
-            )
-        try:
-            response = await client.get(url, headers=self._headers(request.secret))
-        except httpx.HTTPError:
-            return ConnectionTestResult(ok=False, detail=f"{self.vendor} could not be reached")
-        if response.status_code < 300:
-            return ConnectionTestResult(ok=True, detail=f"{self.vendor} accepted the credentials")
-        if response.status_code in (401, 403):
-            return ConnectionTestResult(
-                ok=False,
-                detail=f"{self.vendor} rejected the credentials (token invalid or expired)",
-            )
-        return ConnectionTestResult(
-            ok=False, detail=f"{self.vendor} returned status {response.status_code}"
+        result = await run_connection_test(
+            client,
+            self.slug,
+            ConnectionTestRequest(
+                url=request.url,
+                secret=request.secret,
+                business_key=request.business_key,
+                timestamp=request.timestamp,
+                allowlist=request.allowlist,
+                resolve=request.resolve,
+            ),
         )
+        return ConnectionTestResult(ok=result.ok, detail=result.detail)
 
     async def deliver(
         self, client: httpx.AsyncClient, request: AdapterDeliveryRequest
     ) -> AdapterDeliveryResult:
         try:
-            response = await client.post(
-                request.url, content=request.body, headers=self._headers(request.secret)
+            validate_destination(
+                request.url,
+                allowlist=request.allowlist,
+                resolve=request.resolve,
             )
-        except httpx.TimeoutException:
+        except DestinationRefusedError as refused:
             return AdapterDeliveryResult(
-                outcome="retryable_error",
+                outcome="terminal_error",
                 response_status=None,
-                safe_error=f"{self.vendor} did not respond in time",
+                safe_error=str(refused),
                 redacted_response=None,
             )
-        except httpx.HTTPError:
-            return AdapterDeliveryResult(
-                outcome="retryable_error",
-                response_status=None,
-                safe_error=f"{self.vendor} could not be reached",
-                redacted_response=None,
-            )
-        status = response.status_code
-        if 200 <= status < 300:
-            return AdapterDeliveryResult(
-                outcome="delivered",
-                response_status=status,
-                safe_error=None,
-                redacted_response=f"{self.vendor} accepted the document",
-            )
-        if status == 429 or status >= 500:
-            return AdapterDeliveryResult(
-                outcome="retryable_error",
-                response_status=status,
-                safe_error=f"{self.vendor} is temporarily unavailable (status {status})",
-                redacted_response=None,
-            )
-        # 401/403 (auth) and other 4xx (validation) are terminal — the
-        # body can echo submitted content, so only the status is surfaced.
+        # These connectors can prove reachability, but their vendor-specific
+        # idempotent create/upsert contracts are not implemented. A generic
+        # POST can duplicate an order on retry, so delivery fails closed.
         return AdapterDeliveryResult(
             outcome="terminal_error",
-            response_status=status,
-            safe_error=(
-                f"{self.vendor} rejected the request (status {status}) — "
-                "check the token and the mapped payload"
-            ),
+            response_status=None,
+            safe_error=f"{self.vendor} delivery is disabled until idempotent upsert is implemented",
             redacted_response=None,
         )
 
     async def health(
         self, client: httpx.AsyncClient, request: AdapterDeliveryRequest
     ) -> AdapterHealth:
+        try:
+            validate_destination(
+                request.url,
+                allowlist=request.allowlist,
+                resolve=request.resolve,
+            )
+        except DestinationRefusedError as refused:
+            return AdapterHealth(status="unreachable", detail=str(refused))
         test = await self.test_connection(client, request)
         if test.ok:
             return AdapterHealth(status="ok", detail=test.detail)
@@ -148,56 +121,24 @@ class _BearerRestErpAdapter:
 
 
 class NetSuiteAdapter(_BearerRestErpAdapter):
-    """NetSuite SuiteTalk REST Record API. NetSuite HAS a native
-    ``salesOrder`` record; idempotency is an upsert by external id
-    (``PUT .../salesOrder/eid:{externalId}``), which the mapping sets."""
+    """NetSuite read-only probe; order delivery is not implemented."""
 
     slug = "netsuite"
     vendor = "NetSuite"
-    idempotency = "external id upsert (PUT .../eid:{externalId})"
-
-    def _connection_test_url(self, delivery_url: str) -> str | None:
-        marker = "/services/rest/record/"
-        index = delivery_url.find(marker)
-        if index < 0:
-            return None
-        base = delivery_url[:index]
-        return f"{base}/services/rest/record/v1/metadata-catalog"
 
 
 class Dynamics365Adapter(_BearerRestErpAdapter):
-    """Microsoft Dynamics 365 (Business Central / F&O) OData Web API.
-    Idempotency is an alternate-key upsert / ``If-None-Match`` set by the
-    mapping. The connection test reads the OData ``$metadata`` at the
-    service root."""
+    """Dynamics 365 read-only probe; order delivery is not implemented."""
 
     slug = "microsoft_dynamics365"
     vendor = "Dynamics 365"
-    idempotency = "alternate-key upsert (PATCH by key, If-None-Match)"
-
-    def _connection_test_url(self, delivery_url: str) -> str | None:
-        # OData: the entity set is the last path segment; the service root
-        # is the parent, and metadata lives at <root>/$metadata.
-        root = delivery_url.split("?", 1)[0].rsplit("/", 1)[0]
-        if not root:
-            return None
-        return f"{root}/$metadata"
 
 
 class SapAdapter(_BearerRestErpAdapter):
-    """SAP S/4HANA OData sales-order API (e.g. ``API_SALES_ORDER_SRV``).
-    Idempotency is the OData ETag (``If-Match``) / an external reference
-    the mapping sets. The connection test reads the service ``$metadata``."""
+    """SAP S/4HANA read-only probe; order delivery is not implemented."""
 
     slug = "sap_s4hana"
     vendor = "SAP"
-    idempotency = "OData ETag (If-Match) / external reference"
-
-    def _connection_test_url(self, delivery_url: str) -> str | None:
-        root = delivery_url.split("?", 1)[0].rsplit("/", 1)[0]
-        if not root:
-            return None
-        return f"{root}/$metadata"
 
 
 def register_rest_erp_adapters() -> None:

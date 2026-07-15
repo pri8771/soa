@@ -6,10 +6,11 @@ Recover from data loss or corruption by restoring the database and
 reconciling object storage. Also the procedure a stale-backup alert
 points at.
 
-> **Status:** production backups and PITR land with **REL-003** (blocked
-> on the production-database choice, an owner decision) and the restore
-> rehearsal with **REL-004**. Until then this runbook describes the
-> intended procedure; the freshness signal is `pending:REL-003`.
+> **Status:** the GCP Terraform configures Cloud SQL backups and PITR, but it
+> has not been applied or restored in the target project. The restore rehearsal
+> remains required, and the alert catalog's freshness signal is still
+> `pending:REL-003` until monitoring reads the live backup state. The RPO/RTO
+> values are targets until the rehearsal measures them.
 
 ## Detection
 
@@ -18,9 +19,10 @@ points at.
 
 ## Containment
 
-- Stop writes to the affected scope if corruption is spreading (pause
-  intake / workers). Do not delete anything — restoration needs the
-  current state for comparison.
+- Stop writes to the affected scope if corruption is spreading: disable the
+  applicable ingress upstream and scale/stop workers through the deployment
+  procedure. Do not assume an application-level pause control exists, and do
+  not delete anything — restoration needs the current state for comparison.
 - Identify the target recovery point (PITR timestamp) and confirm the
   backup covering it is intact.
 

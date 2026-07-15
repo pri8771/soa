@@ -7,6 +7,10 @@ from soa_config import DEV_SECRET_KEY, BaseServiceSettings, Environment
 
 PROD_SECRET = "x" * 40
 PROD_DB = "postgresql+asyncpg://svc:strong-managed-password@db.internal:5432/soa"
+PROD_TELEMETRY = {
+    "telemetry_profile": "otlp",
+    "otlp_endpoint": "https://telemetry.internal.example",
+}
 
 
 def test_development_defaults_are_valid() -> None:
@@ -22,6 +26,7 @@ def test_production_with_explicit_values_is_valid() -> None:
         database_url=SecretStr(PROD_DB),
         secrets_backend="aws-secrets-manager",
         secrets_aws_region="eu-central-1",
+        **PROD_TELEMETRY,
     )
     assert settings.is_production
 
@@ -33,6 +38,7 @@ def test_production_accepts_the_gcp_secret_backend() -> None:
         database_url=SecretStr(PROD_DB),
         secrets_backend="gcp-secret-manager",
         secrets_gcp_project="soa-pilot",
+        **PROD_TELEMETRY,
     )
     assert settings.is_production
 
@@ -44,6 +50,7 @@ def test_gcp_backend_requires_a_project() -> None:
             secret_key=SecretStr(PROD_SECRET),
             database_url=SecretStr(PROD_DB),
             secrets_backend="gcp-secret-manager",
+            **PROD_TELEMETRY,
         )
 
 
@@ -82,10 +89,22 @@ def test_production_rejects_unsafe_configuration(
         "database_url": SecretStr(PROD_DB),
         "secrets_backend": "aws-secrets-manager",
         "secrets_aws_region": "eu-central-1",
+        **PROD_TELEMETRY,
     }
     base.update(overrides)
     with pytest.raises(ValidationError, match=expected_message):
         BaseServiceSettings(**base)  # type: ignore[arg-type]
+
+
+def test_production_rejects_disabled_telemetry() -> None:
+    with pytest.raises(ValidationError, match="requires the OTLP telemetry profile"):
+        BaseServiceSettings(
+            environment=Environment.PRODUCTION,
+            secret_key=SecretStr(PROD_SECRET),
+            database_url=SecretStr(PROD_DB),
+            secrets_backend="aws-secrets-manager",
+            secrets_aws_region="eu-central-1",
+        )
 
 
 def test_development_tolerates_dev_defaults() -> None:

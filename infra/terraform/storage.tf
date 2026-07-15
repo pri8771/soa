@@ -17,6 +17,22 @@ resource "google_storage_bucket" "artifacts" {
     enabled = false
   }
 
+  # Browser clients upload directly to short-lived signed URLs and fetch
+  # signed page/download URLs from the Firebase origin. Without an explicit
+  # bucket CORS policy those otherwise-valid requests fail at preflight.
+  # The checksum metadata header is signed and required on every upload.
+  cors {
+    origin = var.api_cors_allowed_origins
+    method = ["GET", "HEAD", "PUT"]
+    response_header = [
+      "Content-Type",
+      "ETag",
+      "x-goog-content-length-range",
+      "x-goog-meta-sha256",
+    ]
+    max_age_seconds = 3600
+  }
+
   # No lifecycle expiration: real object deletion goes through the
   # application (SEC-008/010) so it is authorized and audited. GCS aborts
   # abandoned resumable uploads on its own.

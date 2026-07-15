@@ -64,7 +64,7 @@ async def replay_dead_letter(
     if event is None:
         raise HTTPException(status_code=404, detail="Outbox event not found.")
     try:
-        await replay_failed_event(session, event)
+        previous_attempts = await replay_failed_event(session, event)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from None
     await record_audit_event(
@@ -75,6 +75,6 @@ async def replay_dead_letter(
         target_type="outbox_event",
         target_id=str(event.id),
         organization_id=authorized.org_context.organization_id,
-        summary={"event_type": event.event_type, "previous_attempts": event.attempts},
+        summary={"event_type": event.event_type, "previous_attempts": previous_attempts},
     )
-    return {"id": str(event.id), "status": event.status}
+    return {"id": str(event.id), "status": event.status, "attempts": event.attempts}

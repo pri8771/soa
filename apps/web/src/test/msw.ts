@@ -135,7 +135,10 @@ export const DEFAULT_STREAM_DETAIL = {
 };
 
 export const RESOLVE_ENVIRONMENT = { language: "en", confidence_floor: 0.85, max_pages: 50 };
-export const RESOLVE_PROCESS = { language: "de" };
+export const RESOLVE_PROCESS = {
+  language: "de",
+  schema_version_id: "50000000-0000-4000-8000-000000000001",
+};
 
 /** Mirrors the server's resolver shape: layers + provenance-tagged values,
  * recomputed from the overrides the client actually sent. */
@@ -357,6 +360,12 @@ export const DEFAULT_RUNS = [
     triggered_by: "system:orchestrator",
     stream_version_id: "51111111-1111-4111-8111-111111111111",
     config_fingerprint: "f".repeat(64),
+    contract_fingerprint: "c".repeat(64),
+    runtime_fingerprint: "r".repeat(64),
+    runtime_provenance: {
+      renderer: { name: "pdfium", version: "pinned" },
+      model: { provider: "mock", endpoint_digest: "sha256:runtime" },
+    },
     started_at: "2026-07-12T09:21:00+00:00",
     finished_at: "2026-07-12T09:24:00+00:00",
     total_latency_ms: 5340,
@@ -685,6 +694,9 @@ export const DEFAULT_INTEGRATION = {
   status: "active",
   endpoint_url: "https://erp.northstar.example/orders",
   credential_configured: true,
+  production_ready: true,
+  readiness_detail: "Signed webhook delivery is production-ready.",
+  idempotency_mechanism: "X-SOA-Idempotency-Key header (business key)",
   active_mapping_version_id: null,
   version: 2,
   created_at: "2026-07-12T09:00:00+00:00",
@@ -725,6 +737,56 @@ export const handlers = [
   http.get("/api/orgs/:slug/integrations", () =>
     HttpResponse.json({ items: [DEFAULT_INTEGRATION] }),
   ),
+  http.post("/api/orgs/:slug/integrations", async ({ request }) => {
+    const body = (await request.json()) as {
+      name: string;
+      slug: string;
+      integration_type: string;
+      endpoint_url: string | null;
+    };
+    return HttpResponse.json(
+      {
+        id: "integration-created",
+        ...body,
+        status: "draft",
+        credential_configured: false,
+        production_ready:
+          body.integration_type === "webhook" || body.integration_type === "quickbooks_online",
+        readiness_detail:
+          body.integration_type === "webhook" || body.integration_type === "quickbooks_online"
+            ? "Delivery is production-ready."
+            : "A vendor-specific idempotent upsert contract is still required.",
+        idempotency_mechanism:
+          body.integration_type === "webhook" || body.integration_type === "quickbooks_online"
+            ? "stable business idempotency key"
+            : "Not implemented; delivery is disabled.",
+        active_mapping_version_id: null,
+        version: 1,
+        created_at: "2026-07-15T12:00:00Z",
+      },
+      { status: 201 },
+    );
+  }),
+  http.put("/api/orgs/:slug/integrations/:integrationSlug/credential", async ({ request }) => {
+    const body = (await request.json()) as { kind: string; secret: string };
+    return HttpResponse.json({ credential_configured: true, kind: body.kind, rotated: false });
+  }),
+  http.post("/api/orgs/:slug/integrations/:integrationSlug/connection-test", () =>
+    HttpResponse.json({ ok: true, detail: "receiver accepted a signed test event" }),
+  ),
+  http.post("/api/orgs/:slug/integrations/:integrationSlug/activate", () =>
+    HttpResponse.json({
+      activated: true,
+      detail: "Connection verified; integration activated.",
+      integration: { ...DEFAULT_INTEGRATION, status: "active", version: 3 },
+    }),
+  ),
+  http.post("/api/orgs/:slug/integrations/:integrationSlug/deactivate", () =>
+    HttpResponse.json({ ...DEFAULT_INTEGRATION, status: "paused", version: 3 }),
+  ),
+  http.post("/api/orgs/:slug/integrations/:integrationSlug/archive", () =>
+    HttpResponse.json({ ...DEFAULT_INTEGRATION, status: "archived", version: 3 }),
+  ),
   http.get("/api/orgs/:slug/integrations/:integrationSlug", () =>
     HttpResponse.json({
       integration: DEFAULT_INTEGRATION,
@@ -755,6 +817,22 @@ export const handlers = [
   http.get("/api/orgs/:slug/review-tasks/:taskId/workspace", () =>
     HttpResponse.json(DEFAULT_WORKSPACE),
   ),
+  http.get("/api/orgs/:slug/review-tasks/:taskId/comments", () => HttpResponse.json({ items: [] })),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/comments", async ({ request, params }) => {
+    const body = (await request.json()) as { body: string };
+    return HttpResponse.json(
+      {
+        id: "c1111111-1111-4111-8111-111111111111",
+        task_id: String(params["taskId"]),
+        document_id: DEFAULT_WORKSPACE.document.id,
+        author: "user:u-1",
+        body: body.body,
+        mentions: [],
+        created_at: "2026-07-12T10:05:00+00:00",
+      },
+      { status: 201 },
+    );
+  }),
   http.post("/api/orgs/:slug/review-tasks/:taskId/corrections", async ({ request }) => {
     const body = (await request.json()) as { field_key: string; value: string | null };
     return HttpResponse.json({
@@ -1328,6 +1406,7 @@ export const handlers = [
         document_id: "72222222-2222-4222-8222-222222222222",
         upload_url: "https://storage.test/orgs/org-1/documents/doc/original/token-po.pdf",
         upload_method: "PUT",
+        upload_headers: { "x-goog-meta-sha256": "0".repeat(64) },
         expires_at: "2026-07-13T12:00:00+00:00",
         state: "pending",
       },
@@ -1350,6 +1429,87 @@ export const handlers = [
     const body = (await request.json()) as { overrides: Record<string, unknown> };
     return HttpResponse.json(buildResolvePreview(body.overrides ?? {}));
   }),
+  http.get("/api/orgs/:slug/stream-versions/:streamVersionId/instructions", ({ params }) =>
+    HttpResponse.json({
+      items: [
+        {
+          id: "instruction-1",
+          stream_version_id: String(params["streamVersionId"]),
+          schema_version_id: "50000000-0000-4000-8000-000000000001",
+          version_number: 1,
+          state: "draft",
+          reference: "instruction:instruction-1:v1",
+          content: {
+            instructions: "Extract purchase-order identifiers and totals.",
+            field_guidance: { po_number: "Preserve leading zeros." },
+          },
+          change_summary: "Initial extraction guidance",
+          published_at: null,
+          published_by: null,
+        },
+      ],
+    }),
+  ),
+  http.post(
+    "/api/orgs/:slug/stream-versions/:streamVersionId/instructions",
+    async ({ request, params }) => {
+      const body = (await request.json()) as {
+        schema_version_id: string;
+        content: Record<string, unknown>;
+        change_summary: string | null;
+      };
+      return HttpResponse.json(
+        {
+          id: "instruction-new",
+          stream_version_id: String(params["streamVersionId"]),
+          schema_version_id: body.schema_version_id,
+          version_number: 2,
+          state: "draft",
+          reference: "instruction:instruction-new:v2",
+          content: body.content,
+          change_summary: body.change_summary,
+          published_at: null,
+          published_by: null,
+        },
+        { status: 201 },
+      );
+    },
+  ),
+  http.patch("/api/orgs/:slug/instructions/:instructionId", async ({ request, params }) => {
+    const body = (await request.json()) as {
+      content: Record<string, unknown>;
+      change_summary: string | null;
+    };
+    return HttpResponse.json({
+      id: String(params["instructionId"]),
+      stream_version_id: DEFAULT_STREAM_DRAFT.id,
+      schema_version_id: "50000000-0000-4000-8000-000000000001",
+      version_number: 1,
+      state: "draft",
+      reference: `instruction:${String(params["instructionId"])}:v1`,
+      content: body.content,
+      change_summary: body.change_summary,
+      published_at: null,
+      published_by: null,
+    });
+  }),
+  http.post("/api/orgs/:slug/instructions/:instructionId/publish", ({ params }) =>
+    HttpResponse.json({
+      id: String(params["instructionId"]),
+      stream_version_id: DEFAULT_STREAM_DRAFT.id,
+      schema_version_id: "50000000-0000-4000-8000-000000000001",
+      version_number: 1,
+      state: "published",
+      reference: `instruction:${String(params["instructionId"])}:v1`,
+      content: {
+        instructions: "Extract purchase-order identifiers and totals.",
+        field_guidance: { po_number: "Preserve leading zeros." },
+      },
+      change_summary: "Initial extraction guidance",
+      published_at: "2026-07-15T12:00:00Z",
+      published_by: "user:u-1",
+    }),
+  ),
   http.get("/api/orgs/:slug/catalogs", () =>
     HttpResponse.json({
       items: [
@@ -1497,7 +1657,8 @@ export const handlers = [
           description: "Sandboxed digital-PDF text extraction.",
           health: "unknown",
           approved: false,
-          credential_ref: null,
+          credential_configured: false,
+          credential_id: null,
         },
         {
           name: "hosted-ocr",
@@ -1517,12 +1678,171 @@ export const handlers = [
           availability: "requires_endpoint_config",
           description: "Example hosted OCR destination.",
           health: "unknown",
+          approved: false,
+          credential_configured: false,
+          credential_id: null,
+        },
+        {
+          name: "local-openai-compatible",
+          capability: "field_extraction",
+          languages: ["*"],
+          region: "local",
+          local: true,
+          data_policy: {
+            sends_content_to_third_party: false,
+            retains_content: false,
+            uses_content_for_training: false,
+          },
+          warnings: ["Runs inside the deployment; content never leaves (local-only safe)."],
+          availability: "requires_endpoint_config",
+          description: "Local OpenAI-compatible extraction.",
+          health: "unknown",
+          approved: false,
+          credential_configured: false,
+          credential_id: null,
+        },
+        {
+          name: "anthropic-claude",
+          capability: "field_extraction",
+          languages: ["*"],
+          region: "us",
+          local: false,
+          data_policy: {
+            sends_content_to_third_party: true,
+            retains_content: false,
+            uses_content_for_training: false,
+          },
+          warnings: ["Customer content LEAVES the deployment to a third party."],
+          availability: "requires_tenant_credential",
+          description: "Hosted Claude extraction.",
+          health: "unknown",
           approved: true,
-          credential_ref: "credential:hosted-ocr-main",
+          credential_configured: true,
+          credential_id: "cred-anthropic",
         },
       ],
       health_note:
-        "Health is reported by the worker at runtime; a live health surface arrives with worker telemetry.",
+        "Health is derived from persisted worker attempts; providers with no recent attempts remain unknown.",
+    }),
+  ),
+  http.get("/api/orgs/:slug/provider-credentials", () =>
+    HttpResponse.json({
+      items: [
+        {
+          id: "cred-anthropic",
+          provider_name: "anthropic-claude",
+          label: "Production Claude",
+          kind: "api_key",
+          status: "current",
+          created_by: "user:u-1",
+          created_at: "2026-07-15T12:00:00Z",
+          superseded_at: null,
+          revoked_at: null,
+          revocation_reason: null,
+        },
+      ],
+    }),
+  ),
+  http.put("/api/orgs/:slug/providers/:providerName/credential", async ({ params, request }) => {
+    const body = (await request.json()) as { label: string };
+    return HttpResponse.json({
+      credential: {
+        id: `cred-${String(params["providerName"])}`,
+        provider_name: String(params["providerName"]),
+        label: body.label,
+        kind: "api_key",
+        status: "current",
+        created_by: "user:u-1",
+        created_at: "2026-07-15T12:00:00Z",
+        superseded_at: null,
+        revoked_at: null,
+        revocation_reason: null,
+      },
+      rotated: true,
+      retained_credential_id: "cred-old",
+      detail:
+        "The prior value is retained for immutable policy/run pins until explicit revocation.",
+    });
+  }),
+  http.post("/api/orgs/:slug/provider-credentials/:credentialId/revoke", ({ params }) =>
+    HttpResponse.json({
+      credential: {
+        id: String(params["credentialId"]),
+        provider_name: "anthropic-claude",
+        label: "Production Claude",
+        kind: "api_key",
+        status: "revoked",
+        created_by: "user:u-1",
+        created_at: "2026-07-15T12:00:00Z",
+        superseded_at: null,
+        revoked_at: "2026-07-15T13:00:00Z",
+        revocation_reason: "rotated",
+      },
+      revocation_queued: true,
+      affected_policy_ids: [],
+      detail: "Revocation queued for durable post-commit execution.",
+    }),
+  ),
+  http.get("/api/orgs/:slug/policies/:policyType", ({ params }) =>
+    HttpResponse.json({
+      items:
+        params["policyType"] === "provider"
+          ? [
+              {
+                id: "provider-policy-draft",
+                policy_type: "provider",
+                version_number: 2,
+                state: "draft",
+                definition: {
+                  provider_name: "anthropic-claude",
+                  credential_id: "cred-anthropic",
+                  capabilities: ["ocr", "field_extraction"],
+                  allow_third_party_processing: true,
+                  allowed_regions: ["us"],
+                },
+                change_summary: "Claude routing",
+                published_at: null,
+                published_by: null,
+                version: 1,
+              },
+            ]
+          : [],
+    }),
+  ),
+  http.post("/api/orgs/:slug/policies/:policyType/drafts", async ({ params, request }) => {
+    const body = (await request.json()) as {
+      definition: Record<string, unknown>;
+      change_summary: string | null;
+    };
+    return HttpResponse.json(
+      {
+        id: `${String(params["policyType"])}-policy-new`,
+        policy_type: String(params["policyType"]),
+        version_number: 3,
+        state: "draft",
+        definition: body.definition,
+        change_summary: body.change_summary,
+        published_at: null,
+        published_by: null,
+        version: 1,
+      },
+      { status: 201 },
+    );
+  }),
+  http.post("/api/orgs/:slug/policies/:policyType/:policyId/validate", () =>
+    HttpResponse.json({ valid: true, findings: [] }),
+  ),
+  http.post("/api/orgs/:slug/policies/:policyType/:policyId/publish", ({ params }) =>
+    HttpResponse.json({
+      id: String(params["policyId"]),
+      policy_type: String(params["policyType"]),
+      version_number: 2,
+      state: "published",
+      definition: {},
+      change_summary: "Published from test",
+      published_at: "2026-07-15T13:00:00Z",
+      published_by: "user:u-1",
+      version: 2,
     }),
   ),
   http.post("/api/orgs/:slug/providers/routing-preview", async ({ request }) => {
@@ -1566,6 +1886,229 @@ export const handlers = [
       return HttpResponse.json({ error: { message: "Version not found." } }, { status: 404 });
     }
     return HttpResponse.json({ ...summary, definition });
+  }),
+  http.post("/api/organizations", async ({ request }) => {
+    const body = (await request.json()) as { name: string; slug: string };
+    return HttpResponse.json(
+      { id: "org-created", name: body.name, slug: body.slug, status: "active", version: 1 },
+      { status: 201 },
+    );
+  }),
+  http.post("/api/invitations/accept", async ({ request }) => {
+    const body = (await request.json()) as { organization_slug: string };
+    return HttpResponse.json({
+      membership_id: `membership-${body.organization_slug}`,
+      user_id: "u-1",
+      invited_email: "reviewer@northstar.example",
+      status: "active",
+      version: 2,
+      assigned_roles: [],
+    });
+  }),
+  http.get("/api/orgs/:slug/members", () =>
+    HttpResponse.json({
+      items: [
+        {
+          membership_id: "m-1",
+          user_id: "u-1",
+          invited_email: "reviewer@northstar.example",
+          status: "active",
+          version: 2,
+          assigned_roles: [
+            {
+              id: "role-admin",
+              name: "Organization admin",
+              slug: "org-admin",
+              is_system: true,
+            },
+          ],
+        },
+        {
+          membership_id: "m-invited",
+          user_id: null,
+          invited_email: "new.member@example.com",
+          status: "invited",
+          version: 1,
+          assigned_roles: [],
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+    }),
+  ),
+  http.post("/api/orgs/:slug/invitations", async ({ request }) => {
+    const body = (await request.json()) as { email: string };
+    return HttpResponse.json(
+      { membership_id: "m-new", email: body.email, status: "invited", created: true },
+      { status: 201 },
+    );
+  }),
+  http.patch("/api/orgs/:slug/members/:membershipId", async ({ request, params }) => {
+    const body = (await request.json()) as { status: string };
+    return HttpResponse.json({
+      membership_id: String(params["membershipId"]),
+      user_id: "u-1",
+      invited_email: "reviewer@northstar.example",
+      status: body.status,
+      version: 3,
+      assigned_roles: [],
+    });
+  }),
+  http.get("/api/orgs/:slug/roles", () =>
+    HttpResponse.json([
+      {
+        id: "role-admin",
+        name: "Organization admin",
+        slug: "org-admin",
+        is_system: true,
+        permissions: ["organization.manage", "members.manage", "roles.manage"],
+      },
+      {
+        id: "role-reviewer",
+        name: "Reviewer",
+        slug: "reviewer",
+        is_system: true,
+        permissions: ["documents.read", "documents.review"],
+      },
+    ]),
+  ),
+  http.post("/api/orgs/:slug/roles", async ({ request }) => {
+    const body = (await request.json()) as { name: string; slug: string; permissions: string[] };
+    return HttpResponse.json({ id: "role-created", ...body, is_system: false }, { status: 201 });
+  }),
+  http.post("/api/orgs/:slug/members/:membershipId/roles", async ({ request, params }) => {
+    const body = (await request.json()) as { role_slug: string };
+    return HttpResponse.json(
+      { membership_id: String(params["membershipId"]), role_slug: body.role_slug },
+      { status: 201 },
+    );
+  }),
+  http.get("/api/orgs/:slug/members/:membershipId/roles", ({ params }) =>
+    HttpResponse.json(
+      String(params["membershipId"]) === "m-1"
+        ? [
+            {
+              id: "role-admin",
+              name: "Organization admin",
+              slug: "org-admin",
+              is_system: true,
+              permissions: ["organization.manage", "members.manage", "roles.manage"],
+            },
+          ]
+        : [],
+    ),
+  ),
+  http.delete("/api/orgs/:slug/members/:membershipId/roles/:roleSlug", ({ params }) =>
+    HttpResponse.json({
+      membership_id: String(params["membershipId"]),
+      role_slug: String(params["roleSlug"]),
+      revoked: true,
+    }),
+  ),
+  http.get("/api/orgs/:slug/service-credentials", () => HttpResponse.json({ items: [] })),
+  http.post("/api/orgs/:slug/service-credentials", async ({ request }) => {
+    const body = (await request.json()) as {
+      name: string;
+      allowed_stream_ids: string[];
+    };
+    return HttpResponse.json(
+      {
+        credential: {
+          id: "service-credential-1",
+          name: body.name,
+          key_prefix: "abc12345",
+          scopes: ["documents.upload"],
+          allowed_stream_ids: body.allowed_stream_ids,
+          status: "active",
+          expires_at: "2026-10-13T12:00:00Z",
+          last_used_at: null,
+          created_by: "user:u-1",
+          created_at: "2026-07-15T12:00:00Z",
+          updated_at: "2026-07-15T12:00:00Z",
+          version: 1,
+        },
+        api_key: "soa_abc12345_one-time-secret",
+        warning: "Copy this API key now. It cannot be retrieved after this response.",
+      },
+      { status: 201 },
+    );
+  }),
+  http.post("/api/orgs/:slug/service-credentials/:credentialId/rotate", ({ params }) =>
+    HttpResponse.json({
+      credential: {
+        id: String(params["credentialId"]),
+        name: "Warehouse connector",
+        key_prefix: "def67890",
+        scopes: ["documents.upload"],
+        allowed_stream_ids: [DEFAULT_STREAMS[0].id],
+        status: "active",
+        expires_at: "2026-10-13T12:00:00Z",
+        last_used_at: null,
+        created_by: "user:u-1",
+        created_at: "2026-07-15T12:00:00Z",
+        updated_at: "2026-07-15T13:00:00Z",
+        version: 2,
+      },
+      api_key: "soa_def67890_rotated-one-time-secret",
+      warning: "Copy this API key now. The previous key stopped working immediately.",
+    }),
+  ),
+  http.post("/api/orgs/:slug/service-credentials/:credentialId/revoke", ({ params }) =>
+    HttpResponse.json({
+      credential: {
+        id: String(params["credentialId"]),
+        name: "Warehouse connector",
+        key_prefix: "abc12345",
+        scopes: ["documents.upload"],
+        allowed_stream_ids: [DEFAULT_STREAMS[0].id],
+        status: "revoked",
+        expires_at: "2026-10-13T12:00:00Z",
+        last_used_at: null,
+        created_by: "user:u-1",
+        created_at: "2026-07-15T12:00:00Z",
+        updated_at: "2026-07-15T13:00:00Z",
+        version: 2,
+      },
+    }),
+  ),
+  http.get("/api/orgs/:slug/data-exports", () => HttpResponse.json({ items: [] })),
+  http.post("/api/orgs/:slug/data-exports", () =>
+    HttpResponse.json(
+      {
+        id: "export-new",
+        scope: "organization",
+        snapshot_at: "2026-07-15T12:00:00Z",
+        state: "pending",
+        total_documents: 0,
+        processed_documents: 0,
+        progress: 0,
+        total_records: 0,
+        safe_error: null,
+        expires_at: "2026-07-16T12:00:00Z",
+        manifest_download_url: null,
+        manifest_expires_at: null,
+        parts: [],
+      },
+      { status: 202 },
+    ),
+  ),
+  http.post("/api/orgs/:slug/data-exports/:exportId/cancel", async ({ request, params }) => {
+    const body = (await request.json()) as { reason: string };
+    return HttpResponse.json({
+      id: String(params["exportId"]),
+      scope: "organization",
+      snapshot_at: "2026-07-15T12:00:00Z",
+      state: "cancelled",
+      total_documents: 10,
+      processed_documents: 2,
+      progress: 0.2,
+      total_records: 20,
+      safe_error: `cancelled by operator: ${body.reason}`,
+      expires_at: "2026-07-16T12:00:00Z",
+      manifest_download_url: null,
+      manifest_expires_at: null,
+      parts: [],
+    });
   }),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),
   http.get("/api/orgs/:slug/jobs/stats", () => HttpResponse.json(DEFAULT_JOB_STATS)),

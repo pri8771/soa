@@ -6,6 +6,7 @@ stored on ``app.state`` so request handlers resolve shared resources without
 module-level globals.
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated
@@ -14,7 +15,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.services.malware import MalwareScanner
-from soa_api.services.rate_limit import SlidingWindowRateLimiter
+from soa_api.services.rate_limit import RateLimiter, SlidingWindowRateLimiter
 from soa_api.settings import ApiSettings
 from soa_config import SecretStore
 from soa_config.telemetry import Telemetry
@@ -42,7 +43,7 @@ class Dependencies:
     object_store: ObjectStore | None = None
     malware_scanner: MalwareScanner | None = None
     secret_store: SecretStore | None = None
-    rate_limiter: SlidingWindowRateLimiter = field(default_factory=SlidingWindowRateLimiter)
+    rate_limiter: RateLimiter = field(default_factory=SlidingWindowRateLimiter)
     _readiness_checks: dict[str, ReadinessCheck] = field(default_factory=dict)
 
     def register_readiness_check(self, name: str, check: ReadinessCheck) -> None:
@@ -51,14 +52,20 @@ class Dependencies:
         self._readiness_checks[name] = check
 
     async def run_readiness_checks(self) -> list[ReadinessResult]:
-        results: list[ReadinessResult] = []
-        for name, check in self._readiness_checks.items():
+        async def execute(name: str, check: ReadinessCheck) -> ReadinessResult:
             try:
                 healthy = await check()
             except Exception:
                 healthy = False
-            results.append(ReadinessResult(name=name, healthy=healthy))
-        return results
+            return ReadinessResult(name=name, healthy=healthy)
+
+        # Dependency probes are independent; the slowest dependency should
+        # bound readiness latency, not the sum of all network timeouts.
+        return list(
+            await asyncio.gather(
+                *(execute(name, check) for name, check in self._readiness_checks.items())
+            )
+        )
 
 
 def get_dependencies(request: Request) -> Dependencies:
@@ -82,6 +89,13 @@ async def get_db_session(
 
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+def get_settings(deps: Annotated[Dependencies, Depends(get_dependencies)]) -> ApiSettings:
+    return deps.settings
+
+
+SettingsDep = Annotated[ApiSettings, Depends(get_settings)]
 
 
 def get_object_store(

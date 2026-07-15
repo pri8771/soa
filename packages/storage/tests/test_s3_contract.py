@@ -10,7 +10,7 @@ import secrets
 
 import pytest
 
-from soa_storage import ObjectStore
+from soa_storage import ObjectNotFoundError, ObjectStore
 from soa_storage.contract import ObjectStoreContract
 from soa_storage.s3 import S3ObjectStore, S3Settings
 
@@ -57,3 +57,29 @@ async def test_signed_urls_actually_grant_and_deny_access() -> None:
 
         tampered = await client.get(signed.url + "0")
         assert tampered.status_code in (400, 403), "tampered signature must be refused"
+
+
+async def test_presigned_upload_refuses_a_body_larger_than_the_declaration() -> None:
+    """The size limit is enforced by S3 before an oversized object lands."""
+    import httpx
+
+    store = S3ObjectStore(make_settings())
+    await store.ensure_bucket()
+    signed = await store.signed_upload_url(
+        "org-1/doc-2/original.pdf",
+        expires_in_seconds=60,
+        content_type="application/pdf",
+        size_bytes=4,
+        sha256=None,
+    )
+
+    async with httpx.AsyncClient() as client:
+        refused = await client.put(
+            signed.url,
+            content=b"12345",
+            headers={"Content-Type": "application/pdf"},
+        )
+    assert refused.status_code in (400, 403)
+    with pytest.raises(ObjectNotFoundError):
+        # No object may be left behind after storage rejects the signed size.
+        await store.head("org-1/doc-2/original.pdf")

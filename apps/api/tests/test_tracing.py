@@ -26,4 +26,26 @@ def test_api_request_creates_correlated_span() -> None:
     assert span.name == "HTTP GET /health/live"
     assert span.attributes is not None
     assert span.attributes["http.request.method"] == "GET"
+    assert span.attributes["http.route"] == "/health/live"
     assert span.attributes["soa.correlation_id"] == "span-corr-1"
+
+
+def test_dynamic_url_values_never_become_trace_names_or_attributes() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = configure_telemetry(
+        service_name="soa-api",
+        environment="test",
+        profile="none",
+        span_exporter=exporter,
+    )
+    app = create_app(ApiSettings(environment=Environment.TEST), telemetry=telemetry)
+    client = TestClient(app)
+
+    response = client.get(
+        "/orgs/private-customer-slug",
+        headers={"X-Dev-User": "user:admin"},
+    )
+    assert response.status_code == 404
+    (span,) = exporter.get_finished_spans()
+    assert span.name == "HTTP GET /orgs/{organization_slug}"
+    assert "private-customer-slug" not in span.to_json()

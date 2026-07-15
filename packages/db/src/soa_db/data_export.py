@@ -39,6 +39,7 @@ from soa_db.artifacts import Artifact
 from soa_db.audit import AuditEvent
 from soa_db.base import Base
 from soa_db.canonical_payloads import CanonicalPayload
+from soa_db.catalog_selections import CatalogFieldSelection
 from soa_db.corrections import FieldCorrection
 from soa_db.documents import Document
 from soa_db.exports import DeliveryAttempt, ExportJob
@@ -89,6 +90,10 @@ EXPORT_CATEGORIES: tuple[DataCategory, ...] = (
     DataCategory("extracted_fields", "Extracted field values with confidence and evidence."),
     DataCategory("field_corrections", "Human corrections applied during review."),
     DataCategory(
+        "catalog_field_selections",
+        "Exact catalog/version/record identities selected for matched fields.",
+    ),
+    DataCategory(
         "canonical_payloads", "Canonical sales-order payloads produced from the document."
     ),
     DataCategory("review_tasks", "Review tasks raised for the document."),
@@ -125,7 +130,11 @@ async def _rows(session: AsyncSession, stmt: Any) -> list[dict[str, Any]]:
 
 
 async def collect_document_export(
-    session: AsyncSession, *, organization_id: uuid.UUID, document_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    snapshot_at: datetime | None = None,
 ) -> DocumentExport:
     """Collect every category for one document under its organization.
 
@@ -135,9 +144,12 @@ async def collect_document_export(
     across tenants."""
 
     def scoped(model: Any) -> Any:
-        return select(model).where(
+        stmt = select(model).where(
             model.organization_id == organization_id, model.document_id == document_id
         )
+        if snapshot_at is not None:
+            stmt = stmt.where(model.created_at <= snapshot_at)
+        return stmt
 
     # Runs first: stage runs and delivery attempts hang off their ids.
     run_rows = (
@@ -153,12 +165,16 @@ async def collect_document_export(
     stage_stmt = (
         stage_stmt.where(StageRun.run_id.in_(run_ids)) if run_ids else stage_stmt.where(false())
     )
+    if snapshot_at is not None:
+        stage_stmt = stage_stmt.where(StageRun.created_at <= snapshot_at)
     attempt_stmt = select(DeliveryAttempt).where(DeliveryAttempt.organization_id == organization_id)
     attempt_stmt = (
         attempt_stmt.where(DeliveryAttempt.export_job_id.in_(export_job_ids))
         if export_job_ids
         else attempt_stmt.where(false())
     )
+    if snapshot_at is not None:
+        attempt_stmt = attempt_stmt.where(DeliveryAttempt.created_at <= snapshot_at)
     audit_stmt = (
         select(AuditEvent)
         .where(
@@ -168,19 +184,22 @@ async def collect_document_export(
         )
         .order_by(AuditEvent.occurred_at, AuditEvent.id)
     )
+    if snapshot_at is not None:
+        audit_stmt = audit_stmt.where(AuditEvent.occurred_at <= snapshot_at)
+    document_stmt = select(Document).where(
+        Document.organization_id == organization_id, Document.id == document_id
+    )
+    if snapshot_at is not None:
+        document_stmt = document_stmt.where(Document.created_at <= snapshot_at)
 
     records: dict[str, list[dict[str, Any]]] = {
-        "document": await _rows(
-            session,
-            select(Document).where(
-                Document.organization_id == organization_id, Document.id == document_id
-            ),
-        ),
+        "document": await _rows(session, document_stmt),
         "processing_runs": [_row_to_dict(run) for run in run_rows],
         "stage_runs": await _rows(session, stage_stmt),
         "pages": await _rows(session, scoped(DocumentPage).order_by(DocumentPage.page_number)),
         "extracted_fields": await _rows(session, scoped(ExtractedField)),
         "field_corrections": await _rows(session, scoped(FieldCorrection)),
+        "catalog_field_selections": await _rows(session, scoped(CatalogFieldSelection)),
         "canonical_payloads": await _rows(session, scoped(CanonicalPayload)),
         "review_tasks": await _rows(session, scoped(ReviewTask)),
         "review_comments": await _rows(session, scoped(ReviewComment)),

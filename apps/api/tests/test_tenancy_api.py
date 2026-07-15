@@ -78,12 +78,13 @@ def test_invitation_flow_with_safe_duplicates(client: TestClient) -> None:
 
     invite = client.post(
         "/orgs/northstar/invitations",
-        json={"email": "supervisor@northstar.example"},
+        json={"email": "Supervisor@Northstar.Example"},
         headers=REVIEWER,
     )
     assert invite.status_code == 201
     first = invite.json()
     assert first["created"] is True
+    assert first["email"] == "supervisor@northstar.example"
 
     again = client.post(
         "/orgs/northstar/invitations",
@@ -131,6 +132,16 @@ def test_role_assignment_grants_permissions(client: TestClient) -> None:
     )
     assert assign.status_code == 201
 
+    assigned = client.get(f"/orgs/northstar/members/{membership_id}/roles", headers=REVIEWER)
+    assert assigned.status_code == 200
+    assert [role["slug"] for role in assigned.json()] == ["supervisor"]
+    listed_member = next(
+        member
+        for member in client.get("/orgs/northstar/members", headers=REVIEWER).json()["items"]
+        if member["membership_id"] == membership_id
+    )
+    assert [role["slug"] for role in listed_member["assigned_roles"]] == ["supervisor"]
+
     # supervisor template includes members.read
     assert client.get("/orgs/northstar/members", headers=SUPERVISOR).status_code == 200
 
@@ -138,7 +149,71 @@ def test_role_assignment_grants_permissions(client: TestClient) -> None:
         f"/orgs/northstar/members/{membership_id}/roles/supervisor", headers=REVIEWER
     )
     assert revoke.status_code == 200
+    assert revoke.json()["revoked"] is True
+    assert (
+        client.get(f"/orgs/northstar/members/{membership_id}/roles", headers=REVIEWER).json() == []
+    )
     assert client.get("/orgs/northstar/members", headers=SUPERVISOR).status_code == 403
+
+
+def test_last_active_org_admin_cannot_orphan_the_organization(client: TestClient) -> None:
+    assert create_org(client).status_code == 201
+    creator = client.get("/orgs/northstar/members", headers=REVIEWER).json()["items"][0]
+
+    revoke_last = client.delete(
+        f"/orgs/northstar/members/{creator['membership_id']}/roles/org-admin",
+        headers=REVIEWER,
+    )
+    assert revoke_last.status_code == 409
+    assert "At least one active organization admin" in revoke_last.text
+    suspend_last = client.patch(
+        f"/orgs/northstar/members/{creator['membership_id']}",
+        json={"status": "suspended"},
+        headers={**REVIEWER, "If-Match": str(creator["version"])},
+    )
+    assert suspend_last.status_code == 409
+
+    client.post(
+        "/orgs/northstar/invitations",
+        json={"email": "supervisor@northstar.example"},
+        headers=REVIEWER,
+    )
+    second = client.post(
+        "/invitations/accept", json={"organization_slug": "northstar"}, headers=SUPERVISOR
+    ).json()
+    assert (
+        client.post(
+            f"/orgs/northstar/members/{second['membership_id']}/roles",
+            json={"role_slug": "org-admin"},
+            headers=REVIEWER,
+        ).status_code
+        == 201
+    )
+
+    # A self-suspension is allowed only because another active admin exists.
+    suspended = client.patch(
+        f"/orgs/northstar/members/{creator['membership_id']}",
+        json={"status": "suspended"},
+        headers={**REVIEWER, "If-Match": str(creator["version"])},
+    )
+    assert suspended.status_code == 200, suspended.text
+
+    # The remaining admin still cannot remove their own final grant/access.
+    assert (
+        client.delete(
+            f"/orgs/northstar/members/{second['membership_id']}/roles/org-admin",
+            headers=SUPERVISOR,
+        ).status_code
+        == 409
+    )
+    assert (
+        client.patch(
+            f"/orgs/northstar/members/{second['membership_id']}",
+            json={"status": "removed"},
+            headers={**SUPERVISOR, "If-Match": str(second["version"])},
+        ).status_code
+        == 409
+    )
 
 
 def test_membership_status_change_with_optimistic_concurrency(client: TestClient) -> None:

@@ -15,6 +15,7 @@ in metadata columns.
 
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -236,6 +237,13 @@ class DocumentRepository(ScopedRepository[Document]):
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def get_many(self, document_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, Document]:
+        if not document_ids:
+            return {}
+        stmt = self._scoped_select().where(Document.id.in_(document_ids))
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return {row.id: row for row in rows}
+
 
 async def create_document(
     session: AsyncSession,
@@ -287,9 +295,7 @@ async def create_document(
         summary={
             "stream_id": str(stream_id),
             "source_channel": source_channel.value,
-            "content_sha256": content_sha256,
             "size_bytes": size_bytes,
-            "client_reference": client_reference,
         },
     )
     return document

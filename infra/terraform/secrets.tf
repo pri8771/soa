@@ -24,6 +24,27 @@ resource "google_secret_manager_secret_version" "database_url" {
   )
 }
 
+# The schema-owner credential is available only to the one-shot migration
+# service account. API and worker identities have no IAM access to it.
+resource "google_secret_manager_secret" "migrator_database_url" {
+  secret_id = "${local.name_prefix}-migrator-database-url"
+  labels    = local.labels
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "migrator_database_url" {
+  secret = google_secret_manager_secret.migrator_database_url.id
+  secret_data = format(
+    "postgresql+psycopg://%s:%s@%s:5432/soa",
+    google_sql_user.migrator.name,
+    random_password.db_migrator.result,
+    google_sql_database_instance.primary.private_ip_address,
+  )
+}
+
 resource "google_secret_manager_secret" "app_secret_key" {
   secret_id = "${local.name_prefix}-app-secret-key"
   labels    = local.labels
@@ -63,4 +84,25 @@ resource "random_password" "outbox_signing_secret" {
 resource "google_secret_manager_secret_version" "outbox_signing_secret" {
   secret      = google_secret_manager_secret.outbox_signing_secret.id
   secret_data = random_password.outbox_signing_secret.result
+}
+
+# A separate credential protects the provider-neutral raw-MIME intake seam.
+# It is not reused for sessions, rate-limit HMACs, or outbound webhooks.
+resource "google_secret_manager_secret" "email_intake_secret" {
+  secret_id = "${local.name_prefix}-email-intake-secret"
+  labels    = local.labels
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
+resource "random_password" "email_intake_secret" {
+  length  = 48
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "email_intake_secret" {
+  secret      = google_secret_manager_secret.email_intake_secret.id
+  secret_data = random_password.email_intake_secret.result
 }

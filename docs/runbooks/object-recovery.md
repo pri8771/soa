@@ -21,21 +21,28 @@ finds an object missing or its hash mismatched (STO-005)
 
 ## Recovery
 
-- **Missing object, source recoverable:** re-derive it. Most artifacts
-  are outputs of a processing stage — reprocess the document (PRC-013) to
-  regenerate the page rasters/text/canonical payload; the manifest hash
-  then matches again.
+- **Missing derived object:** restore the exact object/version from backup and
+  verify it against the existing artifact hash. A normal reprocess creates a
+  new immutable run and new run-scoped artifacts; it does **not** repair the
+  missing historical key. No generic in-place derived-artifact rebuild tool is
+  implemented today.
 - **Original upload missing:** the source document object cannot be
   re-derived. If it existed in a backup window, restore it (see
   [`restore`](restore.md)); otherwise the document is unrecoverable and
   must be re-ingested by the customer.
-- **Mismatch:** quarantine the bad object, re-derive or restore the
-  correct bytes, and confirm the hash.
+- **Mismatch:** preserve/quarantine the bad bytes for investigation, restore
+  the exact recorded version from backup, and confirm the hash. If no matching
+  backup exists, do not alter the immutable artifact row: keep the discrepancy
+  open and downloads fail-closed, then create a new processing run for a new
+  current artifact rather than overwriting history.
 
 ## Verification
 
-- `make verify-artifacts` reports zero discrepancies for the affected
-  documents; a download URL issues successfully and the bytes hash-match.
+- For a restored artifact, `make verify-artifacts` reports no discrepancy for
+  its key and a download URL issues successfully with matching bytes. If exact
+  recovery is impossible, the historical discrepancy remains explicitly open,
+  its download stays unavailable, and the replacement run/artifact is verified
+  separately; a new run must not be reported as repair of the old key.
 
 ## Communication
 

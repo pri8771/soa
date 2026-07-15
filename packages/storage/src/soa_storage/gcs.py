@@ -78,7 +78,7 @@ class GcsObjectStore:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            from google.cloud import storage  # type: ignore[import-untyped, attr-defined]
+            from google.cloud import storage  # type: ignore[attr-defined]
 
             self._client = storage.Client(project=self._settings.project)
         return self._client
@@ -219,8 +219,19 @@ class GcsObjectStore:
         return sorted(keys)
 
     async def signed_upload_url(
-        self, key: str, *, expires_in_seconds: int, content_type: str
+        self,
+        key: str,
+        *,
+        expires_in_seconds: int,
+        content_type: str,
+        size_bytes: int,
+        sha256: str | None = None,
     ) -> SignedUrl:
+        required_headers = {
+            "x-goog-content-length-range": f"{size_bytes},{size_bytes}",
+            **({"x-goog-meta-sha256": sha256} if sha256 is not None else {}),
+        }
+
         def _sign() -> str:
             return str(
                 self._blob(key).generate_signed_url(
@@ -228,6 +239,7 @@ class GcsObjectStore:
                     expiration=timedelta(seconds=expires_in_seconds),
                     method="PUT",
                     content_type=content_type,
+                    **({"headers": required_headers} if required_headers else {}),
                     **self._signed_url_credentials(),
                 )
             )
@@ -237,6 +249,7 @@ class GcsObjectStore:
             url=url,
             expires_at=_now() + timedelta(seconds=expires_in_seconds),
             method="PUT",
+            required_headers=required_headers,
         )
 
     async def signed_download_url(self, key: str, *, expires_in_seconds: int) -> SignedUrl:

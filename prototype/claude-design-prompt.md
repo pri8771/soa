@@ -1,3 +1,12 @@
+# Historical skills-first prototype prompt
+
+> **Status:** exploratory design input only, retained for provenance. It is not
+> the current application architecture, navigation contract, or implementation
+> status. The shipped app uses the organization/process/stream model and real
+> API routes; sender-template learning and several screens below are not built.
+> Use `docs/UI_UX_BLUEPRINT.md`, `docs/PRODUCT.md`, and
+> `docs/PRODUCTION_READINESS_AUDIT.md` as the current sources of truth.
+
 Build a high-fidelity, clickable prototype of "SOA" — a B2B intelligent document operations platform that converts customer purchase orders into validated, ERP-ready sales orders. This is a design prototype only: no real backend, use realistic mock/seeded data throughout. Build it as a single React app (Tailwind CSS utility classes) with client-side view-state navigation (a simple screen switcher is fine — no real router needed) so every screen is reachable and clickable.
 
 This prompt supersedes any earlier version — the navigation model below is "skills-first" (similar in spirit to ABBYY Vantage), not the admin-hierarchy nav.

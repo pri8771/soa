@@ -66,24 +66,24 @@ def execution_fingerprint(material: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-async def resolve_runtime_pins(
+def snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
+    material = {key: value for key, value in snapshot.items() if key != "fingerprint"}
+    return execution_fingerprint(material)
+
+
+async def _resolve_snapshot_pins(
     session: AsyncSession,
     context: OrganizationContext,
     *,
-    stream_version_id: uuid.UUID | None,
+    stream_version_id: uuid.UUID,
+    snapshot: dict[str, Any],
 ) -> RuntimePins:
-    if stream_version_id is None:
-        raise RuntimePinError("the stream has no active published configuration")
-    version = await StreamVersionRepository(session, context).get(stream_version_id)
-    if version is None or version.state not in ("published", "superseded"):
-        raise RuntimePinError("the active stream version is missing or mutable")
-    snapshot = version.resolved_snapshot
-    if not isinstance(snapshot, dict):
-        raise RuntimePinError("the active stream version has no resolved snapshot")
     config = snapshot.get("config")
     fingerprint = snapshot.get("fingerprint")
     if not isinstance(config, dict) or not isinstance(fingerprint, str):
-        raise RuntimePinError("the active stream snapshot is incomplete")
+        raise RuntimePinError("the stream snapshot is incomplete")
+    if snapshot_fingerprint(snapshot) != fingerprint:
+        raise RuntimePinError("the stream snapshot fingerprint is invalid")
 
     provider_policy_id = _uuid(config, "provider_policy_version_id", required=True)
     if provider_policy_id is None:  # narrowed by required=True; keeps -O behavior identical
@@ -136,9 +136,60 @@ async def resolve_runtime_pins(
     )
 
 
+async def resolve_runtime_pins(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    stream_version_id: uuid.UUID | None,
+) -> RuntimePins:
+    if stream_version_id is None:
+        raise RuntimePinError("the stream has no active published configuration")
+    version = await StreamVersionRepository(session, context).get(stream_version_id)
+    if version is None or version.state not in ("published", "superseded"):
+        raise RuntimePinError("the active stream version is missing or mutable")
+    snapshot = version.resolved_snapshot
+    if not isinstance(snapshot, dict):
+        raise RuntimePinError("the active stream version has no resolved snapshot")
+    return await _resolve_snapshot_pins(
+        session,
+        context,
+        stream_version_id=stream_version_id,
+        snapshot=dict(snapshot),
+    )
+
+
+async def resolve_evaluation_runtime_pins(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    stream_version_id: uuid.UUID,
+    candidate_snapshot: dict[str, Any],
+) -> RuntimePins:
+    """Pin a candidate draft for a server evaluation without publishing it.
+
+    The stream row may still be a draft, but every executable dependency
+    (schema, rules, provider/confidence policy, and optional instructions)
+    remains independently immutable.  The resolved snapshot itself is copied
+    into the evaluation run and authenticated here, so later draft edits
+    cannot change a queued or retried evaluation.
+    """
+
+    version = await StreamVersionRepository(session, context).get(stream_version_id)
+    if version is None:
+        raise RuntimePinError("the candidate stream version is missing")
+    return await _resolve_snapshot_pins(
+        session,
+        context,
+        stream_version_id=stream_version_id,
+        snapshot=dict(candidate_snapshot),
+    )
+
+
 __all__ = [
     "RuntimePinError",
     "RuntimePins",
     "execution_fingerprint",
+    "resolve_evaluation_runtime_pins",
     "resolve_runtime_pins",
+    "snapshot_fingerprint",
 ]

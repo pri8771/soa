@@ -43,23 +43,36 @@ type UrlCache = Map<string, { url: string; expiresAt: number }>;
 
 function useSignedUrl(organizationSlug: string) {
   const cache = useRef<UrlCache>(new Map());
+  const inFlight = useRef(new Map<string, Promise<string>>());
   return useCallback(
     async (artifactId: string, options?: { force?: boolean }): Promise<string> => {
       const hit = cache.current.get(artifactId);
       if (!options?.force && hit && hit.expiresAt - Date.now() > RENEWAL_MARGIN_MS) {
         return hit.url;
       }
-      const signed = await requestArtifactDownload(organizationSlug, artifactId);
-      cache.current.delete(artifactId);
-      cache.current.set(artifactId, {
-        url: signed.url,
-        expiresAt: new Date(signed.expires_at).getTime(),
+      const pending = inFlight.current.get(artifactId);
+      if (!options?.force && pending !== undefined) return pending;
+
+      const request = requestArtifactDownload(organizationSlug, artifactId).then((signed) => {
+        cache.current.delete(artifactId);
+        cache.current.set(artifactId, {
+          url: signed.url,
+          expiresAt: new Date(signed.expires_at).getTime(),
+        });
+        while (cache.current.size > URL_CACHE_LIMIT) {
+          const oldest = cache.current.keys().next().value as string;
+          cache.current.delete(oldest);
+        }
+        return signed.url;
       });
-      while (cache.current.size > URL_CACHE_LIMIT) {
-        const oldest = cache.current.keys().next().value as string;
-        cache.current.delete(oldest);
+      if (!options?.force) inFlight.current.set(artifactId, request);
+      try {
+        return await request;
+      } finally {
+        if (inFlight.current.get(artifactId) === request) {
+          inFlight.current.delete(artifactId);
+        }
       }
-      return signed.url;
     },
     [organizationSlug],
   );
@@ -122,6 +135,57 @@ function PageImage({
         void resolve(artifactId, { force: true }).then(setUrl, () => setFailed(true));
       }}
     />
+  );
+}
+
+function ThumbnailImage({
+  artifactId,
+  alt,
+  resolve,
+  eager,
+}: {
+  artifactId: string;
+  alt: string;
+  resolve: (artifactId: string, options?: { force?: boolean }) => Promise<string>;
+  eager: boolean;
+}) {
+  const host = useRef<HTMLSpanElement>(null);
+  const [intersected, setIntersected] = useState(false);
+
+  useEffect(() => {
+    if (eager || intersected || typeof IntersectionObserver === "undefined") return;
+    const node = host.current;
+    if (node === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIntersected(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "160px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [eager, intersected]);
+
+  return (
+    <span ref={host} style={{ display: "block", minHeight: "5.5rem" }}>
+      {eager || intersected ? (
+        <PageImage
+          artifactId={artifactId}
+          alt={alt}
+          resolve={resolve}
+          loading="lazy"
+          style={{ width: "100%", display: "block" }}
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          style={{ display: "block", height: "5.5rem", background: "var(--soa-surface-sunken)" }}
+        />
+      )}
+    </span>
   );
 }
 
@@ -214,6 +278,9 @@ export function DocumentViewer({
     } else if (event.key === "-") {
       setZoomIndex((index) => Math.max(index - 1, 0));
     } else if (event.key.toLowerCase() === "r") {
+      // Rotation is a viewer-scoped shortcut. Do not also bubble the same
+      // key to Review Studio's global reject/escalate shortcut.
+      event.stopPropagation();
       setRotation((value) => (value + 90) % 360);
     }
   };
@@ -398,13 +465,13 @@ export function DocumentViewer({
                 width: "4.5rem",
               }}
             >
-              {/* Lazy thumbnails: offscreen pages are never fetched. */}
-              <PageImage
+              {/* Keep every page keyboard-navigable, but resolve signed URLs
+                  only near the current page or viewport. */}
+              <ThumbnailImage
                 artifactId={page.image_artifact_id}
                 alt={`Page ${page.page_number} thumbnail`}
                 resolve={resolve}
-                loading="lazy"
-                style={{ width: "100%", display: "block" }}
+                eager={Math.abs(page.page_number - pageNumber) <= 1}
               />
               <span style={{ font: "var(--soa-font-caption)" }}>{page.page_number}</span>
             </button>
@@ -460,6 +527,7 @@ export function DocumentViewer({
                       <button
                         key={entry.id}
                         type="button"
+                        data-evidence-id={entry.id}
                         aria-label={`Evidence for ${entry.label}: ${description}`}
                         onClick={() => onEvidenceSelect?.(entry.id)}
                         style={{
@@ -484,6 +552,7 @@ export function DocumentViewer({
                     <button
                       key={entry.id}
                       type="button"
+                      data-evidence-id={entry.id}
                       aria-label={`Evidence for ${entry.label}: ${description}`}
                       onClick={() => onEvidenceSelect?.(entry.id)}
                       style={{

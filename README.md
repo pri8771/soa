@@ -6,7 +6,11 @@ SOA is a multi-tenant B2B platform that converts incoming business documents int
 
 > Turn incoming purchase orders into validated, ERP-ready sales orders—with every value traceable to the original document.
 
-SOA is not an OCR upload utility. It combines document intake, native text extraction, OCR, classification, packet splitting, schema-constrained LLM extraction, business validation, master-data matching, human review, approval, and reliable delivery into downstream systems.
+SOA is not an OCR upload utility. The current launch path combines document
+intake, native text/OCR, schema-constrained extraction, business validation,
+master-data matching, human review, approval, and reliable delivery into
+downstream systems. Classification/packet splitting is a later evaluated
+capability; the first release enforces one sales order per input.
 
 ## Core hierarchy
 
@@ -34,7 +38,9 @@ the remaining release blockers and verified gates are tracked in
 
 ## Getting started
 
-Prerequisites: Node 22 (`.nvmrc`), pnpm 10, Python 3.11 (`.python-version`), [uv](https://docs.astral.sh/uv/), Docker, and GNU Make.
+Prerequisites: Node 22 (`.nvmrc`), pnpm 10, Python 3.11
+(`.python-version`), [uv](https://docs.astral.sh/uv/), PostgreSQL, and GNU
+Make. Docker is optional for local supporting services.
 
 ```bash
 make bootstrap       # install toolchains/dependencies and copy env template

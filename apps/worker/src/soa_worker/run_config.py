@@ -18,16 +18,36 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from soa_config import SecretReference, SecretStore
+from soa_config import (
+    SecretNotFoundError,
+    SecretReference,
+    SecretStore,
+    SecretStoreError,
+    SecretStoreUnavailableError,
+)
+from soa_db.documents import Document
 from soa_db.repository import OrganizationContext
-from soa_db.runs import ProcessingRun
+from soa_db.runs import ProcessingRun, StageRun
+from soa_db.tenant_guard import bind_tenant
 from soa_normalize import NormalizationContext
 from soa_rules import ConfidencePolicy
 from soa_storage import ObjectStore
-from soa_worker.extraction.provider import ExtractionProvider, FieldSpec
-from soa_worker.orchestrator import StageExecutor
+from soa_worker.extraction.provider import (
+    ExtractionProvider,
+    ExtractionProviderError,
+    ExtractionRequest,
+    ExtractionResult,
+    FieldSpec,
+)
+from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
 from soa_worker.pipeline import PipelineConfig, build_executors
+from soa_worker.provider_router import RoutingPolicy
 from soa_worker.providers import Capability, create_provider, provider_info
+from soa_worker.rendering import RenderLimits
+from soa_worker.routed_extraction import (
+    ConfiguredExtractionProvider,
+    RoutedExtractionProvider,
+)
 
 
 class RunConfigError(ValueError):
@@ -35,13 +55,44 @@ class RunConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class ResolvedProviderCandidate:
+    provider_name: str
+    credential_reference: SecretReference | None
+    estimated_cost_cents: int | None
+
+
+@dataclass(frozen=True)
 class ResolvedRunConfig:
     fingerprint: str
     provider_name: str
+    provider_candidates: tuple[ResolvedProviderCandidate, ...]
+    routing_policy: RoutingPolicy
     pipeline: PipelineConfig
     instructions: dict[str, Any] | None
     instruction_reference: str | None
     credential_reference: SecretReference | None
+
+
+class _DeferredExtractionProvider:
+    """Non-secret placeholder for stages that cannot invoke extraction.
+
+    A hosted credential is deliberately resolved only when the orchestrator
+    is about to execute the extracting stage.  The other five stages still
+    need the pinned pipeline configuration, but constructing their executors
+    with a real hosted adapter would read the tenant secret on every stage and
+    retain it until that stage finished.
+    """
+
+    @property
+    def name(self) -> str:
+        return "deferred"
+
+    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+        del request
+        raise ExtractionProviderError(
+            "the extraction provider was not resolved for this stage",
+            retryable=False,
+        )
 
 
 def snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
@@ -79,6 +130,46 @@ def _json_object(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RunConfigError("the pinned stream version has no resolved snapshot")
     return dict(value)
+
+
+def _render_limits(config: Mapping[str, Any]) -> RenderLimits:
+    """Resolve positive, fail-closed render budgets from the immutable snapshot."""
+
+    platform = RenderLimits()
+
+    def bounded_int(key: str, ceiling: int) -> int:
+        raw = config.get(key, ceiling)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as error:
+            raise RunConfigError(f"the pinned {key} render limit is invalid") from error
+        if value <= 0:
+            raise RunConfigError(f"the pinned {key} render limit must be positive")
+        return min(value, ceiling)
+
+    def bounded_float(key: str, ceiling: float) -> float:
+        raw = config.get(key, ceiling)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as error:
+            raise RunConfigError(f"the pinned {key} render limit is invalid") from error
+        if value <= 0:
+            raise RunConfigError(f"the pinned {key} render limit must be positive")
+        return min(value, ceiling)
+
+    total_pixels = bounded_int("max_total_pixels", platform.max_total_pixels)
+    return RenderLimits(
+        max_pages=bounded_int("max_pages", platform.max_pages),
+        max_pixels_per_page=min(platform.max_pixels_per_page, total_pixels),
+        max_total_pixels=total_pixels,
+        max_decompressed_bytes=bounded_int(
+            "max_decompressed_bytes", platform.max_decompressed_bytes
+        ),
+        dpi=platform.dpi,
+        timeout_seconds=bounded_float("max_conversion_seconds", platform.timeout_seconds),
+        cpu_seconds=platform.cpu_seconds,
+        memory_bytes=platform.memory_bytes,
+    )
 
 
 async def verify_run_config(
@@ -238,6 +329,143 @@ def _required_uuid(config: Mapping[str, Any], key: str) -> uuid.UUID:
         raise RunConfigError(f"the pinned config is missing a valid {key}") from error
 
 
+def _optional_nonnegative_int(definition: Mapping[str, Any], key: str) -> int | None:
+    value = definition.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RunConfigError(f"the pinned provider policy has an invalid {key}")
+    return value
+
+
+def _secret_reference(value: object, *, field: str) -> SecretReference | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RunConfigError(f"the pinned provider policy has an invalid {field}")
+    try:
+        return SecretReference.parse(value)
+    except ValueError as error:
+        raise RunConfigError(f"the pinned provider policy has an invalid {field}") from error
+
+
+def _provider_candidates(
+    provider_policy: Mapping[str, Any],
+    run: ProcessingRun,
+) -> tuple[ResolvedProviderCandidate, ...]:
+    primary_name = provider_policy.get("provider_name")
+    if not isinstance(primary_name, str) or not primary_name.strip():
+        raise RunConfigError("the pinned provider policy has no provider name")
+    primary_reference = _secret_reference(
+        provider_policy.get("credential_ref"), field="credential_ref"
+    )
+    pinned_primary = str(primary_reference) if primary_reference is not None else None
+    if run.provider_credential_ref != pinned_primary:
+        raise RunConfigError("the run's credential pin does not match its provider policy")
+
+    candidates = [
+        ResolvedProviderCandidate(
+            provider_name=primary_name,
+            credential_reference=primary_reference,
+            estimated_cost_cents=_optional_nonnegative_int(provider_policy, "estimated_cost_cents"),
+        )
+    ]
+    raw_fallbacks = provider_policy.get("fallback_providers", [])
+    if not isinstance(raw_fallbacks, list) or len(raw_fallbacks) > 7:
+        raise RunConfigError("the pinned provider fallback chain is invalid or too long")
+    names = {primary_name}
+    for index, raw in enumerate(raw_fallbacks):
+        if not isinstance(raw, dict):
+            raise RunConfigError("the pinned provider fallback chain contains an invalid entry")
+        name = raw.get("provider_name")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise RunConfigError("the pinned provider fallback chain contains an invalid name")
+        names.add(name)
+        candidates.append(
+            ResolvedProviderCandidate(
+                provider_name=name,
+                credential_reference=_secret_reference(
+                    raw.get("credential_ref"),
+                    field=f"fallback_providers[{index}].credential_ref",
+                ),
+                estimated_cost_cents=_optional_nonnegative_int(raw, "estimated_cost_cents"),
+            )
+        )
+    return tuple(candidates)
+
+
+def _routing_policy(
+    provider_policy: Mapping[str, Any],
+    candidates: tuple[ResolvedProviderCandidate, ...],
+) -> RoutingPolicy:
+    def boolean(key: str, default: bool = False) -> bool:
+        value = provider_policy.get(key, default)
+        if not isinstance(value, bool):
+            raise RunConfigError(f"the pinned provider policy has an invalid {key}")
+        return value
+
+    raw_regions = provider_policy.get("allowed_regions")
+    regions: tuple[str, ...] | None = None
+    if raw_regions is not None:
+        if (
+            not isinstance(raw_regions, list)
+            or not raw_regions
+            or not all(
+                isinstance(region, str) and region and region == region.strip().lower()
+                for region in raw_regions
+            )
+            or len(set(raw_regions)) != len(raw_regions)
+        ):
+            raise RunConfigError("the pinned provider policy has invalid allowed regions")
+        regions = tuple(raw_regions)
+    raw_quality = provider_policy.get("min_quality", 0.0)
+    if (
+        isinstance(raw_quality, bool)
+        or not isinstance(raw_quality, int | float)
+        or not 0 <= float(raw_quality) <= 1
+    ):
+        raise RunConfigError("the pinned provider policy has an invalid quality floor")
+    evaluated_scores: dict[str, float] = {}
+
+    def add_evaluated_score(name: str, raw: object) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, bool) or not isinstance(raw, int | float) or not 0 <= float(raw) <= 1:
+            raise RunConfigError(
+                f"the pinned provider policy has invalid evaluated quality for {name!r}"
+            )
+        evaluated_scores[name] = float(raw)
+
+    add_evaluated_score(
+        candidates[0].provider_name,
+        provider_policy.get("evaluated_quality_score"),
+    )
+    raw_fallbacks = provider_policy.get("fallback_providers", [])
+    if not isinstance(raw_fallbacks, list):
+        raise RunConfigError("the pinned provider fallback chain is invalid")
+    for candidate, raw in zip(candidates[1:], raw_fallbacks, strict=True):
+        if not isinstance(raw, dict):
+            raise RunConfigError("the pinned provider fallback chain is invalid")
+        add_evaluated_score(
+            candidate.provider_name,
+            raw.get("evaluated_quality_score"),
+        )
+    budget = _optional_nonnegative_int(provider_policy, "budget_cents")
+    names = tuple(candidate.provider_name for candidate in candidates)
+    return RoutingPolicy(
+        local_only=boolean("local_only"),
+        allowed_regions=regions,
+        allow_third_party_processing=boolean("allow_third_party_processing"),
+        allow_content_retention=boolean("allow_content_retention"),
+        allow_training_on_content=boolean("allow_training_on_content"),
+        allowed_providers=names,
+        preferred_order=names,
+        budget_cents=budget,
+        evaluated_quality_scores=evaluated_scores,
+        min_quality=float(raw_quality),
+    )
+
+
 def _field_specs(
     definition: Mapping[str, Any],
 ) -> tuple[tuple[FieldSpec, ...], dict[str, str], dict[str, str]]:
@@ -341,35 +569,40 @@ async def load_resolved_run_config(
     rules = rule_set.get("rules")
     if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
         raise RunConfigError("the pinned rule set has no rules")
-    provider_name = provider_policy.get("provider_name")
     capabilities = provider_policy.get("capabilities")
-    if not isinstance(provider_name, str) or not provider_name:
-        raise RunConfigError("the pinned provider policy has no provider name")
     if not isinstance(capabilities, list) or "field_extraction" not in capabilities:
         raise RunConfigError("the pinned provider policy cannot perform field extraction")
-    info = provider_info(Capability.FIELD_EXTRACTION, provider_name)
-    allow_third_party = bool(provider_policy.get("allow_third_party_processing", False))
-    allow_retention = bool(provider_policy.get("allow_content_retention", False))
-    allow_training = bool(provider_policy.get("allow_training_on_content", False))
-    if info.data_policy.sends_content_to_third_party and not allow_third_party:
-        raise RunConfigError("the pinned policy does not allow third-party processing")
-    if info.data_policy.retains_content and not allow_retention:
-        raise RunConfigError("the pinned policy does not allow provider retention")
-    if info.data_policy.uses_content_for_training and not allow_training:
-        raise RunConfigError("the pinned policy does not allow training on content")
-    credential_reference: SecretReference | None = None
-    policy_credential = provider_policy.get("credential_ref")
-    if policy_credential:
-        if run.provider_credential_ref != str(policy_credential):
-            raise RunConfigError("the run's credential pin does not match its provider policy")
+    candidates = _provider_candidates(provider_policy, run)
+    routing_policy = _routing_policy(provider_policy, candidates)
+    for candidate in candidates:
         try:
-            credential_reference = SecretReference.parse(str(policy_credential))
-        except ValueError as error:
-            raise RunConfigError("the pinned provider credential reference is invalid") from error
-    elif run.provider_credential_ref is not None:
-        raise RunConfigError("the run pins a credential absent from its provider policy")
-    if info.data_policy.sends_content_to_third_party and credential_reference is None:
-        raise RunConfigError("the hosted provider policy has no credential reference")
+            info = provider_info(Capability.FIELD_EXTRACTION, candidate.provider_name)
+        except Exception as error:
+            raise RunConfigError(
+                f"pinned extraction provider {candidate.provider_name!r} is unavailable"
+            ) from error
+        if (
+            info.data_policy.sends_content_to_third_party
+            and not routing_policy.allow_third_party_processing
+        ):
+            raise RunConfigError(
+                f"the pinned policy does not allow third-party provider {candidate.provider_name!r}"
+            )
+        if info.data_policy.retains_content and not routing_policy.allow_content_retention:
+            raise RunConfigError(
+                f"the pinned policy does not allow retention by {candidate.provider_name!r}"
+            )
+        if (
+            info.data_policy.uses_content_for_training
+            and not routing_policy.allow_training_on_content
+        ):
+            raise RunConfigError(
+                f"the pinned policy does not allow training by {candidate.provider_name!r}"
+            )
+        if info.data_policy.sends_content_to_third_party and candidate.credential_reference is None:
+            raise RunConfigError(
+                f"hosted provider {candidate.provider_name!r} has no credential reference"
+            )
     languages = config.get("languages", ["en"])
     if (
         not isinstance(languages, list)
@@ -392,18 +625,42 @@ async def load_resolved_run_config(
         normalization=NormalizationContext(locale=locale, currency=currency),
         normalizer_overrides=normalizers,
         confidence_policy=_confidence_policy(confidence_definition, confidence_version),
+        render_limits=_render_limits(config),
         languages=tuple(language.lower() for language in languages),
         stream_config=config,
         input_contract=input_contract,
     )
     return ResolvedRunConfig(
         fingerprint=str(effective_snapshot["fingerprint"]),
-        provider_name=provider_name,
+        provider_name=candidates[0].provider_name,
+        provider_candidates=candidates,
+        routing_policy=routing_policy,
         pipeline=pipeline,
         instructions=instructions,
         instruction_reference=instruction_reference,
-        credential_reference=credential_reference,
+        credential_reference=candidates[0].credential_reference,
     )
+
+
+def _bind_routing_execution(
+    executors: dict[str, StageExecutor],
+    provider: RoutedExtractionProvider,
+) -> dict[str, StageExecutor]:
+    extraction = executors.get("extracting")
+    if extraction is None:
+        raise RunConfigError("the pipeline has no extraction executor")
+
+    async def execute_with_routing_context(
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        stage_run: StageRun,
+    ) -> StageOutcome:
+        with provider.bind_execution(session, context, run, stage_run):
+            return await extraction(session, context, run, document, stage_run)
+
+    return {**executors, "extracting": execute_with_routing_context}
 
 
 class ResolvedExecutorFactory:
@@ -412,13 +669,19 @@ class ResolvedExecutorFactory:
     def __init__(self, store: ObjectStore, secret_store: SecretStore) -> None:
         self._store = store
         self._secret_store = secret_store
+        # Credential-free adapters are safe to reuse for every stage. Hosted
+        # runs use a separate cache containing only the deferred provider.
         self._cache: dict[tuple[uuid.UUID, uuid.UUID, str], dict[str, StageExecutor]] = {}
+        self._non_extract_cache: dict[
+            tuple[uuid.UUID, uuid.UUID, str], dict[str, StageExecutor]
+        ] = {}
 
     async def __call__(
         self,
         session: AsyncSession,
         context: OrganizationContext,
         run: ProcessingRun,
+        stage: str,
     ) -> Mapping[str, StageExecutor]:
         snapshot = await verify_run_config(session, context, run)
         if run.stream_version_id is None or run.config_fingerprint is None:
@@ -429,41 +692,119 @@ class ResolvedExecutorFactory:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
+        if stage != "extracting":
+            cached = self._non_extract_cache.get(key)
+            if cached is not None:
+                return cached
         resolved = await load_resolved_run_config(
             session,
             context,
             run,
             snapshot=snapshot,
         )
-        credential_value = None
-        if resolved.credential_reference is not None:
-            try:
-                credential_value = await self._secret_store.resolve(resolved.credential_reference)
-            except Exception as error:
-                raise RunConfigError("the pinned provider credential cannot be resolved") from error
-        runtime: dict[str, Any] = {}
-        if resolved.provider_name != "mock":
-            runtime = {
-                "instructions": resolved.instructions,
-                "instruction_reference": resolved.instruction_reference,
-                "credential_value": credential_value,
-            }
-        provider = create_provider(
-            Capability.FIELD_EXTRACTION,
-            resolved.provider_name,
-            **runtime,
+        has_tenant_credentials = any(
+            candidate.credential_reference is not None for candidate in resolved.provider_candidates
         )
-        if not isinstance(provider, ExtractionProvider):
-            raise RunConfigError(
-                f"provider {resolved.provider_name!r} does not implement field extraction"
+        if stage != "extracting" and has_tenant_credentials:
+            # These executors close over no secret material.  The deferred
+            # adapter is unreachable because the orchestrator selects exactly
+            # the executor for ``stage``; it remains fail closed if that
+            # invariant is ever violated.
+            executors = build_executors(
+                self._store,
+                _DeferredExtractionProvider(),
+                resolved.pipeline,
             )
-        executors = build_executors(self._store, provider, resolved.pipeline)
-        self._cache[key] = executors
+            self._non_extract_cache[key] = executors
+            return executors
+        credential_values: list[str | None] = []
+        release_database = has_tenant_credentials and session is not None
+        if release_database:
+            # Control-plane pins are fully snapshotted. Release SQL before a
+            # cloud Secret Manager round trip; restore the tenant binding for
+            # either executor work or durable failure recording.
+            await session.commit()
+        try:
+            for candidate in resolved.provider_candidates:
+                credential_value = None
+                if candidate.credential_reference is not None:
+                    try:
+                        credential_value = await self._secret_store.resolve(
+                            candidate.credential_reference
+                        )
+                    except SecretNotFoundError as error:
+                        raise RunConfigError(
+                            f"credential for provider {candidate.provider_name!r} "
+                            "is missing or revoked"
+                        ) from error
+                    except SecretStoreUnavailableError as error:
+                        raise StageExecutionError(
+                            "the provider credential service is temporarily unavailable",
+                            retryable=True,
+                        ) from error
+                    except SecretStoreError as error:
+                        raise RunConfigError(
+                            f"credential for provider {candidate.provider_name!r} is invalid"
+                        ) from error
+                credential_values.append(credential_value)
+        finally:
+            if release_database:
+                await bind_tenant(session, context.organization_id)
+
+        configured: list[ConfiguredExtractionProvider] = []
+        for candidate, credential_value in zip(
+            resolved.provider_candidates,
+            credential_values,
+            strict=True,
+        ):
+            runtime: dict[str, Any] = {}
+            if candidate.provider_name != "mock":
+                runtime = {
+                    "instructions": resolved.instructions,
+                    "instruction_reference": resolved.instruction_reference,
+                    "credential_value": credential_value,
+                }
+            try:
+                provider = create_provider(
+                    Capability.FIELD_EXTRACTION,
+                    candidate.provider_name,
+                    **runtime,
+                )
+            except Exception as error:
+                raise RunConfigError(
+                    f"provider {candidate.provider_name!r} could not be constructed"
+                ) from error
+            if not isinstance(provider, ExtractionProvider):
+                raise RunConfigError(
+                    f"provider {candidate.provider_name!r} does not implement field extraction"
+                )
+            configured.append(
+                ConfiguredExtractionProvider(
+                    provider=provider,
+                    estimated_cost_cents=candidate.estimated_cost_cents,
+                )
+            )
+        routed_provider = RoutedExtractionProvider(
+            tuple(configured),
+            policy=resolved.routing_policy,
+            language=resolved.pipeline.languages[0],
+        )
+        executors = _bind_routing_execution(
+            build_executors(self._store, routed_provider, resolved.pipeline),
+            routed_provider,
+        )
+        # Never cache an adapter containing resolved tenant secret material.
+        # Re-resolving on each stage call makes revocation effective without a
+        # worker restart. Credential-free local/mock pipelines remain safe to
+        # share across runs and keep the fast path.
+        if not has_tenant_credentials:
+            self._cache[key] = executors
         return executors
 
 
 __all__ = [
     "ResolvedExecutorFactory",
+    "ResolvedProviderCandidate",
     "ResolvedRunConfig",
     "RunConfigError",
     "execution_fingerprint",

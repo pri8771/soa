@@ -9,8 +9,8 @@
  * stage attempts — provider, latency, warnings, safe errors — refreshing
  * itself in place while the pipeline moves (scroll and dialogs survive),
  * and offers retry/reprocess with the consequence spelled out before and
- * after. Extracted data, validation, and delivery panels are honest
- * placeholders until REV/EXP land — never fake data. Actions are
+ * after. Canonical data and delivery history come from their live APIs;
+ * corrections intentionally hand off to Review Studio. Actions are
  * state-specific: cancel appears only while the state machine allows it.
  */
 
@@ -253,6 +253,18 @@ function RunBlock({ run }: { run: ProcessingRunEntry }) {
             <>
               {" "}
               · config <code>{run.config_fingerprint.slice(0, 12)}…</code>
+            </>
+          ) : null}
+          {run.contract_fingerprint ? (
+            <>
+              {" "}
+              · contract <code>{run.contract_fingerprint.slice(0, 12)}…</code>
+            </>
+          ) : null}
+          {run.runtime_fingerprint ? (
+            <>
+              {" "}
+              · runtime <code>{run.runtime_fingerprint.slice(0, 12)}…</code>
             </>
           ) : null}
         </span>

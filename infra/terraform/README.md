@@ -2,10 +2,10 @@
 
 The Terraform baseline for the GCP/Firebase deployment
 ([`DECISIONS.md`](../../docs/DECISIONS.md) OPEN-001). One module provisions
-compute, database, storage, secrets, network, and telemetry; the three
-`environments/*.tfvars` files are the ONLY difference between dev,
-staging, and production — there is no manually created snowflake
-resource.
+compute, database, storage, secrets, network, and telemetry. The three
+`environments/*.tfvars` files hold committed non-secret sizing differences;
+project IDs, images, identity, receivers, allowlists, notification channels,
+and secrets remain explicit environment inputs/prerequisites.
 
 > **Status:** formatted and validated with Terraform 1.12.2 and Google
 > provider 6.50.0, but **not yet planned or applied against the owner's GCP
@@ -19,10 +19,10 @@ resource.
 | Compute | Cloud Run API service plus a continuously polling Cloud Run worker pool on independently promoted image digests |
 | Database | Cloud SQL for PostgreSQL 16, **private IP only**, automated backups + PITR (REL-003) |
 | Storage | One Cloud Storage bucket (uniform access, public access prevented) |
-| Secrets | Secret Manager entries for the DB URL, app key, and separate outbox HMAC key; a narrow API custom role manages tenant BYO secrets |
+| Secrets | Platform credentials in the runtime project's Secret Manager; dynamic tenant BYO credentials in a dedicated Secret Manager project with narrow API/worker roles |
 | Identity | Separate API, worker, and one-shot migrator service accounts; keyless self-signing for GCS signed URLs |
 | Network | VPC + subnet + API Serverless VPC Access connector + worker direct-VPC egress + private services peering |
-| Telemetry | API uptime check + an example alert policy wired to notification channels (REL-007) |
+| Telemetry | Required OTLP/HTTP export from API and worker, API uptime check, and an optional sample API-down policy; the full REL-007 alert catalog still needs backend-specific wiring |
 
 The module supplies every required deployed runtime setting: production OIDC,
 strict CORS, GCS, Secret Manager, private Postgres, malware scanner location,
@@ -31,9 +31,17 @@ public at the Cloud Run layer only when `api_allow_unauthenticated=true` (set
 explicitly in the committed environments); application OIDC remains the
 tenant identity and authorization boundary.
 
+API request concurrency is explicit (`api_concurrency`, default `8`). Upload
+completion and malware scanning may hold one complete document in memory, so
+leaving Cloud Run's larger platform default in effect can exhaust a 1 GiB
+instance during a burst. Raise it only with load evidence for the configured
+upload limit and memory size.
+
 ## Prerequisites (owner, one-time)
 
-1. Create the GCP project and enable billing.
+1. Create the billed runtime GCP project and a separate tenant-secrets GCP
+   project. The separation is mandatory: runtime project-wide access to dynamic
+   credentials must never include the migrator database URL or platform keys.
 2. Create a GCS bucket for Terraform remote state (per environment or one
    with per-env prefixes).
 3. Configure Identity Platform/Firebase Auth and record issuer, audience,
@@ -46,8 +54,9 @@ tenant identity and authorization boundary.
    Identity, Artifact Registry, Cloud Run, Firebase Hosting, and service-
    account act-as permissions. Runtime identities do not receive deploy
    permissions.
-7. Create Monitoring notification channels and note their IDs (optional
-   but recommended).
+7. Deploy or select an authenticated OTLP/HTTP collector and create Monitoring
+   notification channels. The application refuses to start in production with
+   telemetry disabled.
 
 ## Apply
 
@@ -57,6 +66,7 @@ terraform init -backend-config="bucket=YOUR_TF_STATE_BUCKET" -backend-config="pr
 
 terraform plan \
   -var="project_id=YOUR_PROJECT" \
+  -var="tenant_secrets_project_id=YOUR_TENANT_SECRETS_PROJECT" \
   -var="api_image=REGION-docker.pkg.dev/PROJECT/soa/api@sha256:..." \
   -var="worker_image=REGION-docker.pkg.dev/PROJECT/soa/worker@sha256:..." \
   -var="api_oidc_issuer=https://securetoken.google.com/YOUR_PROJECT" \
@@ -66,10 +76,16 @@ terraform plan \
   -var="api_clamav_host=clamav.internal" \
   -var='worker_export_destination_allowlist=["erp.example.com"]' \
   -var="worker_outbox_publish_url=https://events.example.com/soa" \
+  -var="telemetry_otlp_endpoint=https://otel-collector.example.com" \
   -var-file=environments/staging.tfvars
 
 terraform apply ...   # same vars
 ```
+
+`worker_export_destination_allowlist` is intentionally injected into both
+the API connection-test service and worker delivery. Entries are exact HTTPS
+hostnames; wildcards and destinations resolving to non-public addresses fail
+closed.
 
 Prefer `TF_VAR_*` environment variables or a non-committed auto-tfvars file in
 CI for these values. The uptime check derives the managed Cloud Run hostname
@@ -78,9 +94,28 @@ automatically; set `api_uptime_host` only when a custom API domain is active.
 The image variables bootstrap new infrastructure. After that, the gated
 release workflow promotes scanned image digests and Terraform intentionally
 ignores image-only drift so an infrastructure apply cannot roll a release
-back. The same workflow extracts the exact scanned web image and atomically
-publishes its static files to Firebase Hosting; `WEB_API_BASE_URL` must be an
-HTTPS GitHub environment variable at publication time.
+back. The same workflow extracts the exact scanned web image, verifies that it
+contains the environment's `WEB_API_BASE_URL`, deploys it to an expiring
+Firebase preview channel, and clones that already-smoked version to `live` only
+after the exact API candidate revision passes its post-traffic canonical smoke.
+It captures the prior API traffic split, Firebase live version, and worker image
+and restores all three on a later failure. `WEB_API_BASE_URL` must therefore be
+the canonical HTTPS API origin in both the release and deploy GitHub
+environments. Set optional `WEB_SMOKE_BASE_URL` to exercise the custom web
+domain instead of only the default `<project>.web.app` URL. A short-lived
+`API_SMOKE_BEARER_TOKEN` environment secret enables an authenticated `/me`
+read; without it the workflow still verifies that the live auth boundary
+returns its structured 401 response, but that is not equivalent to an
+authenticated production read. Publication also
+requires `WEB_AUTH_MODE=firebase` with the public Firebase browser values
+(`WEB_FIREBASE_API_KEY`, `WEB_FIREBASE_AUTH_DOMAIN`,
+`WEB_FIREBASE_PROJECT_ID`, `WEB_FIREBASE_APP_ID`, and
+`WEB_FIREBASE_PROVIDER_ID`; tenant ID and login method are optional). The
+provider-neutral alternative is `WEB_AUTH_MODE=oidc` with an HTTPS
+`WEB_OIDC_ISSUER`, `WEB_OIDC_CLIENT_ID`, and optional scope, audience, and
+bearer-token selection. These are public browser configuration values, not
+client secrets; the workflow rejects incomplete mode-specific configuration
+before building the immutable web artifact.
 
 ## Backups, RPO, and RTO (REL-003)
 
@@ -88,18 +123,19 @@ HTTPS GitHub environment variable at publication time.
   (WAL/transaction-log archiving) enabled. Transaction logs are retained
   7 days; full backups are retained per environment
   (`db_backup_retention_days`: dev 7, staging 14, production 30).
-- **RPO (recovery point objective): ≤ 5 minutes** — PITR replays
+- **RPO target: ≤ 5 minutes** — PITR can replay
   transaction logs to any point within the retention window, so at most
   the last few minutes of writes are at risk.
-- **RTO (recovery time objective): ≤ 1 hour** for a full instance
+- **RTO target: ≤ 1 hour** for a full instance
   restore to a new instance (dominated by Cloud SQL restore time for the
   configured disk size).
 - **Encryption at rest** is always on (Google-managed keys; a CMEK can be
   added later).
 - **Restore ownership**: the platform on-call runs the restore, following
   [`docs/runbooks/restore.md`](../../docs/runbooks/restore.md). The
-  restore rehearsal that proves these numbers is REL-004, run against
-  staging.
+  restore rehearsal that measures and either proves or revises these targets is
+  REL-004, run against staging. Until that record exists, neither value is an
+  achieved commitment.
 
 ## Not included here
 
@@ -108,6 +144,10 @@ HTTPS GitHub environment variable at publication time.
   step; issuer/JWKS/audience are then enforced by this module.
 - **ClamAV and the external event/export receivers** are deployment-owned
   services with explicit inputs, not silently mocked Terraform resources.
+- **Full alert policies and dashboards** are not generated from
+  `docs/ALERTS.md`; only uptime and the sample API-down policy exist in this
+  module. Arm and fire every production alert against the selected collector
+  and notification system before release.
 - Worker pools are currently a Cloud Run preview feature (`launch_stage =
   "BETA"`) and use manual instance counts. A staging soak test is required
   before production sign-off.

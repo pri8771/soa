@@ -35,15 +35,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_api.domain.streams import Stream, StreamRepository, StreamStatus
 from soa_api.domain.tenancy import Organization
 from soa_api.domain.uploads import SUPPORTED_UPLOAD_TYPES
-from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
+from soa_api.services.file_limits import FileLimits, LimitViolation, check_size, resolve_limits
+from soa_api.services.ingestion import (
+    IntakeDeclaration,
+    IntakeSafetyResult,
+    evaluate_intake_safety,
+    finalize_document_intake,
+)
 from soa_api.services.malware import MalwareScanner
 from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
+from soa_db import commit_unit_of_work
 from soa_db.audit import ActorType
-from soa_db.documents import SourceChannel
+from soa_db.documents import DocumentRepository, SourceChannel
+from soa_db.external_cleanup import (
+    ExternalResourceType,
+    register_external_resource_rollback,
+)
 from soa_db.repository import OrganizationContext
 from soa_db.tenant_guard import bind_tenant
 from soa_db.types import uuid7
-from soa_storage import ObjectStore, sha256_hex
+from soa_storage import ObjectNotFoundError, ObjectStore, sha256_hex
 from soa_storage.keys import artifact_key
 
 
@@ -63,6 +74,8 @@ class InboundEmail:
     attachments: list[EmailAttachment]
     #: True when headers mark the message as auto-generated.
     auto_generated: bool
+    #: Stable identity for webhook retries when Message-ID is absent.
+    raw_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +94,17 @@ class EmailIntakeReport:
     attachments: list[AttachmentOutcome] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _PreparedAttachment:
+    index: int
+    attachment: EmailAttachment
+    declaration: IntakeDeclaration
+
+
+class EmailLimitError(ValueError):
+    """The decoded MIME structure exceeds a configured intake bound."""
+
+
 def _is_auto_generated(message: Message) -> bool:
     auto_submitted = (message.get("Auto-Submitted") or "no").strip().lower()
     if auto_submitted not in ("", "no"):
@@ -91,7 +115,12 @@ def _is_auto_generated(message: Message) -> bool:
     return message.get("X-Auto-Response-Suppress") is not None
 
 
-def parse_inbound_email(raw: bytes) -> InboundEmail:
+def parse_inbound_email(
+    raw: bytes,
+    *,
+    max_attachments: int | None = None,
+    max_total_attachment_bytes: int | None = None,
+) -> InboundEmail:
     message = message_from_bytes(raw)
     attachments: list[EmailAttachment] = []
     for part in message.walk():
@@ -110,6 +139,11 @@ def parse_inbound_email(raw: bytes) -> InboundEmail:
                 data=payload,
             )
         )
+        if max_attachments is not None and len(attachments) > max_attachments:
+            raise EmailLimitError(f"message has more than {max_attachments} attachments")
+        total_bytes = sum(len(attachment.data) for attachment in attachments)
+        if max_total_attachment_bytes is not None and total_bytes > max_total_attachment_bytes:
+            raise EmailLimitError("decoded attachments exceed the configured aggregate byte limit")
     _, sender = parseaddr(str(message.get("From", "")))
     _, recipient = parseaddr(str(message.get("To", "")))
     return InboundEmail(
@@ -119,6 +153,7 @@ def parse_inbound_email(raw: bytes) -> InboundEmail:
         message_id=(str(message["Message-ID"]).strip() if message.get("Message-ID") else None),
         attachments=attachments,
         auto_generated=_is_auto_generated(message),
+        raw_sha256=sha256_hex(raw),
     )
 
 
@@ -155,6 +190,7 @@ async def process_inbound_email(
     email: InboundEmail,
     store: ObjectStore,
     scanner: MalwareScanner,
+    platform_limits: FileLimits,
 ) -> EmailIntakeReport:
     if email.auto_generated:
         return EmailIntakeReport(
@@ -181,70 +217,159 @@ async def process_inbound_email(
         )
     except RuntimePinError as error:
         return EmailIntakeReport(outcome="skipped", reason=str(error))
+    organization_id = context.organization_id
+    stream_id = stream.id
+    stream_version_id = stream.active_version_id
+    stream_config = dict(pins.config)
+    config_fingerprint = pins.config_fingerprint
+    limits = resolve_limits(platform_limits, stream_config)
 
     if not email.attachments:
         return EmailIntakeReport(outcome="processed", reason="no attachments", attachments=[])
 
-    outcomes: list[AttachmentOutcome] = []
-    for attachment in email.attachments:
+    # Phase 1 is database-only: resolve idempotent replays and prepare stable
+    # declarations while the tenant binding is active. Keep indexed slots so
+    # the report remains in the message's original attachment order.
+    outcomes: list[AttachmentOutcome | None] = [None] * len(email.attachments)
+    prepared: list[_PreparedAttachment] = []
+    documents = DocumentRepository(session, context)
+    source_identity = email.message_id or email.raw_sha256
+    identity_hash = sha256_hex(source_identity.encode("utf-8")) if source_identity else None
+    for attachment_index, attachment in enumerate(email.attachments):
         if not attachment.data:
-            outcomes.append(
-                AttachmentOutcome(
-                    filename=attachment.filename, outcome="empty", detail="attachment is empty"
-                )
+            outcomes[attachment_index] = AttachmentOutcome(
+                filename=attachment.filename,
+                outcome="empty",
+                detail="attachment is empty",
             )
             continue
         if attachment.content_type not in SUPPORTED_UPLOAD_TYPES:
-            outcomes.append(
-                AttachmentOutcome(
-                    filename=attachment.filename,
-                    outcome="unsupported",
-                    detail=f"unsupported content type {attachment.content_type}",
-                )
+            outcomes[attachment_index] = AttachmentOutcome(
+                filename=attachment.filename,
+                outcome="unsupported",
+                detail=f"unsupported content type {attachment.content_type}",
             )
             continue
+        try:
+            check_size(len(attachment.data), limits)
+        except LimitViolation as error:
+            outcomes[attachment_index] = AttachmentOutcome(
+                filename=attachment.filename,
+                outcome="rejected",
+                detail=str(error),
+            )
+            continue
+
+        digest = sha256_hex(attachment.data)
+        client_reference = (
+            f"email:{identity_hash}:{attachment_index}" if identity_hash is not None else None
+        )
+        if client_reference is not None:
+            existing = await documents.get_by_client_reference(stream_id, client_reference)
+            if existing is not None:
+                outcomes[attachment_index] = AttachmentOutcome(
+                    filename=attachment.filename,
+                    outcome="ingested",
+                    document_id=str(existing.id),
+                    state=existing.state,
+                    detail="idempotent replay of an earlier email delivery",
+                )
+                continue
+
         document_id = uuid7()
         key = artifact_key(
-            context.organization_id, document_id, kind="original", filename=attachment.filename
+            organization_id,
+            document_id,
+            kind="original",
+            filename=attachment.filename,
         )
-        digest = sha256_hex(attachment.data)
-        await store.put(key, attachment.data, content_type=attachment.content_type, sha256=digest)
+        prepared.append(
+            _PreparedAttachment(
+                index=attachment_index,
+                attachment=attachment,
+                declaration=IntakeDeclaration(
+                    stream_id=stream_id,
+                    stream_config=stream_config,
+                    source_channel=SourceChannel.EMAIL,
+                    filename=attachment.filename,
+                    content_type=attachment.content_type,
+                    sha256=digest,
+                    size_bytes=len(attachment.data),
+                    object_key=key,
+                    client_reference=client_reference,
+                    source_metadata={
+                        "sender": email.sender,
+                        "subject": email.subject,
+                        "message_id": email.message_id or "",
+                    },
+                    document_id=document_id,
+                    stream_version_id=stream_version_id,
+                    config_fingerprint=config_fingerprint,
+                ),
+            )
+        )
+
+    if not prepared:
+        return EmailIntakeReport(
+            outcome="processed",
+            attachments=[outcome for outcome in outcomes if outcome is not None],
+        )
+
+    # End the routing/idempotency read transaction before any scanner or
+    # object-store network call. The final database phase is opened only after
+    # every external operation has completed.
+    await commit_unit_of_work(session)
+    evaluated: list[tuple[_PreparedAttachment, IntakeSafetyResult]] = []
+    for item in prepared:
+        safety = await evaluate_intake_safety(item.declaration, item.attachment.data, scanner)
+        key = item.declaration.object_key
+
+        async def cleanup_stored_object(object_key: str = key) -> None:
+            try:
+                await store.delete(object_key)
+            except ObjectNotFoundError:
+                pass
+
+        # Register before the write so cancellation cannot strand an object
+        # between a successful put and compensation registration.
+        register_external_resource_rollback(
+            session,
+            organization_id=organization_id,
+            resource_type=ExternalResourceType.OBJECT,
+            resource_locator=key,
+            cleanup=cleanup_stored_object,
+        )
+        await store.put(
+            key,
+            item.attachment.data,
+            content_type=item.attachment.content_type,
+            sha256=item.declaration.sha256,
+        )
+        evaluated.append((item, safety))
+
+    # SET LOCAL tenant context ended with the read transaction above.
+    await bind_tenant(session, organization_id)
+    for item, safety in evaluated:
         document = await finalize_document_intake(
             session,
             context,
-            declaration=IntakeDeclaration(
-                stream_id=stream.id,
-                stream_config=pins.config,
-                source_channel=SourceChannel.EMAIL,
-                filename=attachment.filename,
-                content_type=attachment.content_type,
-                sha256=digest,
-                size_bytes=len(attachment.data),
-                object_key=key,
-                source_metadata={
-                    "sender": email.sender,
-                    "subject": email.subject,
-                    "message_id": email.message_id or "",
-                },
-                document_id=document_id,
-                stream_version_id=stream.active_version_id,
-                config_fingerprint=pins.config_fingerprint,
-            ),
-            data=attachment.data,
-            scanner=scanner,
+            declaration=item.declaration,
+            safety=safety,
             actor_id="system:email-intake",
             actor_type=ActorType.SYSTEM,
         )
-        outcomes.append(
-            AttachmentOutcome(
-                filename=attachment.filename,
-                outcome="ingested",
-                document_id=str(document.id),
-                state=document.state,
-                detail=document.state_reason,
-            )
+        outcomes[item.index] = AttachmentOutcome(
+            filename=item.attachment.filename,
+            outcome="ingested",
+            document_id=str(document.id),
+            state=document.state,
+            detail=document.state_reason,
         )
-    return EmailIntakeReport(outcome="processed", attachments=outcomes)
+
+    return EmailIntakeReport(
+        outcome="processed",
+        attachments=[outcome for outcome in outcomes if outcome is not None],
+    )
 
 
 @dataclass

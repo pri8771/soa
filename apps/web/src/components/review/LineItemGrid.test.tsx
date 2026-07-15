@@ -70,6 +70,55 @@ describe("Line-item grid (REV-008)", () => {
     expect(within(table).getByLabelText("quantity row 1")).toHaveFocus();
   });
 
+  it("retries an unchanged cell value after a failed save and then unblocks approval", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/corrections", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        attempts += 1;
+        if (attempts === 1) {
+          return HttpResponse.json(
+            { error: { message: "temporary correction outage" } },
+            { status: 503 },
+          );
+        }
+        return HttpResponse.json({
+          correction: {
+            id: "cor-retry",
+            field_key: body["field_key"],
+            row_index: body["row_index"],
+            previous_raw_value: "10",
+            corrected_raw_value: body["value"],
+            corrected_normalized_value: body["value"],
+            normalization_error: null,
+            corrected_by: "user:u-1",
+          },
+          task_version: 4,
+          revalidation: null,
+        });
+      }),
+    );
+    await renderApp(PATH);
+    const table = await grid();
+    const quantity = within(table).getByLabelText("quantity row 0");
+    await user.clear(quantity);
+    await user.type(quantity, "12{Enter}");
+
+    expect(
+      await within(table).findByText(/Not saved: temporary correction outage/),
+    ).toBeInTheDocument();
+    const approve = screen.getByRole("button", { name: "Approve order…" });
+    expect(approve).toBeDisabled();
+
+    // The draft is intentionally unchanged. Pressing Enter again must retry
+    // that exact value rather than being suppressed as a duplicate.
+    await user.click(quantity);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(attempts).toBe(2));
+    await waitFor(() => expect(approve).toBeEnabled());
+  });
+
   it("remove is a batch of clearing corrections, and undo restores the values", async () => {
     const user = userEvent.setup();
     const posted = captureCorrections();
@@ -145,7 +194,7 @@ describe("Line-item grid (REV-008)", () => {
     await renderApp(PATH);
     const table = await grid();
     const sku = within(table).getByLabelText("sku row 0");
-    sku.focus();
+    await user.click(sku);
     await user.paste("ZZZ-9\tHeavy widget\t4\t25.00\t100.00");
     await waitFor(() => expect(posted).toHaveLength(5));
     expect(posted).toEqual(

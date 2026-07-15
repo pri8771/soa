@@ -2,29 +2,32 @@
 
 Wires the real pieces into the PRC-003 orchestrator: render (PRC-004,
 sandboxed) -> page rows + page-image artifacts (PRC-005) -> extraction
-via the provider contract (PRC-006, mock today, AIO adapters later) ->
+via the pinned provider contract (local mock/LLM or hosted adapters) ->
 extracted-field rows with evidence (PRC-007) -> canonical normalization
 (PRC-008) -> rule evaluation (PRC-009/010) -> confidence routing
 (PRC-011). Classification and splitting are honest single-document
 no-ops until their real implementations land (AIO); their stage runs
 say exactly that.
 
-Configuration comes in as an explicit PipelineConfig value. PRC-012
-ships the canonical sales-order config; resolving a pinned stream
-version (the run's stream_version_id/config_fingerprint) into a
-PipelineConfig is the remaining wiring and is NOT faked here — the
-worker runs the canonical config until that lands.
+Configuration comes in as an explicit PipelineConfig value. Production
+constructs it from the run's authenticated immutable stream snapshot;
+the canonical helper remains only for deterministic tests and tooling.
 """
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from soa_db import commit_unit_of_work
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
 from soa_db.documents import Document
+from soa_db.external_cleanup import (
+    ExternalResourceType,
+    register_external_resource_rollback,
+)
 from soa_db.extracted_fields import (
     Candidate,
     Evidence,
@@ -38,7 +41,9 @@ from soa_db.extracted_fields import (
 from soa_db.pages import DocumentPageRepository, create_page
 from soa_db.repository import OrganizationContext
 from soa_db.review_tasks import route_document_to_review
-from soa_db.runs import ProcessingRun, StageRun
+from soa_db.runs import ProcessingRun, StageRun, StageRunRepository
+from soa_db.tenant_guard import bind_tenant
+from soa_db.usage_ledger import record_usage
 from soa_normalize import NormalizationContext, NormalizationError, normalize
 from soa_rules import (
     ConfidencePolicy,
@@ -64,7 +69,9 @@ from soa_worker.extraction.provider import (
     ExtractionRequest,
     FieldSpec,
     PageInput,
+    validate_result_against_request,
 )
+from soa_worker.model_usage import ProviderCallUsage
 from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
 from soa_worker.provider_router import (
     NATIVE_COVERAGE_THRESHOLD,
@@ -81,8 +88,27 @@ from soa_worker.providers.native_text import (
 )
 from soa_worker.providers.ocr import OcrPageInput, OcrProvider, OcrProviderError, OcrRequest
 from soa_worker.rendering import RenderError, RenderLimits, render_document
+from soa_worker.runtime_provenance import (
+    extraction_provenance,
+    package_version,
+    renderer_provenance,
+    runtime_fingerprint,
+)
 
 ACTOR = "system:pipeline"
+
+
+def _delete_object_compensation(
+    store: ObjectStore,
+    key: str,
+) -> Callable[[], Awaitable[None]]:
+    async def cleanup() -> None:
+        try:
+            await store.delete(key)
+        except ObjectNotFoundError:
+            pass
+
+    return cleanup
 
 
 @dataclass(frozen=True)
@@ -166,6 +192,9 @@ class _Pipeline:
                 "the document has no original artifact to render", retryable=False
             )
         original = originals[0]
+        # Release the stage-start transaction before object storage and the
+        # sandboxed renderer. The detached ORM values remain immutable inputs.
+        await session.commit()
         try:
             data = await self._store.get(original.object_key)
         except ObjectNotFoundError:
@@ -181,6 +210,7 @@ class _Pipeline:
         except RenderError as error:
             raise StageExecutionError(str(error), retryable=error.retryable) from None
 
+        stored_pages: list[tuple[Any, str, Any]] = []
         for page in pages:
             key = artifact_key(
                 context.organization_id,
@@ -189,6 +219,17 @@ class _Pipeline:
                 filename=f"page-{page.page_number:04}.png",
             )
             metadata = await self._store.put(key, page.image_png, content_type="image/png")
+            register_external_resource_rollback(
+                session,
+                organization_id=context.organization_id,
+                resource_type=ExternalResourceType.OBJECT,
+                resource_locator=key,
+                cleanup=_delete_object_compensation(self._store, key),
+            )
+            stored_pages.append((page, key, metadata))
+
+        await bind_tenant(session, context.organization_id)
+        for page, key, metadata in stored_pages:
             artifact = await create_artifact(
                 session,
                 context,
@@ -213,7 +254,12 @@ class _Pipeline:
                 dpi=page.dpi,
                 image_artifact_id=artifact.id,
             )
-        return StageOutcome(output_summary={"pages": len(pages)})
+        return StageOutcome(
+            output_summary={
+                "pages": len(pages),
+                "runtime_provenance": renderer_provenance(original.content_type),
+            }
+        )
 
     # -- classifying / splitting: enforced production input contract ---------
 
@@ -232,7 +278,11 @@ class _Pipeline:
             )
         return StageOutcome(
             output_summary={
-                "document_type": "sales_order",
+                # The inbound customer document is a purchase order. The
+                # pipeline's output is an ERP sales order; conflating those
+                # two types makes audit timelines and later classifier
+                # training labels incorrect.
+                "document_type": "purchase_order",
                 "method": "input_contract",
                 "input_contract": "single_sales_order",
             }
@@ -269,13 +319,14 @@ class _Pipeline:
             raise StageExecutionError("no rendered pages to extract from", retryable=False)
         text_by_page: dict[int, str] = {}
         text_warnings: list[str] = []
+        recognition_provenance: list[dict[str, Any]] = []
         # Model providers read page text; passing empty PageInput values
         # would produce a syntactically valid request containing no
         # document. The deterministic fixture mock intentionally does not
         # need text, but every real provider does.
         if self._provider.name != "mock":
-            text_by_page, text_warnings = await self._recognize_page_text(
-                session, context, run, document, pages
+            text_by_page, text_warnings, recognition_provenance = await self._recognize_page_text(
+                session, context, run, document, stage_run, pages
             )
         request = ExtractionRequest(
             document_id=document.id,
@@ -292,10 +343,92 @@ class _Pipeline:
             ),
             fields=self._config.field_specs,
         )
+        # Recognition artifacts and usage are now durable. Provider latency
+        # must not retain their SQL transaction or a pool connection.
+        await commit_unit_of_work(session)
         try:
             result = await self._provider.extract(request)
         except ExtractionProviderError as error:
-            raise StageExecutionError(str(error), retryable=error.retryable) from None
+            await bind_tenant(session, context.organization_id)
+            if error.usage_records:
+                await self._record_extraction_usage(
+                    session,
+                    context,
+                    run,
+                    document,
+                    stage_run,
+                    page_count=len(pages),
+                    records=error.usage_records,
+                )
+            raise StageExecutionError(
+                str(error),
+                retryable=error.retryable,
+                cost_cents=sum(item.estimated_cost_cents for item in error.usage_records),
+            ) from None
+
+        await bind_tenant(session, context.organization_id)
+
+        contract_violations = validate_result_against_request(request, result)
+        if contract_violations:
+            records = result.usage_records or (
+                ProviderCallUsage(
+                    provider=result.provider,
+                    model=result.model,
+                    usage=result.usage,
+                    estimated_cost_cents=max(0, result.cost_cents),
+                    pricing_reference=result.pricing_reference,
+                    outcome="failed",
+                ),
+            )
+            await self._record_extraction_usage(
+                session,
+                context,
+                run,
+                document,
+                stage_run,
+                page_count=len(pages),
+                records=records,
+            )
+            raise StageExecutionError(
+                "the provider returned output that violated the extraction contract",
+                retryable=False,
+                cost_cents=sum(item.estimated_cost_cents for item in records),
+            )
+
+        prior_stages = await StageRunRepository(session, context).list_for_run(run.id)
+        preprocessing = next(
+            (
+                item
+                for item in prior_stages
+                if item.stage == "preprocessing" and item.state == "succeeded"
+            ),
+            None,
+        )
+        render_identity = (
+            (preprocessing.output_summary or {}).get("runtime_provenance")
+            if preprocessing is not None
+            else None
+        )
+        if not isinstance(render_identity, dict):
+            raise StageExecutionError("the run is missing renderer provenance", retryable=False)
+        actual_provenance = {
+            "schema_version": 1,
+            "contract_fingerprint": run.execution_fingerprint,
+            "rendering": render_identity,
+            "recognition": recognition_provenance,
+            "extraction": extraction_provenance(
+                self._provider,
+                name=result.provider,
+                model=result.model,
+            ),
+        }
+        actual_fingerprint = runtime_fingerprint(actual_provenance)
+        if run.runtime_fingerprint is not None and run.runtime_fingerprint != actual_fingerprint:
+            raise StageExecutionError(
+                "runtime provenance changed while the run was in progress", retryable=False
+            )
+        run.runtime_provenance = actual_provenance
+        run.runtime_fingerprint = actual_fingerprint
 
         dimensions = {p.page_number: (p.width_px, p.height_px) for p in pages}
         for extracted in result.fields:
@@ -311,7 +444,7 @@ class _Pipeline:
                 provider_model=result.model,
                 instruction_reference=result.instruction_reference,
                 config_fingerprint=run.config_fingerprint,
-                execution_fingerprint=run.execution_fingerprint,
+                execution_fingerprint=actual_fingerprint,
                 row_index=extracted.row_index,
                 evidence=tuple(
                     Evidence(
@@ -330,16 +463,102 @@ class _Pipeline:
         rows = await ExtractedFieldRepository(session, context).list_for_run(run.id)
         summary = confidence_summary(rows)
         summary["warnings"] = [*text_warnings, *result.warnings]
+        if result.usage is not None:
+            winning_cost = (
+                sum(
+                    item.estimated_cost_cents
+                    for item in result.usage_records
+                    if item.provider == result.provider
+                )
+                if result.usage_records
+                else result.cost_cents
+            )
+            summary["provider_usage"] = {
+                **result.usage.as_dict(),
+                "estimated_cost_cents": winning_cost,
+                "pricing_reference": result.pricing_reference,
+            }
+        if result.usage_records:
+            summary["provider_usage_records"] = [item.as_dict() for item in result.usage_records]
+            summary["estimated_stage_cost_cents"] = result.cost_cents
         summary["provenance"] = {
             "provider": result.provider,
             "model": result.model,
             "instruction_reference": result.instruction_reference,
+            "pricing_reference": result.pricing_reference,
             "config_fingerprint": run.config_fingerprint,
-            "execution_fingerprint": run.execution_fingerprint,
+            "contract_fingerprint": run.execution_fingerprint,
+            "runtime_fingerprint": actual_fingerprint,
+            "runtime": actual_provenance,
         }
+        await self._record_extraction_usage(
+            session,
+            context,
+            run,
+            document,
+            stage_run,
+            page_count=len(pages),
+            records=result.usage_records,
+            legacy=ProviderCallUsage(
+                provider=result.provider,
+                model=result.model,
+                usage=result.usage,
+                estimated_cost_cents=result.cost_cents,
+                pricing_reference=result.pricing_reference,
+                outcome="succeeded",
+            ),
+        )
         return StageOutcome(
             output_summary=summary, cost_cents=result.cost_cents, provider=result.provider
         )
+
+    async def _record_extraction_usage(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        stage_run: StageRun,
+        *,
+        page_count: int,
+        records: tuple[ProviderCallUsage, ...],
+        legacy: ProviderCallUsage | None = None,
+    ) -> None:
+        """Persist one immutable ledger row per real provider call.
+
+        ``legacy`` preserves the pre-metering provider contract as one call;
+        routed/model providers supply exact records so fallback spend is never
+        attributed to the eventual winner.
+        """
+        effective = records or ((legacy,) if legacy is not None else ())
+        for index, item in enumerate(effective, start=1):
+            reason_parts = [f"outcome={item.outcome}"]
+            if item.pricing_reference is not None:
+                reason_parts.append(f"pricing_reference={item.pricing_reference}")
+            if item.usage is None and item.outcome != "succeeded":
+                reason_parts.append("provider_usage=unreported")
+            source_reference = (
+                f"stage:{stage_run.id}:extraction:call:{index}"
+                if records
+                else f"stage:{stage_run.id}:extraction"
+            )
+            await record_usage(
+                session,
+                context,
+                provider=item.provider,
+                provider_model=item.model,
+                cost_category="extraction",
+                estimated_cost_cents=item.estimated_cost_cents,
+                billed_unit=item.billed_unit,
+                billed_quantity=item.billed_quantity,
+                stream_id=document.stream_id,
+                document_id=document.id,
+                run_id=run.id,
+                page_count=page_count,
+                source_reference=source_reference,
+                reason="; ".join(reason_parts),
+                actor_id=ACTOR,
+            )
 
     async def _recognize_page_text(
         self,
@@ -347,8 +566,9 @@ class _Pipeline:
         context: OrganizationContext,
         run: ProcessingRun,
         document: Document,
+        stage_run: StageRun,
         pages: list[Any],
-    ) -> tuple[dict[int, str], list[str]]:
+    ) -> tuple[dict[int, str], list[str], list[dict[str, Any]]]:
         """Native text first, OCR only for image/low-coverage pages.
 
         The recognized text is persisted per page and attached to the page
@@ -359,6 +579,9 @@ class _Pipeline:
         original = next((item for item in artifacts if item.kind == ArtifactKind.ORIGINAL), None)
         if original is None:
             raise StageExecutionError("the document has no original artifact", retryable=False)
+        # All object coordinates and page dimensions are now snapshotted.
+        # Release SQL before storage reads, native parsing, and OCR.
+        await session.commit()
         try:
             original_bytes = await self._store.get(original.object_key)
         except ObjectNotFoundError:
@@ -366,6 +589,7 @@ class _Pipeline:
 
         texts: dict[int, str] = {}
         warnings: list[str] = []
+        provenance: list[dict[str, Any]] = []
         needs_ocr = {page.page_number for page in pages}
         if document.content_type == "application/pdf":
             native = create_provider(Capability.NATIVE_TEXT, "pdfium-native-text")
@@ -387,19 +611,37 @@ class _Pipeline:
                 if error.failure is NativeTextFailure.UNAVAILABLE:
                     raise StageExecutionError(str(error), retryable=error.retryable) from None
                 warnings.append(f"native text unavailable ({error.failure.value}); using OCR")
+                provenance.append(
+                    {
+                        "provider": native.name,
+                        "model": f"pdfium {package_version('pypdfium2')}",
+                        "outcome": "fallback",
+                        "failure": error.failure.value,
+                    }
+                )
             else:
                 warnings.extend(native_result.warnings)
+                accepted_pages: list[int] = []
                 for result_page in native_result.pages:
                     if result_page.coverage >= NATIVE_COVERAGE_THRESHOLD:
                         texts[result_page.page_number] = "\n".join(
                             span.text for span in result_page.spans
                         )
                         needs_ocr.discard(result_page.page_number)
+                        accepted_pages.append(result_page.page_number)
                     else:
                         warnings.append(
                             f"page {result_page.page_number} native text coverage is "
                             f"{result_page.coverage:.0%}; using OCR"
                         )
+                provenance.append(
+                    {
+                        "provider": native_result.provider,
+                        "model": native_result.model,
+                        "outcome": "used",
+                        "accepted_pages": accepted_pages,
+                    }
+                )
 
         if needs_ocr:
             facts = DocumentFacts(language=self._config.languages[0])
@@ -454,11 +696,21 @@ class _Pipeline:
             except OcrProviderError as error:
                 raise StageExecutionError(str(error), retryable=error.retryable) from None
             warnings.extend(ocr_result.warnings)
+            recognized_pages: list[int] = []
             for ocr_page in ocr_result.pages:
                 texts[ocr_page.page_number] = "\n".join(
                     line.text for block in ocr_page.blocks for line in block.lines
                 )
-
+                recognized_pages.append(ocr_page.page_number)
+            provenance.append(
+                {
+                    "provider": ocr_result.provider,
+                    "model": ocr_result.model,
+                    "outcome": "used",
+                    "pages": recognized_pages,
+                }
+            )
+        stored_text: list[tuple[Any, str, bytes, Any]] = []
         for page in pages:
             text = texts.get(page.page_number, "")
             if not text.strip():
@@ -474,6 +726,35 @@ class _Pipeline:
             )
             encoded = text.encode("utf-8")
             metadata = await self._store.put(key, encoded, content_type="text/plain; charset=utf-8")
+            register_external_resource_rollback(
+                session,
+                organization_id=context.organization_id,
+                resource_type=ExternalResourceType.OBJECT,
+                resource_locator=key,
+                cleanup=_delete_object_compensation(self._store, key),
+            )
+            stored_text.append((page, key, encoded, metadata))
+
+        await bind_tenant(session, context.organization_id)
+        if needs_ocr:
+            await record_usage(
+                session,
+                context,
+                provider=ocr_result.provider,
+                provider_model=ocr_result.model,
+                cost_category="ocr",
+                estimated_cost_cents=ocr_result.cost_cents,
+                billed_unit="pages",
+                billed_quantity=len(recognized_pages),
+                stream_id=document.stream_id,
+                document_id=document.id,
+                run_id=run.id,
+                page_count=len(recognized_pages),
+                source_reference=f"stage:{stage_run.id}:ocr",
+                actor_id=ACTOR,
+            )
+
+        for page, key, encoded, metadata in stored_text:
             artifact = await create_artifact(
                 session,
                 context,
@@ -488,7 +769,7 @@ class _Pipeline:
                 actor_id=ACTOR,
             )
             page.text_artifact_id = artifact.id
-        return texts, warnings
+        return texts, warnings, provenance
 
     # -- normalizing: raw -> canonical, never overwriting raw ------------------
 

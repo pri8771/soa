@@ -38,6 +38,17 @@ class GatePolicy:
     critical_fields: tuple[str, ...] = ()
     #: Tolerated per-cohort exact-rate drop.
     max_cohort_regression: float = 0.02
+    #: Absolute floors apply to every promotion, including the first
+    #: candidate where no baseline exists.  Relative improvement is never a
+    #: substitute for an acceptable result.
+    min_documents_scored: int = 1
+    max_documents_failed: int = 0
+    min_field_exact_rate: float = 0.95
+    min_field_normalized_rate: float = 0.98
+    min_line_cell_exact_rate: float = 0.95
+    min_class_accuracy: float = 0.95
+    max_false_auto_approval_rate: float = 0.0
+    min_critical_field_exact_rate: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -209,6 +220,106 @@ def compare_reports(
     )
 
 
+def _absolute_quality_findings(
+    candidate: EvaluationReport, policy: GatePolicy
+) -> tuple[Finding, ...]:
+    """Return non-waivable findings for absolute quality floors.
+
+    These checks are deliberately independent of a baseline.  They prevent
+    both a low-quality first publication and a candidate that is "better"
+    than an even worse baseline from becoming promotion evidence.
+    """
+    findings: list[Finding] = []
+
+    def prohibited(kind: str, detail: str) -> None:
+        findings.append(Finding(kind=kind, detail=detail, waivable=False))
+
+    if candidate.documents_scored < policy.min_documents_scored:
+        prohibited(
+            "insufficient_documents",
+            f"only {candidate.documents_scored} documents were scored; "
+            f"at least {policy.min_documents_scored} are required",
+        )
+    if candidate.documents_failed > policy.max_documents_failed:
+        prohibited(
+            "evaluation_errors",
+            f"{candidate.documents_failed} documents failed evaluation; "
+            f"at most {policy.max_documents_failed} are allowed",
+        )
+    if candidate.field_exact_rate < policy.min_field_exact_rate:
+        prohibited(
+            "field_exact_below_minimum",
+            f"field exact accuracy {candidate.field_exact_rate:.2%} is below the "
+            f"{policy.min_field_exact_rate:.2%} minimum",
+        )
+    if candidate.field_normalized_rate < policy.min_field_normalized_rate:
+        prohibited(
+            "field_normalized_below_minimum",
+            f"normalized field accuracy {candidate.field_normalized_rate:.2%} is below the "
+            f"{policy.min_field_normalized_rate:.2%} minimum",
+        )
+
+    line_fields = {
+        key: score for key, score in candidate.by_field.items() if key.startswith("lines.")
+    }
+    if line_fields and candidate.line_cell_exact_rate < policy.min_line_cell_exact_rate:
+        prohibited(
+            "line_cell_exact_below_minimum",
+            f"line-cell exact accuracy {candidate.line_cell_exact_rate:.2%} is below the "
+            f"{policy.min_line_cell_exact_rate:.2%} minimum",
+        )
+    if (
+        candidate.class_accuracy is not None
+        and candidate.class_accuracy < policy.min_class_accuracy
+    ):
+        prohibited(
+            "class_accuracy_below_minimum",
+            f"classification accuracy {candidate.class_accuracy:.2%} is below the "
+            f"{policy.min_class_accuracy:.2%} minimum",
+        )
+    if candidate.false_auto_approval_rate > policy.max_false_auto_approval_rate:
+        prohibited(
+            "false_auto_approval_above_maximum",
+            f"false-auto-approval rate {candidate.false_auto_approval_rate:.2%} exceeds the "
+            f"{policy.max_false_auto_approval_rate:.2%} maximum",
+        )
+
+    for field in policy.critical_fields:
+        rate = _field_rate(candidate, field)
+        if rate is None:
+            prohibited(
+                "critical_field_unmeasured",
+                f"critical field {field!r} is not measured by this evaluation dataset",
+            )
+        elif rate < policy.min_critical_field_exact_rate:
+            prohibited(
+                "critical_field_below_minimum",
+                f"critical field {field!r} exact accuracy {rate:.2%} is below the "
+                f"{policy.min_critical_field_exact_rate:.2%} minimum",
+            )
+    return tuple(findings)
+
+
+def evaluate_promotion_gate(
+    candidate: EvaluationReport,
+    *,
+    current: EvaluationReport | None = None,
+    policy: GatePolicy | None = None,
+) -> GateResult:
+    """Apply absolute thresholds and, when supplied, baseline regressions."""
+    effective = policy or GatePolicy()
+    regression = (
+        compare_reports(current, candidate, effective)
+        if current is not None
+        else GateResult(field_diffs=(), cohort_diffs=(), findings=())
+    )
+    return GateResult(
+        field_diffs=regression.field_diffs,
+        cohort_diffs=regression.cohort_diffs,
+        findings=(*_absolute_quality_findings(candidate, effective), *regression.findings),
+    )
+
+
 AuditSink = Callable[[dict[str, Any]], None]
 
 
@@ -261,4 +372,5 @@ __all__ = [
     "Waiver",
     "assert_promotable",
     "compare_reports",
+    "evaluate_promotion_gate",
 ]

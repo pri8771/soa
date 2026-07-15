@@ -20,9 +20,11 @@ one tenant (organization):
 
 1. **Intake** — a document arrives by upload, public API, or email. It is
    validated by magic-byte signature against its declared type
-   (type-confusion rejected), size/page limits, and a malware scan
-   (ClamAV) before anything else touches it. A development no-op scanner
-   is refused in production.
+   (type-confusion rejected), size/page limits, and a malware scan (ClamAV)
+   before it may enter processing or be downloaded. Direct-upload bytes first
+   land at their authorized object key; abandoned sessions are removed by
+   durable primary/sweep cleanup. A development no-op scanner is refused in
+   production.
 2. **Processing** — the document is rendered and its fields extracted by
    the configured provider (local by default — see [AI use](#ai-use)).
    Originals are stored immutably; derived artifacts are run-scoped.
@@ -44,7 +46,8 @@ Customer data is separated at several layers, not by a UI filter alone:
   organization-scoped repository; unscoped access is prohibited in normal
   code paths.
 - **Database** — PostgreSQL **row-level security** with a
-  `tenant_isolation` policy is FORCED on ~40 tenant tables as
+  `tenant_isolation` policy is forced on every table in the tenant-guard
+  registry as
   defense-in-depth beneath the repository boundary. (RLS is a
   PostgreSQL-only layer; the SQLite used in unit tests does not enforce
   it. A small set of cross-tenant tables — users, organizations, audit
@@ -64,9 +67,8 @@ See [`THREAT_MODEL.md`](THREAT_MODEL.md) and `soa_db.tenant_guard`.
   `X-Content-Type-Options`, and a restrictive `Permissions-Policy`. **TLS
   termination itself is handled by the hosting/ingress layer**, not the
   application.
-- **At rest** — object storage supports server-side encryption as
-  configuration: SSE-S3 (`AES256`) or KMS with an optional
-  customer-supplied key (`aws:kms` + key id). **Database and backup
+- **At rest** — object storage supports provider-managed encryption and
+  configured KMS keys for S3-compatible stores or GCS. **Database and backup
   at-rest encryption are provided by the managed hosting platform**
   (Cloud SQL for PostgreSQL — see [`DECISIONS.md`](DECISIONS.md)
   OPEN-001), not by application code. General customer-managed-key (BYOK)
@@ -82,25 +84,33 @@ See [`SANDBOX_PROFILE.md`](SANDBOX_PROFILE.md) and
   audience, and expiry validated). A separate development identity mode
   exists and is **refused at startup in production**. Machine access uses
   API keys stored only as SHA-256 hashes, shown once, compared in
-  constant time. Multi-factor authentication is delegated to the identity
-  provider.
+  constant time, expired automatically, and restricted to an explicit tenant,
+  machine capability, and stream allowlist. Legacy keys without a stream
+  allowlist fail closed and must be replaced through Settings. Multi-factor
+  authentication is delegated to the identity provider.
 - **Authorization** — a central authorization service is the only
   sanctioned path to a tenant context: it checks the organization is
   operational, the membership active, the permission registered
   (fail-closed on anything unknown), and rechecks resource ownership.
   Roles and permissions are a validated registry.
 - **Abuse controls** — request rate limiting is enforced at the API edge.
+  Staging and production replicas share atomic PostgreSQL sliding windows;
+  the database stores only operation-scoped HMAC identity digests and bounded
+  timestamp arrays. The HMAC uses the managed API application key with domain
+  separation; rotating that key resets at most the active 60-second windows,
+  while old digests expire through bounded cleanup. Development/tests retain
+  the faster in-memory adapter.
 
 See `soa_api.auth.authorization` and `soa_api.domain.rbac`.
 
 ## Subprocessors
 
-By default, **document processing is entirely local to the deployment** —
-extraction runs on local models and content never leaves the environment.
-The platform engages a third-party AI provider **only when the customer
-opts in with their own API key** and the tenant's data policy explicitly
-allows third-party processing; hosted providers declare this honestly and
-are otherwise never selected (see [AI use](#ai-use)).
+The platform can process documents entirely inside the deployment with native
+text, Tesseract, and a local model. A run engages a third-party AI provider
+**only** when the published tenant policy explicitly allows third-party
+processing and pins an allowed provider plus credential reference. Hosted
+providers declare this boundary and are otherwise excluded (see
+[AI use](#ai-use)).
 
 A formal, published subprocessor list and Data Processing Agreement are
 produced during contracting; they do not yet exist as standing documents
@@ -114,25 +124,42 @@ deployment.
   pinned (not live-editable) retention window, with an absolute
   **legal-hold** override that always wins, and a gated state machine
   (`RETAINED → ELIGIBLE → PENDING_APPROVAL → APPROVED → DELETED`).
-- **Deletion** — erasure runs only after explicit approval: it removes
-  the document's object-store artifacts and derived rows, reconciles that
-  the objects are gone, and leaves an immutable **tombstone** plus a
-  counts-only audit record for attributability. It is idempotent and
-  retry-safe. **Scope caveat, stated honestly:** deletion covers the live
-  database and object store; point-in-time **backups age out under their
-  own retention** rather than being individually purged, and (because
-  extraction is local) there is no third-party provider cache to purge.
+- **Deletion** — a persisted request accepts only settled documents and needs
+  approval by a different authorized principal. An active legal hold is an
+  absolute veto; placing one revokes an unexecuted approval, and release never
+  auto-approves. Approval transactionally enqueues a tenant-fenced durable
+  worker job. Erasure covers artifact and abandoned-upload objects/rows,
+  derived processing/review/canonical rows, linked gold examples and dependent
+  evaluation evidence, copied document/organization export bundles/manifests,
+  and document-bearing queue/outbox payloads. It
+  invalidates signed export capabilities by deleting their objects, unlinks
+  document/run IDs from financial usage evidence without changing billing
+  facts, and anonymizes the retained document shell (filename, content hash,
+  size/type, source metadata, client reference, duplicate/SLA links). Object
+  absence is reconciled before a request reaches `completed`; retries and
+  redeliveries are idempotent. A schema completeness test requires every new
+  typed document/run reference to declare an erase/anonymize/retain policy.
+  The retained proof consists of request/hold history, the tombstone,
+  anonymized shell, financial totals, and access-controlled append-only audit
+  evidence. **Scope caveat, stated honestly:** point-in-time **backups age out
+  under their own retention** rather than being individually purged. Hosted
+  providers and already-delivered ERP/downstream copies need contract-specific
+  deletion/retention procedures; the application does not claim to purge
+  those external systems.
 - **Customer export** — a tenant can export a document's data across all
-  documented data categories (including audit events) as a signed,
-  expiring bundle.
+  documented data categories (including audit events) as a signed, expiring
+  bundle, or request a durable batched organization export with a manifest and
+  expiring parts.
 
 See `soa_db.retention`, `soa_db.data_deletion`, `soa_db.data_export`, and
 the [`deletion`](runbooks/deletion.md) runbook.
 
 ## AI use
 
-- **Local-first.** Field extraction defaults to a local model; content
-  stays inside the deployment and is not sent to any third party.
+- **Local-capable and policy-bound.** A published stream may pin local
+  extraction so content stays inside the deployment. The seeded development
+  stream uses the deterministic mock. No deployment-wide setting silently
+  overrides the run's provider/data policy.
 - **No autonomy.** No model request ever carries tools — a model reads a
   document, it never acts; a test asserts this structurally for each
   adapter.
@@ -142,11 +169,10 @@ the [`deletion`](runbooks/deletion.md) runbook.
   contains URLs, and bounds page/character counts. An adversarial
   prompt-injection corpus is run in CI.
 - **Bring-your-own hosted key (optional).** Claude / Gemini / OpenAI can
-  be enabled with the customer's own key; a missing key means the
-  capability simply does not exist (fail-closed). Confidence is treated
-  as one signal into human review, never the decision.
-- **Honest limitation.** Hosted-AI keys are currently deployment-level,
-  not yet isolated per tenant via the secret store (a tracked follow-on).
+  be enabled with the customer's own per-tenant secret reference; an explicit
+  empty/invalid tenant credential never falls through to a shared deployment
+  key (fail-closed). Confidence is treated as one signal into human review,
+  never the decision.
 
 See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md) and [`AI_OCR.md`](AI_OCR.md).
 
@@ -158,9 +184,20 @@ secret store behind a stable interface. Two managed production backends
 are implemented and selectable by settings — AWS Secrets Manager and GCP
 Secret Manager (the backend for the chosen GCP hosting, see
 [`DECISIONS.md`](DECISIONS.md) OPEN-001); production settings validation
-refuses the development memory/file stores. Rotation issues a new
-reference rather than mutating one, so an audit trail can name exactly
-which credential version was in use.
+refuses the development memory/file stores. Rotation issues a new reference
+rather than mutating one, so an audit trail can name exactly which credential
+version was in use. Integration rotation commits the replacement and a durable
+`secret.revoke` job together. Provider rotation deliberately retains the
+superseded secret for immutable published-policy/run pins; normal revocation is
+refused while any policy references it, while audited force revocation is a
+break-glass action that makes those pins fail closed. Provider and integration
+secret writes register idempotent external revocation as database-rollback
+compensation, preventing a failed metadata transaction from leaving the new
+value orphaned. The GCP baseline puts these dynamically created tenant
+credentials in a dedicated Secret Manager project. Its necessarily
+project-wide runtime roles therefore cannot read or delete the migrator
+database URL, application signing keys, or other platform secrets in the
+runtime project.
 
 A required CI test suite sweeps logs, telemetry spans, metrics, and API
 responses for leaked secrets or document content, and audit-event
@@ -209,6 +246,7 @@ Stated plainly so a security reviewer is not misled:
 - SOC 2 / ISO 27001 or other formal certification.
 - A published subprocessor list, DPA, and privacy policy (produced at
   contracting).
-- Per-tenant isolation of hosted-AI provider keys.
+- Automatic purge from every hosted AI provider; this depends on the selected
+  provider's contract and API.
 - Immediate erasure of data from point-in-time backups (backups age out
   under their own retention).

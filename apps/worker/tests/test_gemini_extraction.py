@@ -25,7 +25,8 @@ from soa_worker.gemini_extraction import (
     GeminiExtractionProvider,
     register_gemini_extraction,
 )
-from soa_worker.providers import Capability, provider_info, unregister_provider
+from soa_worker.model_extraction_result import ModelOutputInvalidError
+from soa_worker.providers import Capability, create_provider, provider_info, unregister_provider
 
 DOC_ID = uuid.UUID("1f4b8a00-0000-4000-8000-0000000000ee")
 PAGE_TEXT = "PURCHASE ORDER PO-4711\nBuyer: Acme GmbH\nCurrency: EUR"
@@ -50,7 +51,14 @@ def extraction_request(
 def model_answer(fields: list[dict[str, Any]]) -> httpx.Response:
     return httpx.Response(
         200,
-        json={"candidates": [{"content": {"parts": [{"text": json.dumps({"fields": fields})}]}}]},
+        json={
+            "candidates": [{"content": {"parts": [{"text": json.dumps({"fields": fields})}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 20_000,
+                "candidatesTokenCount": 10_000,
+                "totalTokenCount": 31_000,
+            },
+        },
     )
 
 
@@ -124,6 +132,14 @@ class TestHonestOutput:
         assert by_key["ship_date"].raw_value is None
         assert result.provider == PROVIDER_NAME
         assert CAPABILITY_WARNING in result.warnings
+        assert result.usage is not None
+        assert result.usage.as_dict() == {
+            "input_tokens": 20_000,
+            "output_tokens": 10_000,
+            "total_tokens": 31_000,
+        }
+        assert result.cost_cents == 1
+        assert result.pricing_reference == "soa-rate-card-v1:google:gemini-2.0-flash"
 
     async def test_multiple_parts_are_concatenated(self) -> None:
         def handler(_r: httpx.Request) -> httpx.Response:
@@ -134,7 +150,12 @@ class TestHonestOutput:
                 json={
                     "candidates": [
                         {"content": {"parts": [{"text": dumped[:half]}, {"text": dumped[half:]}]}}
-                    ]
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 20_000,
+                        "candidatesTokenCount": 10_000,
+                        "totalTokenCount": 31_000,
+                    },
                 },
             )
 
@@ -148,13 +169,30 @@ class TestErrors:
         def handler(_r: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
-                json={"candidates": [{"content": {"parts": [{"text": "SECRET not json {"}]}}]},
+                json={
+                    "candidates": [{"content": {"parts": [{"text": "SECRET not json {"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 2,
+                        "totalTokenCount": 7,
+                    },
+                },
             )
 
-        with pytest.raises(ExtractionProviderError) as caught:
+        with pytest.raises(ModelOutputInvalidError) as caught:
             await provider_with(handler).extract(extraction_request())
         assert caught.value.retryable is True
         assert "SECRET" not in str(caught.value)
+        assert caught.value.usage is not None and caught.value.usage.total_tokens == 7
+
+    async def test_missing_or_malformed_usage_is_safe_and_retryable(self) -> None:
+        response = {"candidates": [{"content": {"parts": [{"text": json.dumps({"fields": []})}]}}]}
+        with pytest.raises(ExtractionProviderError) as caught:
+            await provider_with(lambda _r: httpx.Response(200, json=response)).extract(
+                extraction_request()
+            )
+        assert caught.value.retryable is True
+        assert "unexpected response shape" in str(caught.value)
 
     async def test_server_and_rate_limit_retryable(self) -> None:
         for status in (500, 503, 429):
@@ -187,3 +225,41 @@ class TestHostedProfile:
 
         with pytest.raises(UnknownProviderError):
             provider_info(Capability.FIELD_EXTRACTION, PROVIDER_NAME)
+
+    def test_explicit_tenant_credential_never_falls_back_to_deployment_key(self) -> None:
+        register_gemini_extraction("deployment-key")
+        try:
+            assert isinstance(
+                create_provider(Capability.FIELD_EXTRACTION, PROVIDER_NAME),
+                GeminiExtractionProvider,
+            )
+            with pytest.raises(ValueError, match="needs an API key"):
+                create_provider(
+                    Capability.FIELD_EXTRACTION,
+                    PROVIDER_NAME,
+                    credential_value="",
+                )
+            tenant = create_provider(
+                Capability.FIELD_EXTRACTION,
+                PROVIDER_NAME,
+                credential_value="tenant-key",
+            )
+            assert isinstance(tenant, GeminiExtractionProvider)
+        finally:
+            unregister_provider(Capability.FIELD_EXTRACTION, PROVIDER_NAME)
+
+    def test_tenant_only_registration_requires_runtime_credential(self) -> None:
+        register_gemini_extraction(None)
+        try:
+            with pytest.raises(ValueError, match="needs an API key"):
+                create_provider(Capability.FIELD_EXTRACTION, PROVIDER_NAME)
+            assert isinstance(
+                create_provider(
+                    Capability.FIELD_EXTRACTION,
+                    PROVIDER_NAME,
+                    credential_value="tenant-key",
+                ),
+                GeminiExtractionProvider,
+            )
+        finally:
+            unregister_provider(Capability.FIELD_EXTRACTION, PROVIDER_NAME)

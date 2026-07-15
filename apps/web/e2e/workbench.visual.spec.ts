@@ -23,6 +23,7 @@ const SECTIONS = [
 for (const theme of ["light", "dark"] as const) {
   test.describe(`workbench (${theme})`, () => {
     test.beforeEach(async ({ page }) => {
+      await installSessionMock(page);
       await page.goto("/workbench");
       await page.evaluate((selectedTheme) => {
         document.documentElement.setAttribute("data-theme", selectedTheme);

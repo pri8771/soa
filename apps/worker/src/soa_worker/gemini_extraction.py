@@ -24,7 +24,8 @@ Gemini specifics:
   asserts this);
 - errors are display-safe and classified retryable/terminal exactly like
   the other adapters; a hosted provider declares third-party processing
-  honestly and only registers when a key is present (AIO-006).
+  honestly and fails construction when its selected credential is absent
+  or empty (AIO-006).
 """
 
 from typing import Any
@@ -42,11 +43,18 @@ from soa_worker.model_request_builder import (
     BuiltModelRequest,
     build_extraction_messages,
 )
+from soa_worker.model_usage import ProviderUsage, TokenPricing
+from soa_worker.runtime_provenance import endpoint_fingerprint
 
 PROVIDER_NAME = "google-gemini"
 
 DEFAULT_ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_PRICING = TokenPricing(
+    reference="soa-rate-card-v1:google:gemini-2.0-flash",
+    input_cents_per_million=10,
+    output_cents_per_million=40,
+)
 
 CAPABILITY_WARNING = (
     "hosted Gemini extraction: content is sent to Google (third party); "
@@ -62,6 +70,8 @@ class GeminiExtractionProvider:
     per call. ``endpoint_base`` is overridable for a proxy or a pinned API
     version."""
 
+    supports_repair = True
+
     def __init__(
         self,
         *,
@@ -74,6 +84,7 @@ class GeminiExtractionProvider:
         instructions: dict[str, Any] | None = None,
         instruction_reference: str | None = None,
         build_limits: BuildLimits | None = None,
+        pricing: TokenPricing = DEFAULT_PRICING,
     ) -> None:
         if not api_key:
             raise ValueError("the Gemini adapter needs an API key")
@@ -86,10 +97,20 @@ class GeminiExtractionProvider:
         self._instructions = instructions
         self._instruction_reference = instruction_reference
         self._build_limits = build_limits
+        self._pricing = pricing
 
     @property
     def name(self) -> str:
         return PROVIDER_NAME
+
+    @property
+    def runtime_provenance(self) -> dict[str, object]:
+        return {
+            "adapter": "gemini-generate-content-v1beta",
+            "model": self._model,
+            "endpoint_sha256": endpoint_fingerprint(self._endpoint),
+            "pricing": self._pricing.as_dict(),
+        }
 
     def build_payload(self, request: ExtractionRequest) -> tuple[dict[str, Any], BuiltModelRequest]:
         """The exact ``generateContent`` payload — exposed for tests. The
@@ -136,18 +157,20 @@ class GeminiExtractionProvider:
                 },
             ]
         assert "tools" not in payload  # the model reads; it never acts
-        content = await self._complete(payload)
+        content, usage = await self._complete(payload)
         return parse_model_extraction(
             request,
             content,
             built,
             provider=self.name,
             model=self._model,
-            cost_cents=0,
+            cost_cents=self._pricing.estimate_cost_cents(usage),
+            usage=usage,
+            pricing_reference=self._pricing.reference,
             lead_warnings=(CAPABILITY_WARNING,),
         )
 
-    async def _complete(self, payload: dict[str, Any]) -> str:
+    async def _complete(self, payload: dict[str, Any]) -> tuple[str, ProviderUsage]:
         headers = {"x-goog-api-key": self._api_key, "content-type": "application/json"}
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         owns_client = self._client is None
@@ -180,13 +203,19 @@ class GeminiExtractionProvider:
             content = "".join(
                 part["text"] for part in parts if isinstance(part, dict) and "text" in part
             )
+            raw_usage = body["usageMetadata"]
+            usage = ProviderUsage.from_provider_counts(
+                input_tokens=raw_usage["promptTokenCount"],
+                output_tokens=raw_usage["candidatesTokenCount"],
+                total_tokens=raw_usage["totalTokenCount"],
+            )
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionProviderError(
                 "Gemini returned an unexpected response shape", retryable=True
             ) from None
         if not content:
             raise ExtractionProviderError("Gemini returned no text content", retryable=True)
-        return content
+        return content, usage
 
 
 def register_gemini_extraction(
@@ -194,12 +223,14 @@ def register_gemini_extraction(
     *,
     model: str = DEFAULT_MODEL,
     endpoint_base: str = DEFAULT_ENDPOINT_BASE,
+    pricing: TokenPricing = DEFAULT_PRICING,
 ) -> None:
-    """Register the hosted Gemini adapter. Call this ONLY when the
-    deployment configured an API key (worker startup does); without a key
-    the capability does not exist (AIO-006 fail-closed). Content leaves the
-    deployment to a hosted US third party — declared honestly so tenant
-    policy is enforced against it."""
+    """Register hosted Gemini for deployment or run-pinned credentials.
+
+    A supplied tenant ``credential_value`` is authoritative, including an
+    invalid empty value; it never silently falls through to shared billing.
+    With neither credential source, construction fails closed (AIO-006).
+    """
     from soa_worker.providers.capabilities import (
         ANY_LANGUAGE,
         Capability,
@@ -221,11 +252,14 @@ def register_gemini_extraction(
             ),
         ),
         lambda **runtime: GeminiExtractionProvider(
-            api_key=runtime.get("credential_value") or api_key or "",
+            api_key=(
+                runtime["credential_value"] if "credential_value" in runtime else api_key or ""
+            ),
             model=model,
             endpoint_base=endpoint_base,
             instructions=runtime.get("instructions"),
             instruction_reference=runtime.get("instruction_reference"),
+            pricing=pricing,
         ),
     )
 
@@ -234,6 +268,7 @@ __all__ = [
     "CAPABILITY_WARNING",
     "DEFAULT_ENDPOINT_BASE",
     "DEFAULT_MODEL",
+    "DEFAULT_PRICING",
     "PROVIDER_NAME",
     "GeminiExtractionProvider",
     "register_gemini_extraction",

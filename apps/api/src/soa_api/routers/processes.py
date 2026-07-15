@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession
+from soa_api.domain.policies import PolicyVersionRepository
 from soa_api.domain.processes import (
     Process,
     ProcessRepository,
@@ -46,6 +47,7 @@ from soa_api.domain.schemas import (
 )
 from soa_api.domain.streams import (
     Stream,
+    StreamOverrideError,
     StreamRepository,
     StreamStatus,
     StreamVersion,
@@ -54,6 +56,7 @@ from soa_api.domain.streams import (
     create_stream_draft,
     publish_stream_draft,
     resolve_snapshot,
+    validate_stream_overrides,
 )
 from soa_api.domain.versioning import (
     ImmutableVersionError,
@@ -661,14 +664,17 @@ async def create_stream_version(
     session: DbSession,
 ) -> StreamVersionResponse:
     stream = await _load_stream(session, authorized, stream_slug)
-    draft = await create_stream_draft(
-        session,
-        authorized.org_context,
-        stream=stream,
-        overrides=body.overrides,
-        change_summary=body.change_summary,
-        actor_id=_actor(authorized),
-    )
+    try:
+        draft = await create_stream_draft(
+            session,
+            authorized.org_context,
+            stream=stream,
+            overrides=body.overrides,
+            change_summary=body.change_summary,
+            actor_id=_actor(authorized),
+        )
+    except StreamOverrideError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return StreamVersionResponse.from_model(draft)
 
 
@@ -693,12 +699,15 @@ async def update_stream_version(
     try:
         if if_match is not None:
             record.expect_version(if_match)
+        validate_stream_overrides(body.overrides)
         record.overrides = dict(body.overrides)
         if body.change_summary is not None:
             record.change_summary = body.change_summary
         await session.flush()
     except VersionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except StreamOverrideError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return StreamVersionResponse.from_model(record)
 
 
@@ -717,6 +726,10 @@ async def resolve_stream_preview(
     proposed overrides against the parent process's active version and
     return every layer plus the provenance-tagged result. Persists nothing."""
     stream = await _load_stream(session, authorized, stream_slug)
+    try:
+        validate_stream_overrides(body.overrides)
+    except StreamOverrideError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     process = await ProcessRepository(session, authorized.org_context).get(stream.process_id)
     if process is None or process.active_version_id is None:
         raise HTTPException(
@@ -770,6 +783,21 @@ async def publish_stream_version(
             detail="The parent process's active version could not be loaded.",
         )
     candidate_snapshot = resolve_snapshot(process_version, draft.overrides)
+    candidate_config = candidate_snapshot.get("config")
+    assert isinstance(candidate_config, dict)
+    runtime_problem = await _candidate_runtime_problem(
+        session,
+        authorized,
+        stream,
+        candidate_config,
+    )
+    if runtime_problem:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Promotion blocked: candidate runtime configuration is invalid: {runtime_problem}"
+            ),
+        )
     if stream.active_version_id is not None and bool(
         process_version.definition.get("evaluation_gate_required", True)
     ):
@@ -796,6 +824,72 @@ async def publish_stream_version(
     except InvalidVersionStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     return StreamVersionResponse.from_model(published)
+
+
+async def _candidate_runtime_problem(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    stream: Stream,
+    config: dict[str, Any],
+) -> str | None:
+    """Validate every immutable runtime reference before a stream is sealed."""
+
+    def identifier(key: str) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(str(config[key]))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+    schema_id = identifier("schema_version_id")
+    rules_id = identifier("rule_set_version_id")
+    provider_id = identifier("provider_policy_version_id")
+    if schema_id is None or rules_id is None or provider_id is None:
+        return "schema, rule-set, and provider-policy pins are required"
+    schema = await SchemaVersionRepository(session, authorized.org_context).get(schema_id)
+    if (
+        schema is None
+        or schema.process_id != stream.process_id
+        or schema.state not in (VersionState.PUBLISHED, VersionState.SUPERSEDED)
+    ):
+        return "schema pin is missing, mutable, foreign, or belongs to another process"
+    rules = await RuleSetVersionRepository(session, authorized.org_context).get(rules_id)
+    if (
+        rules is None
+        or rules.process_id != stream.process_id
+        or rules.state not in (VersionState.PUBLISHED, VersionState.SUPERSEDED)
+    ):
+        return "rule-set pin is missing, mutable, foreign, or belongs to another process"
+    provider = await PolicyVersionRepository(session, authorized.org_context).get(provider_id)
+    if (
+        provider is None
+        or provider.policy_type != "provider"
+        or provider.state
+        not in (
+            VersionState.PUBLISHED,
+            VersionState.SUPERSEDED,
+        )
+    ):
+        return "provider-policy pin is missing, mutable, foreign, or has the wrong type"
+    confidence_id = identifier("confidence_policy_version_id")
+    if config.get("confidence_policy_version_id") is not None:
+        if confidence_id is None:
+            return "confidence-policy pin is invalid"
+        confidence = await PolicyVersionRepository(session, authorized.org_context).get(
+            confidence_id
+        )
+        if (
+            confidence is None
+            or confidence.policy_type != "confidence"
+            or confidence.state
+            not in (
+                VersionState.PUBLISHED,
+                VersionState.SUPERSEDED,
+            )
+        ):
+            return "confidence-policy pin is missing, mutable, foreign, or has the wrong type"
+    if config.get("input_contract") != "single_sales_order":
+        return "only the single_sales_order input contract is executable in P0"
+    return None
 
 
 # --- extraction schema (CFG-011 over the CFG-003 domain) -------------------

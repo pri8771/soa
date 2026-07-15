@@ -238,3 +238,33 @@ def test_execution_is_deterministic() -> None:
     second = execute_mapping(definition, CANONICAL)
     assert first.payload == second.payload
     assert [e.to_json() for e in first.trace] == [e.to_json() for e in second.trace]
+
+
+def test_erp_mapping_can_read_neutral_catalog_identifiers_from_arrays() -> None:
+    canonical = dict(CANONICAL)
+    canonical["line_items"] = CANONICAL["line_items"][:1]
+    canonical["parties"] = {
+        "buyer": {
+            "name": "Acme",
+            "identifiers": [{"scheme": "customer-account", "value": "CUST-100"}],
+        }
+    }
+    result = execute_mapping(
+        {
+            "fields": [
+                {
+                    "target": "CustomerNumber",
+                    "source": "parties.buyer.identifiers.0.value",
+                    "required": True,
+                }
+            ],
+            "lines": {
+                "source": "line_items",
+                "target": "Lines",
+                "fields": [{"target": "MaterialNumber", "source": "sku", "required": True}],
+            },
+        },
+        canonical,
+    )
+    assert result.payload["CustomerNumber"] == "CUST-100"
+    assert result.payload["Lines"][0]["MaterialNumber"] == "WID-100"

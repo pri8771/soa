@@ -89,6 +89,7 @@ export function LineItemGrid({
   //: Last value saved per cell: Enter saves and moves focus, and the
   //: blur that follows must not save the same draft again.
   const lastSaved = useRef(new Map<string, string>());
+  const skipNextBlur = useRef(new Set<string>());
 
   const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(rows.length, start + VIEWPORT_ROWS + OVERSCAN * 2);
@@ -96,15 +97,21 @@ export function LineItemGrid({
 
   const cellId = (key: string, rowIndex: number) => `${key}#${rowIndex}`;
 
-  const saveDraft = (key: string, rowIndex: number) => {
+  const saveDraft = (key: string, rowIndex: number): boolean => {
     const id = cellId(key, rowIndex);
     const draft = drafts[id];
     const current = rows.find((row) => row.rowIndex === rowIndex)?.cells[key]?.value ?? "";
-    if (draft === undefined || draft === (current ?? "") || lastSaved.current.get(id) === draft) {
-      return;
+    // Enter followed by blur must not duplicate a live/successful request,
+    // but a failed request MUST be retryable without forcing the reviewer to
+    // change the value and change it back first.
+    const duplicateUnlessFailed =
+      lastSaved.current.get(id) === draft && saveStates[id]?.status !== "error";
+    if (draft === undefined || draft === (current ?? "") || duplicateUnlessFailed) {
+      return false;
     }
     lastSaved.current.set(id, draft);
     onSaveCell(key, rowIndex, draft);
+    return true;
   };
 
   const totals = columns.map((key) => {
@@ -215,6 +222,8 @@ export function LineItemGrid({
                     >
                       <input
                         aria-label={`${columnLabel(key)} row ${row.rowIndex}`}
+                        data-review-field-key={key}
+                        data-review-row-index={row.rowIndex}
                         ref={(element) => {
                           if (element) inputs.current.set(id, element);
                           else inputs.current.delete(id);
@@ -225,16 +234,20 @@ export function LineItemGrid({
                         onChange={(event) =>
                           setDrafts((prev) => ({ ...prev, [id]: event.target.value }))
                         }
-                        onBlur={() => saveDraft(key, row.rowIndex)}
+                        onBlur={() => {
+                          if (skipNextBlur.current.delete(id)) return;
+                          saveDraft(key, row.rowIndex);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
                             event.preventDefault();
-                            saveDraft(key, row.rowIndex);
+                            const attempted = saveDraft(key, row.rowIndex);
                             // Spreadsheet flow: down the same column.
                             const below = rows.find(
                               (candidate) => candidate.rowIndex > row.rowIndex,
                             );
                             if (below) {
+                              if (attempted) skipNextBlur.current.add(id);
                               inputs.current.get(cellId(key, below.rowIndex))?.focus();
                             }
                           } else if (event.key === "Escape") {

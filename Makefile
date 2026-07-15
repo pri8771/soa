@@ -2,10 +2,11 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 COMPOSE_FILE := infrastructure/local/docker-compose.yml
+ENV_FILE_FLAG := $(if $(wildcard .env),--env-file .env,)
+UV_RUN := uv run $(ENV_FILE_FLAG)
 
 # Commands implement the contract in docs/DELIVERY_PLAN.md §7.1.
-# Targets whose backing capability is not yet implemented fail loudly with a
-# pointer to the backlog task that delivers them — they never fake success.
+# Targets fail loudly when a required checked-in runtime definition is absent.
 
 .PHONY: help
 help: ## Show available commands
@@ -20,25 +21,25 @@ bootstrap: ## Install toolchains/dependencies and copy env template
 
 .PHONY: local-up
 local-up: ## Start PostgreSQL, storage, mail, scanner (and optional telemetry)
-	@if [ ! -f $(COMPOSE_FILE) ]; then echo "ERROR: local services not implemented yet (FND-006)."; exit 1; fi
+	@if [ ! -f $(COMPOSE_FILE) ]; then echo "ERROR: missing $(COMPOSE_FILE)."; exit 1; fi
 	docker compose -f $(COMPOSE_FILE) up -d --wait
 
 .PHONY: local-down
 local-down: ## Stop local services (data volumes are preserved)
-	@if [ ! -f $(COMPOSE_FILE) ]; then echo "ERROR: local services not implemented yet (FND-006)."; exit 1; fi
+	@if [ ! -f $(COMPOSE_FILE) ]; then echo "ERROR: missing $(COMPOSE_FILE)."; exit 1; fi
 	docker compose -f $(COMPOSE_FILE) down
 
 .PHONY: migrate
 migrate: ## Apply database migrations
-	uv run alembic upgrade head
+	$(UV_RUN) alembic upgrade head
 
 .PHONY: verify-artifacts
 verify-artifacts: ## Reconcile artifact records against object storage (STO-005)
-	uv run python -m soa_api.ops.verify_artifacts
+	$(UV_RUN) python -m soa_api.ops.verify_artifacts
 
 .PHONY: seed
 seed: ## Load deterministic demo tenant and sample data
-	uv run python -m soa_api.ops.seed
+	$(UV_RUN) python -m soa_api.ops.seed
 
 .PHONY: dev
 dev: ## Run web, API, and worker with reload
@@ -86,7 +87,7 @@ test-security: ## Security and cross-tenant tests (RLS tests skip without SOA_TE
 
 .PHONY: eval
 eval: ## Golden document evaluation
-	uv run soa-eval
+	$(UV_RUN) soa-eval
 
 .PHONY: build
 build: ## Build all apps
@@ -101,10 +102,11 @@ perf: ## Run the performance test suite (REL-009)
 	uv run pytest tests/performance -o addopts=""
 
 .PHONY: docker-build
-docker-build: ## Build the API, worker, and web container images (REL-001)
-	docker build -f apps/api/Dockerfile -t soa-api .
-	docker build -f apps/worker/Dockerfile -t soa-worker .
-	docker build -f apps/web/Dockerfile -t soa-web .
+docker-build: ## Build the API, migrator, worker, and web container images (REL-001)
+	docker build --target api -f apps/api/Dockerfile -t soa-api .
+	docker build --target migrator -f apps/api/Dockerfile -t soa-migrator .
+	docker build --target runtime -f apps/worker/Dockerfile -t soa-worker .
+	docker build --target runtime -f apps/web/Dockerfile -t soa-web .
 
 .PHONY: security-scan
 security-scan: ## Dependency + secret scans and the supply-chain policy gate (SEC-011)

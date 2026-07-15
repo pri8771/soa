@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_db.catalog_line_validation import MaterialFacts, OrderLine, material_of, validate_lines
 from soa_db.catalog_match_policy import resolve_match
 from soa_db.catalog_matching import facts_of
+from soa_db.catalog_selections import (
+    BoundCatalog,
+    CatalogSelectionSource,
+    CatalogSelectionStatus,
+    record_catalog_selection,
+)
 from soa_db.catalog_validation import OrderParties, party_of, validate_parties
 from soa_db.catalogs import (
     CatalogBindingRepository,
@@ -59,8 +65,8 @@ async def _bound_records(
     session: AsyncSession,
     context: OrganizationContext,
     document: Document,
-) -> tuple[dict[str, list[CatalogRecord]], dict[str, list[str]], list[str]]:
-    records: dict[str, list[CatalogRecord]] = {}
+) -> tuple[dict[str, BoundCatalog], dict[str, list[str]], list[str]]:
+    candidates: dict[str, list[BoundCatalog]] = {}
     versions: dict[str, list[str]] = {}
     notes: list[str] = []
     bindings = await CatalogBindingRepository(session, context).list_for_stream(document.stream_id)
@@ -70,11 +76,25 @@ async def _bound_records(
         if catalog is None or version is None:
             notes.append(f"catalog binding {binding.id} resolves to no usable version")
             continue
-        records.setdefault(catalog.catalog_type, []).extend(
-            await CatalogRecordRepository(session, context).list_for_version(version.id)
+        candidates.setdefault(catalog.catalog_type, []).append(
+            BoundCatalog(
+                catalog=catalog,
+                version=version,
+                records=tuple(
+                    await CatalogRecordRepository(session, context).list_for_version(version.id)
+                ),
+            )
         )
         versions.setdefault(catalog.catalog_type, []).append(str(version.id))
-    return records, versions, notes
+    resolved: dict[str, BoundCatalog] = {}
+    for catalog_type, scopes in candidates.items():
+        if len(scopes) != 1:
+            notes.append(
+                f"{len(scopes)} {catalog_type} catalogs are bound; exactly one is required"
+            )
+            continue
+        resolved[catalog_type] = scopes[0]
+    return resolved, versions, notes
 
 
 def _reason(
@@ -97,16 +117,17 @@ async def validate_order_business_data(
     rows: list[ExtractedField],
     *,
     stream_config: Mapping[str, Any],
+    record_selections: bool = True,
 ) -> BusinessValidationResult:
     """Match bound catalogs, retain every decision, and run business checks."""
-    del run  # reserved for future catalog-decision audit rows
     by_key = {(row.field_key, row.row_index): row for row in rows}
     catalogs, versions, notes = await _bound_records(session, context, document)
     findings: list[dict[str, Any]] = []
     match_count = 0
-    as_of = _order_date(by_key)
+    as_of = _order_date(by_key) or document.received_at.date()
 
-    customer_records = catalogs.get("customers", [])
+    customer_scope = catalogs.get("customers")
+    customer_records = list(customer_scope.records) if customer_scope is not None else []
     selected_customer: CatalogRecord | None = None
     customer_row = by_key.get(("customer_name", None))
     customer_value = _value(customer_row)
@@ -117,14 +138,50 @@ async def validate_order_business_data(
             field_type="customer",
             as_of=as_of,
         )
-        customer_row.catalog_match_json = decision.to_record()
-        match_count += 1
+        selected_record = None
         if decision.selected_source_id is not None:
-            selected_customer = next(
+            selected_record = next(
                 record
                 for record in customer_records
                 if record.source_id == decision.selected_source_id
             )
+        retained_decision = decision.to_record()
+        if customer_scope is not None:
+            retained_decision.update(
+                {
+                    "catalog_id": str(customer_scope.catalog.id),
+                    "catalog_version_id": str(customer_scope.version.id),
+                    "selected_record_id": (
+                        str(selected_record.id) if selected_record is not None else None
+                    ),
+                }
+            )
+            if record_selections:
+                await record_catalog_selection(
+                    session,
+                    context,
+                    document_id=document.id,
+                    run_id=run.id,
+                    task_id=None,
+                    field_key="customer_name",
+                    row_index=None,
+                    status=(
+                        CatalogSelectionStatus.SELECTED
+                        if selected_record is not None
+                        else CatalogSelectionStatus.NEEDS_REVIEW
+                    ),
+                    selection_source=CatalogSelectionSource.MACHINE,
+                    catalog=customer_scope.catalog,
+                    version=customer_scope.version,
+                    record=selected_record,
+                    matched_value=customer_value,
+                    selected_by="worker",
+                    decision=retained_decision,
+                )
+        customer_row.catalog_match_json = retained_decision
+        match_count += 1
+        if selected_record is not None:
+            selected_customer = selected_record
         else:
             findings.append(
                 _reason(
@@ -142,7 +199,8 @@ async def validate_order_business_data(
         findings.extend(finding.to_reason() for finding in party_result.findings)
         notes.extend(party_result.notes)
 
-    product_records = catalogs.get("products", [])
+    product_scope = catalogs.get("products")
+    product_records = list(product_scope.records) if product_scope is not None else []
     material_facts: list[MaterialFacts] = [material_of(record) for record in product_records]
     lines: list[tuple[OrderLine, MaterialFacts | None]] = []
     row_indexes = sorted(
@@ -164,13 +222,53 @@ async def validate_order_business_data(
                 field_type="material",
                 as_of=as_of,
             )
-            sku_row.catalog_match_json = decision.to_record()
-            match_count += 1
+            selected_record = None
             if decision.selected_source_id is not None:
+                selected_record = next(
+                    record
+                    for record in product_records
+                    if record.source_id == decision.selected_source_id
+                )
+            retained_decision = decision.to_record()
+            if product_scope is not None:
+                retained_decision.update(
+                    {
+                        "catalog_id": str(product_scope.catalog.id),
+                        "catalog_version_id": str(product_scope.version.id),
+                        "selected_record_id": (
+                            str(selected_record.id) if selected_record is not None else None
+                        ),
+                    }
+                )
+                if record_selections:
+                    await record_catalog_selection(
+                        session,
+                        context,
+                        document_id=document.id,
+                        run_id=run.id,
+                        task_id=None,
+                        field_key="lines.sku",
+                        row_index=row_index,
+                        status=(
+                            CatalogSelectionStatus.SELECTED
+                            if selected_record is not None
+                            else CatalogSelectionStatus.NEEDS_REVIEW
+                        ),
+                        selection_source=CatalogSelectionSource.MACHINE,
+                        catalog=product_scope.catalog,
+                        version=product_scope.version,
+                        record=selected_record,
+                        matched_value=sku,
+                        selected_by="worker",
+                        decision=retained_decision,
+                    )
+            sku_row.catalog_match_json = retained_decision
+            match_count += 1
+            if selected_record is not None:
                 selected = next(
                     material
                     for material in material_facts
-                    if material.source_id == decision.selected_source_id
+                    if material.source_id == selected_record.source_id
                 )
             else:
                 findings.append(

@@ -20,7 +20,7 @@ from soa_worker.webhook import (
 SECRET = "whsec_test_secret"
 BODY = b'{"PoNumber":"PO-100042"}'
 NOW = 1_800_000_000
-ALLOWLIST = ["erp.northstar.example", "*.hooks.example"]
+ALLOWLIST = ["erp.northstar.example", "a.hooks.example"]
 PUBLIC = ["93.184.216.34"]
 
 
@@ -59,7 +59,7 @@ def test_destinations_fail_closed_without_an_allowlist() -> None:
 
 
 def test_non_allowlisted_and_non_https_destinations_are_refused() -> None:
-    with pytest.raises(DestinationRefusedError, match="not on the destination allowlist"):
+    with pytest.raises(DestinationRefusedError, match="not allowlisted"):
         validate_destination(
             "https://evil.example/orders", allowlist=ALLOWLIST, resolve=public_resolver
         )
@@ -67,11 +67,17 @@ def test_non_allowlisted_and_non_https_destinations_are_refused() -> None:
         validate_destination(
             "http://erp.northstar.example/orders", allowlist=ALLOWLIST, resolve=public_resolver
         )
-    # Wildcard entries admit subdomains only under the suffix.
-    validate_destination("https://a.hooks.example/x", allowlist=ALLOWLIST, resolve=public_resolver)
-    with pytest.raises(DestinationRefusedError):
+    with pytest.raises(DestinationRefusedError, match="port 443"):
         validate_destination(
-            "https://hooksXexample/x", allowlist=ALLOWLIST, resolve=public_resolver
+            "https://erp.northstar.example:8443/orders",
+            allowlist=ALLOWLIST,
+            resolve=public_resolver,
+        )
+    # Exact entries are accepted; wildcard entries are always refused.
+    validate_destination("https://a.hooks.example/x", allowlist=ALLOWLIST, resolve=public_resolver)
+    with pytest.raises(DestinationRefusedError, match="exact hostnames"):
+        validate_destination(
+            "https://a.hooks.example/x", allowlist=["*.hooks.example"], resolve=public_resolver
         )
 
 
@@ -143,6 +149,31 @@ async def test_timeout_is_a_retryable_outcome() -> None:
         )
     assert result.outcome == "retryable_error"
     assert result.safe_error is not None and "did not respond" in result.safe_error
+
+
+async def test_delivery_never_follows_redirects_outside_the_validated_destination() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(307, headers={"Location": "https://169.254.169.254/latest"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as client:
+        result = await deliver_webhook(
+            client,
+            url="https://erp.northstar.example/orders",
+            body=BODY,
+            secret=SECRET,
+            business_key="k",
+            attempt_number=1,
+            timestamp=NOW,
+            allowlist=ALLOWLIST,
+            resolve=public_resolver,
+        )
+    assert result.outcome == "terminal_error"
+    assert len(seen) == 1
 
 
 @pytest.mark.parametrize(

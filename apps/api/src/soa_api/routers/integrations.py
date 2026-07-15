@@ -17,25 +17,31 @@ before it publishes. Publish refuses definitions with structural
 errors. Compare diffs two versions' definitions by target field.
 """
 
+import time
 import uuid
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession, SecretStoreDep
+from soa_api.dependencies import DbSession, SecretStoreDep, SettingsDep
 from soa_api.domain.integrations import (
     Integration,
     IntegrationRepository,
+    IntegrationStatus,
+    InvalidIntegrationTransitionError,
     MappingProfileVersion,
     MappingProfileVersionRepository,
     UnknownIntegrationTypeError,
     create_integration,
     create_mapping_draft,
+    credential_secret_for_delivery,
     publish_mapping_draft,
     store_integration_credential,
+    transition_integration,
 )
 from soa_api.domain.versioning import (
     ImmutableVersionError,
@@ -49,8 +55,11 @@ from soa_canonical.mapping_engine import (
     execute_mapping,
     validate_mapping_definition,
 )
+from soa_config import SecretNotFoundError
+from soa_db.audit import ActorType, record_audit_event
 from soa_db.mixins import VersionConflictError
 from soa_db.pagination import CursorRequest
+from soa_integrations import ConnectionTestRequest, capabilities_for, test_connection
 
 router = APIRouter(tags=["integrations"])
 
@@ -94,6 +103,7 @@ def _actor(authorized: AuthorizedContext) -> str:
 
 def _serialize_integration(integration: Integration) -> dict[str, Any]:
     """The integration WITHOUT its secret — only that one is configured."""
+    capabilities = capabilities_for(integration.integration_type)
     return {
         "id": str(integration.id),
         "name": integration.name,
@@ -102,6 +112,9 @@ def _serialize_integration(integration: Integration) -> dict[str, Any]:
         "status": integration.status,
         "endpoint_url": integration.endpoint_url,
         "credential_configured": integration.credential_id is not None,
+        "production_ready": capabilities.production_ready,
+        "readiness_detail": capabilities.readiness_detail,
+        "idempotency_mechanism": capabilities.idempotency_mechanism,
         "active_mapping_version_id": (
             str(integration.active_mapping_version_id)
             if integration.active_mapping_version_id
@@ -182,6 +195,241 @@ async def create_integration_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from None
     return _serialize_integration(integration)
+
+
+class ConnectionTestResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
+class ActivationResponse(BaseModel):
+    activated: bool
+    detail: str
+    integration: dict[str, Any]
+
+
+async def _connection_test_result(
+    *,
+    integration: Integration,
+    authorized: AuthorizedContext,
+    session: DbSession,
+    secret_store: SecretStoreDep,
+    settings: SettingsDep,
+) -> ConnectionTestResponse:
+    if integration.status == IntegrationStatus.ARCHIVED:
+        return ConnectionTestResponse(
+            ok=False,
+            detail="Archived integrations are terminal and cannot be tested or activated.",
+        )
+    if not integration.endpoint_url:
+        return ConnectionTestResponse(ok=False, detail="Configure an endpoint before testing.")
+    try:
+        secret = await credential_secret_for_delivery(
+            session,
+            authorized.org_context,
+            integration=integration,
+            secret_store=secret_store,
+        )
+    except SecretNotFoundError:
+        return ConnectionTestResponse(
+            ok=False,
+            detail="The configured credential is unavailable; rotate it before testing.",
+        )
+    if secret is None:
+        return ConnectionTestResponse(ok=False, detail="Configure a credential before testing.")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        result = await test_connection(
+            client,
+            integration.integration_type,
+            ConnectionTestRequest(
+                url=integration.endpoint_url,
+                secret=secret,
+                business_key=str(integration.id),
+                timestamp=int(time.time()),
+                allowlist=settings.outbound_destination_allowlist,
+            ),
+        )
+    return ConnectionTestResponse(ok=result.ok, detail=result.detail)
+
+
+async def _audit_connection_test(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    integration: Integration,
+    result: ConnectionTestResponse,
+) -> None:
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=_actor(authorized),
+        action="integration.connection_tested",
+        target_type="integration",
+        target_id=str(integration.id),
+        organization_id=authorized.organization.id,
+        summary={
+            "type": integration.integration_type,
+            "ok": result.ok,
+            "detail": result.detail,
+        },
+    )
+
+
+@router.post(
+    "/orgs/{organization_slug}/integrations/{integration_slug}/connection-test",
+    response_model=ConnectionTestResponse,
+)
+async def test_integration_connection(
+    integration_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("credentials.manage"))],
+    session: DbSession,
+    secret_store: SecretStoreDep,
+    settings: SettingsDep,
+) -> ConnectionTestResponse:
+    integration = await _load_integration(session, authorized, integration_slug)
+    result = await _connection_test_result(
+        integration=integration,
+        authorized=authorized,
+        session=session,
+        secret_store=secret_store,
+        settings=settings,
+    )
+    await _audit_connection_test(session, authorized, integration, result)
+    return result
+
+
+def _expect_integration_version(integration: Integration, if_match: int) -> None:
+    try:
+        integration.expect_version(if_match)
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+
+@router.post(
+    "/orgs/{organization_slug}/integrations/{integration_slug}/activate",
+    response_model=ActivationResponse,
+)
+async def activate_integration(
+    integration_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("integrations.manage"))],
+    session: DbSession,
+    secret_store: SecretStoreDep,
+    settings: SettingsDep,
+    if_match: Annotated[int, Header(alias="If-Match")],
+) -> ActivationResponse:
+    if "credentials.manage" not in authorized.permissions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Activation also requires credentials.manage.",
+        )
+    integration = await _load_integration(session, authorized, integration_slug)
+    _expect_integration_version(integration, if_match)
+    capabilities = capabilities_for(integration.integration_type)
+    if not capabilities.production_ready:
+        result = ConnectionTestResponse(ok=False, detail=capabilities.readiness_detail)
+    elif integration.active_mapping_version_id is None:
+        result = ConnectionTestResponse(
+            ok=False, detail="Publish a mapping before activating this integration."
+        )
+    else:
+        result = await _connection_test_result(
+            integration=integration,
+            authorized=authorized,
+            session=session,
+            secret_store=secret_store,
+            settings=settings,
+        )
+        await _audit_connection_test(session, authorized, integration, result)
+    if not result.ok:
+        await record_audit_event(
+            session,
+            actor_type=ActorType.USER,
+            actor_id=_actor(authorized),
+            action="integration.activation_refused",
+            target_type="integration",
+            target_id=str(integration.id),
+            organization_id=authorized.organization.id,
+            summary={"detail": result.detail},
+        )
+        return ActivationResponse(
+            activated=False,
+            detail=result.detail,
+            integration=_serialize_integration(integration),
+        )
+    # The network probe runs without holding a database row lock. Reload and
+    # recheck the caller's precondition so a concurrent credential, mapping,
+    # or lifecycle change cannot be activated based on stale test results.
+    await session.refresh(integration)
+    _expect_integration_version(integration, if_match)
+    try:
+        await transition_integration(
+            session,
+            authorized.org_context,
+            integration=integration,
+            requested=IntegrationStatus.ACTIVE,
+            actor_id=_actor(authorized),
+        )
+    except InvalidIntegrationTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return ActivationResponse(
+        activated=True,
+        detail="Connection verified; integration activated.",
+        integration=_serialize_integration(integration),
+    )
+
+
+async def _transition_endpoint(
+    *,
+    requested: IntegrationStatus,
+    integration_slug: str,
+    authorized: AuthorizedContext,
+    session: DbSession,
+    if_match: int,
+) -> dict[str, Any]:
+    integration = await _load_integration(session, authorized, integration_slug)
+    _expect_integration_version(integration, if_match)
+    try:
+        await transition_integration(
+            session,
+            authorized.org_context,
+            integration=integration,
+            requested=requested,
+            actor_id=_actor(authorized),
+        )
+    except InvalidIntegrationTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    return _serialize_integration(integration)
+
+
+@router.post("/orgs/{organization_slug}/integrations/{integration_slug}/deactivate")
+async def deactivate_integration(
+    integration_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("integrations.manage"))],
+    session: DbSession,
+    if_match: Annotated[int, Header(alias="If-Match")],
+) -> dict[str, Any]:
+    return await _transition_endpoint(
+        requested=IntegrationStatus.PAUSED,
+        integration_slug=integration_slug,
+        authorized=authorized,
+        session=session,
+        if_match=if_match,
+    )
+
+
+@router.post("/orgs/{organization_slug}/integrations/{integration_slug}/archive")
+async def archive_integration(
+    integration_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("integrations.manage"))],
+    session: DbSession,
+    if_match: Annotated[int, Header(alias="If-Match")],
+) -> dict[str, Any]:
+    return await _transition_endpoint(
+        requested=IntegrationStatus.ARCHIVED,
+        integration_slug=integration_slug,
+        authorized=authorized,
+        session=session,
+        if_match=if_match,
+    )
 
 
 @router.get("/orgs/{organization_slug}/integrations")

@@ -36,6 +36,12 @@ from typing import Any
 
 from soa_worker.providers.capabilities import ProviderInfo
 
+# Stored with every report and required when a baseline is compared.  A
+# missing/unknown version is deliberately incompatible: silently comparing
+# reports after a scoring-shape change can turn incomparable numbers into
+# promotion evidence.
+EVALUATION_METRIC_SCHEMA_VERSION = "soa-evaluation-report-v1"
+
 
 class EvaluationRefusedError(Exception):
     pass
@@ -127,6 +133,7 @@ def score_document(
     """Pure scoring of one document; returns the score plus the
     per-field breakdown contribution."""
     by_field: dict[str, FieldScore] = {}
+    wrong_fields: set[str] = set()
     fields_exact = 0
     fields_normalized = 0
     expected_fields: dict[str, Any] = document.ground_truth.get("fields", {})
@@ -136,6 +143,8 @@ def score_document(
         normalized = exact or _matches(expected, predicted, normalized=True)
         fields_exact += 1 if exact else 0
         fields_normalized += 1 if normalized else 0
+        if not normalized:
+            wrong_fields.add(key)
         by_field[key] = by_field.get(key, FieldScore()).plus(exact=exact, normalized=normalized)
 
     expected_lines: list[dict[str, Any]] = document.ground_truth.get("lines", []) or []
@@ -146,24 +155,28 @@ def score_document(
             prediction.lines[index] if index < len(prediction.lines) else {}
         )
         for key, expected in expected_row.items():
+            predicted = predicted_row.get(key)
+            exact = _matches(expected, predicted, normalized=False)
+            normalized = exact or _matches(expected, predicted, normalized=True)
             cells_total += 1
-            if _matches(expected, predicted_row.get(key), normalized=False):
+            if exact:
                 cells_exact += 1
+            # Line-cell fields participate in the per-field and critical-field
+            # gates too; aggregate line accuracy alone can otherwise hide a
+            # regression in a business-critical SKU or quantity column.
+            field_key = key if key.startswith("lines.") else f"lines.{key}"
+            if not normalized:
+                wrong_fields.add(field_key)
+            by_field[field_key] = by_field.get(field_key, FieldScore()).plus(
+                exact=exact, normalized=normalized
+            )
+
+    if len(prediction.lines) != len(expected_lines):
+        wrong_fields.add("lines.__count__")
 
     class_correct: bool | None = None
     if document.expected_class is not None:
         class_correct = prediction.predicted_class == document.expected_class
-
-    wrong_fields = tuple(
-        sorted(
-            key
-            for key, expected in expected_fields.items()
-            if not (
-                _matches(expected, prediction.fields.get(key), normalized=False)
-                or _matches(expected, prediction.fields.get(key), normalized=True)
-            )
-        )
-    )
 
     return (
         DocumentScore(
@@ -180,7 +193,7 @@ def score_document(
             latency_ms=latency_ms,
             cost_cents=prediction.cost_cents,
             auto_approved=prediction.would_auto_approve,
-            wrong_fields=wrong_fields,
+            wrong_fields=tuple(sorted(wrong_fields)),
         ),
         by_field,
     )
@@ -240,6 +253,7 @@ class EvaluationReport:
     by_split: dict[str, int]
     by_cohort: dict[str, CohortMetrics]
     errors: dict[str, str]
+    metric_schema_version: str = EVALUATION_METRIC_SCHEMA_VERSION
 
     def to_json(self) -> str:
         payload = {
@@ -344,6 +358,8 @@ async def run_evaluation(
         try:
             prediction = await extract_fn(document)
         except Exception as error:
+            if getattr(error, "retryable", False) is True:
+                raise
             effective_state.errors[sha] = str(error) or error.__class__.__name__
             continue
         elapsed_ms = ((clock() - started) * 1000.0) if clock else 0.0
@@ -363,6 +379,7 @@ async def run_evaluation(
 
 
 __all__ = [
+    "EVALUATION_METRIC_SCHEMA_VERSION",
     "CohortMetrics",
     "DocumentScore",
     "EvalDocument",

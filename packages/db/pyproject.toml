@@ -8,6 +8,9 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "alembic>=1.14",
     "asyncpg>=0.30",
+    # Alembic is a shipped runtime (the one-shot migrator image) and swaps
+    # async URLs to this synchronous driver in migrations/env.py.
+    "psycopg[binary]>=3.2",
     "openpyxl>=3.1",
 ]
 

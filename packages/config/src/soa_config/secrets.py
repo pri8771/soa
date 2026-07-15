@@ -41,6 +41,7 @@ __all__ = [
     "SecretStore",
     "SecretStoreError",
     "SecretStoreReadOnlyError",
+    "SecretStoreUnavailableError",
 ]
 
 _REFERENCE_SCHEME = "secretref://"
@@ -61,6 +62,10 @@ class SecretNotFoundError(SecretStoreError):
 
 class SecretStoreReadOnlyError(SecretStoreError):
     """This store cannot create or revoke secrets."""
+
+
+class SecretStoreUnavailableError(SecretStoreError):
+    """The configured store could not be reached; retry may succeed."""
 
 
 @dataclass(frozen=True)

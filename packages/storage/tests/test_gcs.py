@@ -58,6 +58,7 @@ class FakeBlob:
         expiration: object,
         method: str,
         content_type: str | None = None,
+        headers: dict[str, str] | None = None,
         service_account_email: str | None = None,
         access_token: str | None = None,
     ) -> str:
@@ -218,10 +219,19 @@ class TestCopyAndList:
 
 class TestSignedUrls:
     async def test_upload_url_has_put_method_and_expiry(self) -> None:
+        digest = "a" * 64
         signed = await make_store().signed_upload_url(
-            "k", expires_in_seconds=300, content_type="application/pdf"
+            "k",
+            expires_in_seconds=300,
+            content_type="application/pdf",
+            size_bytes=42,
+            sha256=digest,
         )
         assert signed.method == "PUT"
+        assert signed.required_headers == {
+            "x-goog-content-length-range": "42,42",
+            "x-goog-meta-sha256": digest,
+        }
         assert "method=PUT" in signed.url
         assert signed.expires_at > FIXED_DT.replace(year=2020)
 
@@ -238,7 +248,7 @@ class TestSignedUrls:
         store = GcsObjectStore(GcsSettings(bucket="soa-docs", project="soa-pilot"), client=client)
 
         signed = await store.signed_upload_url(
-            "k", expires_in_seconds=300, content_type="application/pdf"
+            "k", expires_in_seconds=300, content_type="application/pdf", size_bytes=42
         )
 
         assert "credential=runtime@example.iam.gserviceaccount.com" in signed.url

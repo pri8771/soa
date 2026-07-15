@@ -6,6 +6,10 @@
 
 This is the visual and interaction contract for SOA. It defines the application structure, screens, components, states, keyboard behavior, accessibility rules, performance targets, and design-quality gates that implementation must satisfy.
 
+It is a target/acceptance contract, not a statement that every screen or human
+quality gate has passed. Current implementation and release evidence live in
+[`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md).
+
 ---
 
 ## 1. Design mandate

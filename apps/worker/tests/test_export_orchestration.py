@@ -27,6 +27,7 @@ from soa_db.exports import (
     replay_export_job,
 )
 from soa_db.integrations import (
+    IntegrationStatus,
     create_integration,
     create_mapping_draft,
     publish_mapping_draft,
@@ -83,7 +84,12 @@ async def db(tmp_path: Path) -> DatabaseSessions:
 SECRETS = MemorySecretStore()
 
 
-async def seed(db: DatabaseSessions, *, with_credential: bool = True) -> uuid.UUID:
+async def seed(
+    db: DatabaseSessions,
+    *,
+    with_credential: bool = True,
+    integration_status: IntegrationStatus = IntegrationStatus.ACTIVE,
+) -> uuid.UUID:
     """An APPROVED document with a canonical payload, a deliverable
     integration with a published mapping, and the export job."""
     async with db.session_scope() as session:
@@ -132,6 +138,7 @@ async def seed(db: DatabaseSessions, *, with_credential: bool = True) -> uuid.UU
             endpoint_url="https://erp.northstar.example/orders",
             actor_id="user:test",
         )
+        integration.status = integration_status
         if with_credential:
             await store_integration_credential(
                 session,
@@ -171,17 +178,22 @@ def make_client(handler: Any) -> httpx.AsyncClient:
 
 
 async def run_export(
-    db: DatabaseSessions, store: MemoryObjectStore, job_id: uuid.UUID, handler: Any
+    db: DatabaseSessions,
+    store: MemoryObjectStore,
+    job_id: uuid.UUID,
+    handler: Any,
+    *,
+    timestamp: int = NOW,
 ) -> Any:
-    async with make_client(handler) as client, db.session_scope() as session:
+    async with make_client(handler) as client:
         return await execute_export(
-            session,
+            db,
             store,
             CONTEXT,
             export_job_id=job_id,
             client=client,
             allowlist=ALLOWLIST,
-            timestamp=NOW,
+            timestamp=timestamp,
             secret_store=SECRETS,
             resolve=public_resolver,
         )
@@ -245,7 +257,7 @@ async def test_timeout_then_retry_delivers_the_identical_payload(db: DatabaseSes
     job_state, document_state, attempts = await job_and_document_state(db, job_id)
     assert (job_state, document_state, attempts) == ("failed_retryable", "exporting", 1)
 
-    second = await run_export(db, store, job_id, handler)
+    second = await run_export(db, store, job_id, handler, timestamp=NOW + 86_400)
     assert second.outcome == "delivered"
     job_state, document_state, attempts = await job_and_document_state(db, job_id)
     assert (job_state, document_state, attempts) == ("succeeded", "completed", 2)
@@ -311,3 +323,23 @@ async def test_missing_credential_is_a_named_terminal_failure(db: DatabaseSessio
     assert result.detail is not None and "no live credential" in result.detail
     job_state, document_state, _ = await job_and_document_state(db, job_id)
     assert (job_state, document_state) == ("failed_terminal", "failed_terminal")
+
+
+@pytest.mark.parametrize(
+    "integration_status", [IntegrationStatus.PAUSED, IntegrationStatus.ARCHIVED]
+)
+async def test_non_active_integrations_never_deliver(
+    db: DatabaseSessions, integration_status: IntegrationStatus
+) -> None:
+    job_id = await seed(db, integration_status=integration_status)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200)
+
+    result = await run_export(db, MemoryObjectStore(), job_id, handler)
+    assert result.outcome == "terminal_error"
+    assert result.detail is not None and f"integration is {integration_status}" in result.detail
+    assert calls == 0

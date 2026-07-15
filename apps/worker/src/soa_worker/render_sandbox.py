@@ -1,9 +1,10 @@
 """Sandboxed rendering child process (PRC-004).
 
 Runs as ``python -m soa_worker.render_sandbox <input> <content_type>
-<output_dir> <max_pages> <max_pixels_per_page> <dpi> <cpu_seconds>
-<memory_bytes>`` and NEVER in the worker process: the parent enforces a
-wall-clock timeout by killing this process's whole group; this process
+<output_dir> <max_pages> <max_pixels_per_page> <max_total_pixels>
+<max_decompressed_bytes> <dpi> <cpu_seconds> <memory_bytes>`` and NEVER in
+the worker process: the parent enforces a wall-clock timeout by killing this
+process's whole group; this process
 constrains itself before touching any renderer via the shared
 ``soa_worker.sandbox`` lockdown (SEC-004): CPU/address-space/file-size/
 open-file rlimits, no core dumps, no process creation, sockets and
@@ -36,7 +37,13 @@ def _fail(code: int, message: str) -> None:
 
 
 def _render_pdf(
-    input_path: str, output_dir: str, max_pages: int, max_pixels: int, dpi: int
+    input_path: str,
+    output_dir: str,
+    max_pages: int,
+    max_pixels: int,
+    max_total_pixels: int,
+    max_decompressed_bytes: int,
+    dpi: int,
 ) -> list[dict[str, object]]:
     import pypdfium2 as pdfium
 
@@ -48,6 +55,7 @@ def _render_pdf(
     if len(document) > max_pages:
         _fail(EXIT_LIMIT, f"document has {len(document)} pages; the limit is {max_pages}")
     pages: list[dict[str, object]] = []
+    total_pixels = 0
     for index, page in enumerate(document):
         width_pt, height_pt = page.get_size()
         scale = dpi / 72.0
@@ -55,6 +63,12 @@ def _render_pdf(
         # pixel budget instead of allocating an unbounded bitmap.
         while (width_pt * scale) * (height_pt * scale) > max_pixels and scale > 0.1:
             scale *= 0.8
+        page_pixels = int(width_pt * scale) * int(height_pt * scale)
+        total_pixels += page_pixels
+        if total_pixels > max_total_pixels:
+            _fail(EXIT_LIMIT, "document raster exceeds the aggregate pixel budget")
+        if total_pixels * 4 > max_decompressed_bytes:
+            _fail(EXIT_LIMIT, "document raster exceeds the decompressed-byte budget")
         bitmap = page.render(scale=scale)
         image = bitmap.to_pil()
         path = f"{output_dir}/page-{index + 1:04}.png"
@@ -72,7 +86,12 @@ def _render_pdf(
 
 
 def _render_image(
-    input_path: str, output_dir: str, max_pages: int, max_pixels: int
+    input_path: str,
+    output_dir: str,
+    max_pages: int,
+    max_pixels: int,
+    max_total_pixels: int,
+    max_decompressed_bytes: int,
 ) -> list[dict[str, object]]:
     from PIL import Image, UnidentifiedImageError
 
@@ -83,8 +102,15 @@ def _render_image(
         if frames > max_pages:
             _fail(EXIT_LIMIT, f"image has {frames} frames; the limit is {max_pages}")
         pages: list[dict[str, object]] = []
+        total_pixels = 0
         for index in range(frames):
             source.seek(index)
+            frame_pixels = source.width * source.height
+            total_pixels += frame_pixels
+            if total_pixels > max_total_pixels:
+                _fail(EXIT_LIMIT, "image frames exceed the aggregate pixel budget")
+            if total_pixels * 4 > max_decompressed_bytes:
+                _fail(EXIT_LIMIT, "image frames exceed the decompressed-byte budget")
             frame = source.convert("RGB")
             path = f"{output_dir}/page-{index + 1:04}.png"
             frame.save(path, format="PNG")
@@ -113,15 +139,32 @@ def main() -> None:
         output_dir,
         max_pages,
         max_pixels,
+        max_total_pixels,
+        max_decompressed_bytes,
         dpi,
         cpu_seconds,
         memory_bytes,
-    ) = sys.argv[1:9]
+    ) = sys.argv[1:11]
     _lock_down(int(cpu_seconds), int(memory_bytes))
     if content_type == "application/pdf":
-        pages = _render_pdf(input_path, output_dir, int(max_pages), int(max_pixels), int(dpi))
+        pages = _render_pdf(
+            input_path,
+            output_dir,
+            int(max_pages),
+            int(max_pixels),
+            int(max_total_pixels),
+            int(max_decompressed_bytes),
+            int(dpi),
+        )
     else:
-        pages = _render_image(input_path, output_dir, int(max_pages), int(max_pixels))
+        pages = _render_image(
+            input_path,
+            output_dir,
+            int(max_pages),
+            int(max_pixels),
+            int(max_total_pixels),
+            int(max_decompressed_bytes),
+        )
     print(json.dumps({"pages": pages}))
 
 

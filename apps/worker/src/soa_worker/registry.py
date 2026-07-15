@@ -1,8 +1,8 @@
 """Job-handler registry.
 
-Handlers are async callables keyed by job type. Real job records and durable
-claiming arrive with the JOB epic; the registry contract is stable now so
-handlers written later do not change shape.
+Handlers are async callables keyed by the durable job type. The envelope
+separates trusted queue metadata (job and tenant IDs) from untrusted payload
+fields so failure callbacks cannot cross a tenant boundary.
 """
 
 import uuid
@@ -13,12 +13,19 @@ from typing import Any
 
 @dataclass(frozen=True)
 class JobEnvelope:
-    """Minimal job shape consumed by handlers (extended by JOB-001)."""
+    """Minimal durable job shape consumed by handlers."""
 
     job_type: str
     payload: dict[str, Any] = field(default_factory=dict)
     correlation_id: str | None = None
     job_id: uuid.UUID | None = None
+    #: Tenant stamped on the durable queue row. Domain callbacks use this
+    #: trusted value rather than accepting a tenant solely from payload JSON.
+    organization_id: uuid.UUID | None = None
+    #: Monotonic claim generation copied from ``jobs.attempts``. Durable queue
+    #: acknowledgements use it as a fencing token so a stale handler cannot
+    #: complete a lease that expired and was reclaimed, even by the same worker.
+    lease_attempt: int | None = None
 
 
 JobHandler = Callable[[JobEnvelope], Awaitable[None]]

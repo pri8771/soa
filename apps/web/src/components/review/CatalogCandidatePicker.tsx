@@ -1,17 +1,16 @@
 /**
  * Catalog candidate picker shell (REV-010, UI_UX_BLUEPRINT §5.9).
  *
- * The interaction contract for matching a document value against a
- * customer catalog. The DATA arrives with the CAT epic — this component
- * owns everything the data plugs into: a search box, ranked candidates
+ * The interaction contract for matching a document value against the
+ * stream's customer catalog. The live matcher is supplied through the
+ * injected ``loadCandidates`` callback; this component owns a search box, ranked candidates
  * with their match score and per-feature explanation (expandable), a
  * pick action, and a MANUAL OVERRIDE path that requires a stated reason
  * whenever the reviewer picks something other than the top match (or no
  * match at all). Loading, no-match, and error states are explicit.
  *
- * The loader is injected (``loadCandidates``), so REV tests drive the
- * shell with stubs today and CAT swaps in the real matcher without
- * touching this file.
+ * Injection keeps the interaction independently testable and the picker
+ * decoupled from API transport details.
  */
 
 import { Badge, Banner, Button, Skeleton, TextField } from "@soa/design-system";
@@ -77,6 +76,7 @@ export function CatalogCandidatePicker({
   return (
     <section
       aria-label={`Catalog match for ${fieldLabel}`}
+      data-catalog-picker
       style={{ display: "grid", gap: "var(--soa-space-3)" }}
     >
       <div style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "end" }}>

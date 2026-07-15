@@ -25,8 +25,10 @@ provider cost is tracking over budget.
 
 ## Recovery
 
-- If a runaway loop, stop it at the source (pause the stream / cancel the
-  offending jobs via the job admin API JOB-006).
+- If a runaway loop, stop it at the source. The job admin API can cancel
+  pending jobs; use the deployment procedure to scale/stop affected workers or
+  disable ingress upstream when already-running work must be contained. Do not
+  assume a generic per-stream pause control exists.
 - If genuine growth, raise the quota/budget with the tenant's plan owner
   and record the decision.
 

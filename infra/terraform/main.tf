@@ -22,3 +22,13 @@ resource "google_project_service" "required" {
   service            = each.value
   disable_on_destroy = false
 }
+
+# Dynamic tenant credentials live outside the runtime project. Project-wide
+# permissions are unavoidable for secrets created after Terraform apply; a
+# dedicated project prevents those permissions from reaching the migrator DB
+# URL, application keys, or other platform credentials.
+resource "google_project_service" "tenant_secret_manager" {
+  project            = var.tenant_secrets_project_id
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}

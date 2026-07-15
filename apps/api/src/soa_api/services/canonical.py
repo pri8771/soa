@@ -9,14 +9,22 @@ service, where they BLOCK the approval with every problem named.
 """
 
 import uuid
+from dataclasses import replace
+from datetime import date
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_canonical import CURRENT_VERSION
-from soa_canonical.mapping import SourceValue, map_sales_order
+from soa_canonical.mapping import (
+    CanonicalMappingError,
+    CatalogReference,
+    SourceValue,
+    map_sales_order,
+)
 from soa_canonical.models import CanonicalOrder
 from soa_db.canonical_payloads import CanonicalPayload, record_canonical_payload
+from soa_db.catalog_selections import CatalogIdentity, resolve_catalog_identities
 from soa_db.corrections import FieldCorrection, FieldCorrectionRepository, latest_corrections
 from soa_db.documents import Document
 from soa_db.extracted_fields import ExtractedField, ExtractedFieldRepository
@@ -62,8 +70,7 @@ async def build_canonical_order(
         await FieldCorrectionRepository(session, context).list_for_run(run_id)
     )
 
-    header: dict[str, SourceValue] = {}
-    rows: dict[int, dict[str, SourceValue]] = {}
+    selected_by_key: dict[tuple[str, int | None], SourceValue] = {}
     covered: set[tuple[str, int | None]] = set()
     for field in fields:
         correction = corrections.get((field.field_key, field.row_index))
@@ -71,10 +78,7 @@ async def build_canonical_order(
         selected = _source_value(field, correction)
         if selected is None:
             continue
-        if field.row_index is None:
-            header[field.field_key] = selected
-        else:
-            rows.setdefault(field.row_index, {})[field.field_key] = selected
+        selected_by_key[(field.field_key, field.row_index)] = selected
     # Rows the reviewer ADDED exist only as corrections.
     for (key, row_index), correction in corrections.items():
         if (key, row_index) in covered:
@@ -82,6 +86,50 @@ async def build_canonical_order(
         selected = _source_value(None, correction)
         if selected is None:
             continue
+        selected_by_key[(key, row_index)] = selected
+
+    order_date = selected_by_key.get(("order_date", None))
+    try:
+        as_of = (
+            date.fromisoformat(str(order_date.value))
+            if order_date is not None and order_date.value is not None
+            else document.received_at.date()
+        )
+    except ValueError:
+        as_of = document.received_at.date()
+    catalog_resolution = await resolve_catalog_identities(
+        session,
+        context,
+        stream_id=document.stream_id,
+        run_id=run_id,
+        values={key: source.value for key, source in selected_by_key.items()},
+        as_of=as_of,
+    )
+    if catalog_resolution.issues:
+        raise CanonicalMappingError(
+            [
+                f"{issue.field_key}"
+                + (f"[{issue.row_index}]" if issue.row_index is not None else "")
+                + f": {issue.message}"
+                for issue in catalog_resolution.issues
+            ]
+        )
+
+    def reference(identity: CatalogIdentity) -> CatalogReference:
+        return CatalogReference(
+            catalog_id=str(identity.catalog_id),
+            catalog_version_id=str(identity.catalog_version_id),
+            catalog_record_id=str(identity.catalog_record_id),
+            source_id=identity.source_id,
+            display_name=identity.display_name,
+        )
+
+    header: dict[str, SourceValue] = {}
+    rows: dict[int, dict[str, SourceValue]] = {}
+    for (key, row_index), selected in selected_by_key.items():
+        identity = catalog_resolution.identities.get((key, row_index))
+        if identity is not None:
+            selected = replace(selected, catalog=reference(identity))
         if row_index is None:
             header[key] = selected
         else:

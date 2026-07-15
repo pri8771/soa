@@ -17,6 +17,7 @@ from soa_worker.evaluation_gate import (
     Waiver,
     assert_promotable,
     compare_reports,
+    evaluate_promotion_gate,
 )
 
 DOCS = [
@@ -117,6 +118,45 @@ class TestProhibitions:
         assert candidate.false_auto_approval_rate == 0.5
         with pytest.raises(PromotionBlockedError, match="false-auto-approval"):
             assert_promotable(result, waiver=Waiver(actor_id="user:boss", reason="ship it"))
+
+
+class TestAbsoluteQuality:
+    def test_perfect_first_candidate_passes_without_a_baseline(self) -> None:
+        result = evaluate_promotion_gate(
+            report_for(4, 4),
+            policy=GatePolicy(critical_fields=("po_number", "total")),
+        )
+        assert result.passed is True
+
+    def test_first_candidate_must_meet_absolute_accuracy_floors(self) -> None:
+        result = evaluate_promotion_gate(report_for(3, 4))
+        kinds = {finding.kind for finding in result.findings}
+        assert "field_exact_below_minimum" in kinds
+        assert "field_normalized_below_minimum" in kinds
+        assert all(finding.waivable is False for finding in result.findings)
+
+    def test_unmeasured_critical_fields_fail_closed(self) -> None:
+        result = evaluate_promotion_gate(
+            report_for(4, 4),
+            policy=GatePolicy(critical_fields=("po_number", "lines.sku")),
+        )
+        finding = next(
+            finding for finding in result.findings if finding.kind == "critical_field_unmeasured"
+        )
+        assert "lines.sku" in finding.detail
+
+    def test_evaluation_errors_fail_even_if_scored_predictions_are_perfect(self) -> None:
+        state = EvaluationState(errors={DOCS[-1].document_sha256: "provider timeout"})
+        for document in DOCS[:-1]:
+            score, contribution = score_document(
+                document,
+                EvalPrediction(fields=dict(document.ground_truth["fields"])),
+            )
+            state.scores[document.document_sha256] = score
+            for key, part in contribution.items():
+                state.by_field[key] = state.by_field.get(key, part)
+        result = evaluate_promotion_gate(build_report(state, DOCS))
+        assert any(finding.kind == "evaluation_errors" for finding in result.findings)
 
 
 class TestWaivers:

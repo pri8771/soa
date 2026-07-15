@@ -66,6 +66,53 @@ def test_policy_shape_validation() -> None:
         )
 
 
+def test_provider_fallback_chain_is_bounded_unique_and_cost_gated() -> None:
+    validate_policy(
+        PolicyType.PROVIDER,
+        {
+            **PROVIDER_OK,
+            "estimated_cost_cents": 4,
+            "evaluated_quality_score": 0.92,
+            "fallback_providers": [
+                {
+                    "provider_name": "local-model",
+                    "estimated_cost_cents": 0,
+                    "evaluated_quality_score": 0.88,
+                },
+                {
+                    "provider_name": "second-hosted",
+                    "credential_ref": "secretref://memory/orgs/acme/providers/second/v1",
+                    "estimated_cost_cents": 2,
+                },
+            ],
+            "allowed_regions": ["eu", "us"],
+            "budget_cents": 10,
+            "min_quality": 0.85,
+            "allow_third_party_processing": True,
+        },
+    )
+    with pytest.raises(PolicyValidationError, match="duplicate provider"):
+        validate_policy(
+            PolicyType.PROVIDER,
+            {
+                **PROVIDER_OK,
+                "fallback_providers": [{"provider_name": "acme-docai"}],
+            },
+        )
+    with pytest.raises(PolicyValidationError, match="non-negative integer"):
+        validate_policy(PolicyType.PROVIDER, {**PROVIDER_OK, "budget_cents": True})
+    with pytest.raises(PolicyValidationError, match="passing evaluated_quality_score"):
+        validate_policy(PolicyType.PROVIDER, {**PROVIDER_OK, "min_quality": 0.9})
+    with pytest.raises(PolicyValidationError, match="immutable secretref"):
+        validate_policy(
+            PolicyType.PROVIDER,
+            {
+                **PROVIDER_OK,
+                "fallback_providers": [{"provider_name": "bad", "credential_ref": "raw-secret"}],
+            },
+        )
+
+
 async def test_missing_capabilities_block_publish(db: DatabaseSessions) -> None:
     async with db.session_scope() as session:
         draft = await create_policy_draft(

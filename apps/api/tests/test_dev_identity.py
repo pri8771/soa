@@ -81,6 +81,8 @@ def test_production_startup_fails_with_dev_mode_enabled() -> None:
             oidc_issuer="https://id.example.com/",
             oidc_audience="soa-api",
             oidc_jwks_url="https://id.example.com/jwks",
+            telemetry_profile="otlp",
+            otlp_endpoint="https://telemetry.internal.example",
         )
 
 
@@ -93,4 +95,6 @@ def test_production_startup_fails_without_oidc_configuration() -> None:
             database_url=SecretStr("postgresql+asyncpg://svc:pw@db:5432/soa"),
             secrets_backend="aws-secrets-manager",
             secrets_aws_region="eu-central-1",
+            telemetry_profile="otlp",
+            otlp_endpoint="https://telemetry.internal.example",
         )

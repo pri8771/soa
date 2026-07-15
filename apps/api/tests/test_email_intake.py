@@ -2,25 +2,69 @@
 prevention, per-attachment outcomes, safe metadata, webhook security,
 Mailpit adapter against a mocked transport."""
 
+from collections.abc import AsyncIterator, Callable
 from email.message import EmailMessage
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_api.app import create_app
+from soa_api.dependencies import get_db_session
+from soa_api.services import email_intake as email_intake_service
 from soa_api.services.email_intake import MailpitPoller, parse_inbound_email, route_recipient
+from soa_api.services.malware import NoopScanner, ScanResult
 from soa_api.settings import ApiSettings, Environment
 from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import Document
-from soa_storage import MemoryObjectStore
+from soa_storage import MemoryObjectStore, ObjectMetadata
 
 ADMIN = {"X-Dev-User": "user:reviewer"}
 SECRET = "intake-shared-secret-0123456789"
 PDF = b"%PDF-1.7 emailed purchase order"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+class _TransactionCheckingStore(MemoryObjectStore):
+    def __init__(self, current_session: Callable[[], AsyncSession]) -> None:
+        super().__init__()
+        self._current_session = current_session
+        self.transaction_states: list[bool] = []
+        self.delete_transaction_states: list[bool] = []
+
+    async def put(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        sha256: str | None = None,
+    ) -> ObjectMetadata:
+        self.transaction_states.append(self._current_session().in_transaction())
+        return await super().put(
+            key,
+            data,
+            content_type=content_type,
+            sha256=sha256,
+        )
+
+    async def delete(self, key: str) -> None:
+        self.delete_transaction_states.append(self._current_session().in_transaction())
+        await super().delete(key)
+
+
+class _TransactionCheckingScanner(NoopScanner):
+    def __init__(self, current_session: Callable[[], AsyncSession]) -> None:
+        self._current_session = current_session
+        self.transaction_states: list[bool] = []
+
+    async def scan(self, data: bytes) -> ScanResult:
+        self.transaction_states.append(self._current_session().in_transaction())
+        return await super().scan(data)
 
 
 def build_mime(
@@ -84,14 +128,19 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions]:
         await conn.run_sync(Base.metadata.create_all)
     db = DatabaseSessions(engine)
     app = create_app(
-        ApiSettings(environment=Environment.TEST, email_intake_secret=SECRET),
+        ApiSettings(environment=Environment.TEST, email_intake_secret=SecretStr(SECRET)),
         db=db,
         object_store=MemoryObjectStore(),
     )
     return TestClient(app, raise_server_exceptions=False), db
 
 
-async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
+async def seed_stream(
+    client: TestClient,
+    db: DatabaseSessions,
+    *,
+    stream_overrides: dict[str, object] | None = None,
+) -> None:
     for path, body in (
         ("/organizations", {"name": "Northstar", "slug": "northstar"}),
         ("/orgs/northstar/processes", {"name": "POs", "slug": "purchase-orders"}),
@@ -101,7 +150,7 @@ async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
-    await publish_runtime_config(client, db)
+    await publish_runtime_config(client, db, stream_overrides=stream_overrides)
 
 
 def deliver(client: TestClient, raw: bytes, *, secret: str = SECRET):
@@ -132,6 +181,12 @@ async def test_multi_attachment_email_ingests_each_supported_file(
     assert outcomes["macro.docm"]["outcome"] == "unsupported"
     assert outcomes["empty.pdf"]["outcome"] == "empty"
 
+    replay = deliver(client, raw)
+    assert replay.status_code == 200
+    replay_outcomes = {item["filename"]: item for item in replay.json()["attachments"]}
+    assert "idempotent replay" in replay_outcomes["po.pdf"]["detail"]
+    assert "idempotent replay" in replay_outcomes["scan.png"]["detail"]
+
     async with db.session_scope() as session:
         documents = (await session.execute(select(Document))).scalars().all()
         assert len(documents) == 2
@@ -141,6 +196,81 @@ async def test_multi_attachment_email_ingests_each_supported_file(
             assert document.source_metadata["sender"] == "ap@customer.example"
             assert document.source_metadata["subject"] == "PO 4711 attached"
             assert "Body text" not in str(document.source_metadata)
+
+
+async def test_attachment_scans_and_storage_run_outside_the_sql_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/email-boundary.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    db = DatabaseSessions(engine)
+    active_session: dict[str, AsyncSession] = {}
+
+    def current_session() -> AsyncSession:
+        return active_session["session"]
+
+    store = _TransactionCheckingStore(current_session)
+    scanner = _TransactionCheckingScanner(current_session)
+    app = create_app(
+        ApiSettings(environment=Environment.TEST, email_intake_secret=SecretStr(SECRET)),
+        db=db,
+        object_store=store,
+        malware_scanner=scanner,
+    )
+
+    async def tracked_session() -> AsyncIterator[AsyncSession]:
+        async with db.session_scope() as session:
+            active_session["session"] = session
+            yield session
+
+    app.dependency_overrides[get_db_session] = tracked_session
+    with TestClient(app, raise_server_exceptions=False) as client:
+        await seed_stream(client, db)
+
+        async def fail_finalization(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("forced registration failure")
+
+        monkeypatch.setattr(
+            email_intake_service,
+            "finalize_document_intake",
+            fail_finalization,
+        )
+        response = deliver(
+            client,
+            build_mime(
+                attachments=[
+                    ("po.pdf", "application/pdf", PDF),
+                    ("scan.png", "image/png", PNG),
+                ]
+            ),
+        )
+
+    assert response.status_code == 500
+    assert scanner.transaction_states == [False, False]
+    assert store.transaction_states == [False, False]
+    assert store.delete_transaction_states == [False, False]
+    assert await store.list_keys() == []
+    async with db.session_scope() as session:
+        assert (await session.execute(select(Document))).scalars().all() == []
+
+
+async def test_email_attachments_honor_the_published_stream_size_limit(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await seed_stream(client, db, stream_overrides={"max_upload_bytes": len(PDF) - 1})
+    response = deliver(
+        client,
+        build_mime(attachments=[("po.pdf", "application/pdf", PDF)]),
+    )
+    assert response.status_code == 200
+    (outcome,) = response.json()["attachments"]
+    assert outcome["outcome"] == "rejected"
+    assert "byte limit" in outcome["detail"]
+    async with db.session_scope() as session:
+        assert (await session.execute(select(Document))).scalars().all() == []
 
 
 async def test_unroutable_empty_and_looping_mail_is_explicit(
@@ -180,6 +310,26 @@ async def test_webhook_requires_the_shared_secret(
     assert client.post("/v1/inbound-email", content=raw).status_code == 401
 
 
+async def test_email_auth_attempts_are_rate_limited_before_mime_processing(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/limited-auth.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(
+            environment=Environment.TEST,
+            email_intake_secret=SECRET,
+            rate_limit_email_intake_per_minute=1,
+        ),
+        db=DatabaseSessions(engine),
+        object_store=MemoryObjectStore(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert deliver(client, b"not parsed", secret="wrong").status_code == 401
+        denied = deliver(client, b"not parsed", secret="wrong")
+        assert denied.status_code == 429
+        assert denied.headers["Retry-After"] == "60"
+
+
 async def test_unconfigured_intake_is_disabled(tmp_path: Path) -> None:
     engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/no-intake.db")
     async with engine.begin() as conn:
@@ -194,6 +344,78 @@ async def test_unconfigured_intake_is_disabled(tmp_path: Path) -> None:
             "/v1/inbound-email", content=b"x", headers={"X-Intake-Secret": "anything"}
         )
         assert response.status_code == 503
+
+
+async def test_webhook_rejects_oversized_raw_mime_before_parsing(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/limited-intake.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(
+            environment=Environment.TEST,
+            email_intake_secret=SECRET,
+            email_intake_max_body_bytes=8,
+        ),
+        db=DatabaseSessions(engine),
+        object_store=MemoryObjectStore(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = deliver(client, b"x" * 9)
+        assert response.status_code == 413
+
+
+async def test_webhook_rejects_declared_oversize_without_reading_body(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/declared-limit.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(
+            environment=Environment.TEST,
+            email_intake_secret=SECRET,
+            email_intake_max_body_bytes=8,
+        ),
+        db=DatabaseSessions(engine),
+        object_store=MemoryObjectStore(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/inbound-email",
+            content=b"x",
+            headers={"X-Intake-Secret": SECRET, "Content-Length": "9"},
+        )
+        assert response.status_code == 413
+
+
+async def test_webhook_rejects_attachment_count_and_aggregate_size(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/attachment-limits.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(
+            environment=Environment.TEST,
+            email_intake_secret=SECRET,
+            email_intake_max_attachments=1,
+            email_intake_max_total_attachment_bytes=4,
+        ),
+        db=DatabaseSessions(engine),
+        object_store=MemoryObjectStore(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        too_many = deliver(
+            client,
+            build_mime(
+                attachments=[
+                    ("one.pdf", "application/pdf", b"1"),
+                    ("two.pdf", "application/pdf", b"2"),
+                ]
+            ),
+        )
+        assert too_many.status_code == 413
+        too_large = deliver(
+            client,
+            build_mime(attachments=[("one.pdf", "application/pdf", b"12345")]),
+        )
+        assert too_large.status_code == 413
 
 
 # --- Mailpit adapter ---------------------------------------------------------

@@ -7,7 +7,8 @@ action (``make migrate``), never an application-startup side effect, so web
 replicas cannot race each other on schema changes.
 """
 
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from pydantic import SecretStr
@@ -18,6 +19,49 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+
+logger = logging.getLogger(__name__)
+
+RollbackAction = Callable[[], Awaitable[None]]
+_ROLLBACK_ACTIONS_KEY = "soa.rollback_actions"
+
+
+def register_rollback_action(session: AsyncSession, action: RollbackAction) -> None:
+    """Register external compensation for this database unit of work.
+
+    Object stores and secret managers cannot participate in the SQL transaction.
+    Callers register an idempotent async action immediately after creating an
+    external resource.  A failed flush or commit then removes that resource;
+    a successful commit discards the action.
+    """
+
+    actions = session.info.setdefault(_ROLLBACK_ACTIONS_KEY, [])
+    actions.append(action)
+
+
+async def commit_unit_of_work(session: AsyncSession) -> None:
+    """Commit an intentional mid-handler boundary and seal compensations.
+
+    Long-running workers sometimes persist an external object plus its
+    metadata before beginning a separate network call. A successful explicit
+    commit makes those rollback actions obsolete; a failed commit leaves them
+    registered so the surrounding ``session_scope`` can compensate.
+    """
+
+    await session.commit()
+    session.info.pop(_ROLLBACK_ACTIONS_KEY, None)
+
+
+async def _run_rollback_actions(session: AsyncSession) -> None:
+    actions = session.info.pop(_ROLLBACK_ACTIONS_KEY, [])
+    for action in reversed(actions):
+        try:
+            await action()
+        except Exception:
+            # Preserve the original database/application error. The failed
+            # compensation is still visible to operations and can be retried
+            # by external-resource reconciliation.
+            logger.exception("external rollback compensation failed")
 
 
 def create_database_engine(
@@ -58,8 +102,13 @@ class DatabaseSessions:
             yield session
             await session.commit()
         except BaseException:
-            await session.rollback()
+            try:
+                await session.rollback()
+            finally:
+                await _run_rollback_actions(session)
             raise
+        else:
+            session.info.pop(_ROLLBACK_ACTIONS_KEY, None)
         finally:
             await session.close()
 

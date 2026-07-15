@@ -10,6 +10,7 @@ from soa_worker.evaluation import (
     EvalPrediction,
     EvaluationRefusedError,
     EvaluationState,
+    build_report,
     run_evaluation,
     score_document,
 )
@@ -74,6 +75,8 @@ class TestKnownScores:
         assert report.by_split == {"test": 1, "validation": 1}
         assert report.by_field["po_number"].total == 2
         assert report.by_field["po_number"].exact == 1
+        assert report.by_field["lines.sku"].exact == 1
+        assert report.by_field["lines.quantity"].exact == 0
 
     async def test_latency_is_measured_with_the_injected_clock(self) -> None:
         ticks = iter([1.0, 1.25, 2.0, 2.5])  # 250ms and 500ms
@@ -107,6 +110,34 @@ class TestScoringSemantics:
         assert score.lines_expected == 2
         assert score.lines_predicted == 1
 
+    @pytest.mark.parametrize(
+        "lines",
+        [
+            ({"sku": "WRONG"},),
+            ({"sku": "S1"}, {"sku": "FABRICATED-EXTRA"}),
+        ],
+    )
+    def test_line_errors_count_as_false_auto_approvals(
+        self, lines: tuple[dict[str, str], ...]
+    ) -> None:
+        document = EvalDocument(
+            document_sha256="e" * 64,
+            split="test",
+            ground_truth={"fields": {"po_number": "PO-1"}, "lines": [{"sku": "S1"}]},
+        )
+        state = EvaluationState()
+        score, by_field = score_document(
+            document,
+            EvalPrediction(
+                fields={"po_number": "PO-1"},
+                lines=lines,
+                would_auto_approve=True,
+            ),
+        )
+        state.scores[document.document_sha256] = score
+        report = build_report(state, [document], by_field)
+        assert report.false_auto_approval_rate == 1.0
+
 
 class TestErrorsAndResume:
     async def test_a_failing_document_is_recorded_and_the_run_continues(self) -> None:
@@ -119,6 +150,32 @@ class TestErrorsAndResume:
         assert report.documents_scored == 1
         assert report.documents_failed == 1
         assert state.errors[DOC_ONE.document_sha256] == "provider exploded"
+
+    async def test_retryable_failure_propagates_with_prior_checkpoint_intact(self) -> None:
+        class RetryableProviderError(RuntimeError):
+            retryable = True
+
+        state = EvaluationState()
+
+        async def interrupted(document: EvalDocument) -> EvalPrediction:
+            if document.document_sha256 == DOC_TWO.document_sha256:
+                raise RetryableProviderError("provider temporarily unavailable")
+            return PREDICTIONS[document.document_sha256]
+
+        with pytest.raises(RetryableProviderError, match="temporarily unavailable"):
+            await run_evaluation([DOC_ONE, DOC_TWO], interrupted, state=state)
+        assert set(state.scores) == {DOC_ONE.document_sha256}
+        assert state.errors == {}
+
+        calls: list[str] = []
+
+        async def recovered(document: EvalDocument) -> EvalPrediction:
+            calls.append(document.document_sha256)
+            return PREDICTIONS[document.document_sha256]
+
+        report, _ = await run_evaluation([DOC_ONE, DOC_TWO], recovered, state=state)
+        assert calls == [DOC_TWO.document_sha256]
+        assert report.documents_scored == 2
 
     async def test_resume_never_pays_for_scored_documents_again(self) -> None:
         calls: list[str] = []

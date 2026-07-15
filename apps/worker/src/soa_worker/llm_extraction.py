@@ -55,8 +55,15 @@ from soa_worker.model_request_builder import (
     BuiltModelRequest,
     build_extraction_messages,
 )
+from soa_worker.model_usage import ProviderUsage, TokenPricing
+from soa_worker.runtime_provenance import endpoint_fingerprint
 
 PROVIDER_NAME = "local-openai-compatible"
+DEFAULT_HOSTED_PRICING = TokenPricing(
+    reference="soa-rate-card-v1:openai-compatible:gpt-4o",
+    input_cents_per_million=250,
+    output_cents_per_million=1000,
+)
 
 CAPABILITY_WARNING = (
     "local model extraction: confidence is the model's own uncalibrated "
@@ -73,6 +80,8 @@ class OpenAiCompatibleExtractionProvider:
     published AIO-010 content; ``redactor`` and ``build_limits`` flow
     into the AIO-011 injection-safe request builder."""
 
+    supports_repair = True
+
     def __init__(
         self,
         *,
@@ -87,7 +96,10 @@ class OpenAiCompatibleExtractionProvider:
         instruction_reference: str | None = None,
         build_limits: BuildLimits | None = None,
         redactor: Callable[[str], str] | None = None,
+        pricing: TokenPricing | None = None,
     ) -> None:
+        if pricing is not None and not api_key:
+            raise ValueError("a hosted OpenAI-compatible adapter needs an API key")
         self._endpoint = endpoint
         self._model = model
         # The registry verifies the instance reports its registered name;
@@ -107,10 +119,22 @@ class OpenAiCompatibleExtractionProvider:
         self._instruction_reference = instruction_reference
         self._build_limits = build_limits
         self._redactor = redactor
+        self._pricing = pricing
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def runtime_provenance(self) -> dict[str, object]:
+        provenance: dict[str, object] = {
+            "adapter": "openai-compatible-chat-completions-v1",
+            "model": self._model,
+            "endpoint_sha256": endpoint_fingerprint(self._endpoint),
+        }
+        if self._pricing is not None:
+            provenance["pricing"] = self._pricing.as_dict()
+        return provenance
 
     def build_payload(self, request: ExtractionRequest) -> tuple[dict[str, Any], BuiltModelRequest]:
         """The exact chat-completions payload, built via the AIO-011
@@ -152,10 +176,10 @@ class OpenAiCompatibleExtractionProvider:
                 },
             ]
         assert "tools" not in payload  # the model reads; it never acts
-        content = await self._complete(payload)
-        return self._to_result(request, content, built)
+        content, usage = await self._complete(payload)
+        return self._to_result(request, content, built, usage)
 
-    async def _complete(self, payload: dict[str, Any]) -> str:
+    async def _complete(self, payload: dict[str, Any]) -> tuple[str, ProviderUsage | None]:
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         owns_client = self._client is None
@@ -187,6 +211,16 @@ class OpenAiCompatibleExtractionProvider:
         try:
             body = response.json()
             content = body["choices"][0]["message"]["content"]
+            raw_usage = body.get("usage")
+            usage = (
+                ProviderUsage.from_provider_counts(
+                    input_tokens=raw_usage["prompt_tokens"],
+                    output_tokens=raw_usage["completion_tokens"],
+                    total_tokens=raw_usage["total_tokens"],
+                )
+                if raw_usage is not None
+                else None
+            )
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionProviderError(
                 "the model endpoint returned an unexpected response shape",
@@ -194,21 +228,36 @@ class OpenAiCompatibleExtractionProvider:
             ) from None
         if not isinstance(content, str):
             raise ExtractionProviderError("the model returned no text content", retryable=True)
-        return content
+        if self._pricing is not None and usage is None:
+            raise ExtractionProviderError(
+                "the hosted model returned no token usage metadata", retryable=True
+            )
+        return content, usage
 
     def _to_result(
-        self, request: ExtractionRequest, content: str, built: BuiltModelRequest
+        self,
+        request: ExtractionRequest,
+        content: str,
+        built: BuiltModelRequest,
+        usage: ProviderUsage | None,
     ) -> ExtractionResult:
         # Shared with the hosted adapters: same documented shape, same
         # honesty rules, one implementation (AIO-008). The capability
         # caveat leads the warnings.
+        pricing_reference = self._pricing.reference if self._pricing is not None else None
         return parse_model_extraction(
             request,
             content,
             built,
             provider=self.name,
             model=self._model,
-            cost_cents=0,
+            cost_cents=(
+                self._pricing.estimate_cost_cents(usage)
+                if self._pricing is not None and usage is not None
+                else 0
+            ),
+            usage=usage,
+            pricing_reference=pricing_reference,
             lead_warnings=(CAPABILITY_WARNING,),
         )
 
@@ -248,6 +297,7 @@ def register_hosted_openai_extraction(
     model: str,
     api_key: str | None,
     region: str,
+    pricing: TokenPricing = DEFAULT_HOSTED_PRICING,
 ) -> None:
     """Register a HOSTED OpenAI-compatible provider (OpenAI, or Gemini's
     OpenAI-compatible endpoint) under its own ``name``. Unlike the local
@@ -282,15 +332,19 @@ def register_hosted_openai_extraction(
             endpoint=endpoint,
             model=model,
             name=name,
-            api_key=runtime.get("credential_value") or api_key or "",
+            api_key=(
+                runtime["credential_value"] if "credential_value" in runtime else api_key or ""
+            ),
             instructions=runtime.get("instructions"),
             instruction_reference=runtime.get("instruction_reference"),
+            pricing=pricing,
         ),
     )
 
 
 __all__ = [
     "CAPABILITY_WARNING",
+    "DEFAULT_HOSTED_PRICING",
     "PROVIDER_NAME",
     "ModelOutputInvalidError",
     "OpenAiCompatibleExtractionProvider",

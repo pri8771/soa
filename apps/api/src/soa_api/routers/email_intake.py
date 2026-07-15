@@ -20,7 +20,12 @@ from soa_api.dependencies import (
     ObjectStoreDep,
     get_dependencies,
 )
-from soa_api.services.email_intake import parse_inbound_email, process_inbound_email
+from soa_api.services.email_intake import (
+    EmailLimitError,
+    parse_inbound_email,
+    process_inbound_email,
+)
+from soa_api.services.file_limits import FileLimits
 
 router = APIRouter(tags=["public-api"])
 
@@ -33,24 +38,69 @@ async def inbound_email(
     scanner: MalwareScannerDep,
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> dict[str, Any]:
-    secret = deps.settings.email_intake_secret
-    if not secret:
+    await deps.rate_limiter.enforce(
+        "email_intake",
+        request.client.host if request.client else "unknown",
+        deps.settings.rate_limit_email_intake_per_minute,
+    )
+    configured_secret = deps.settings.email_intake_secret
+    if configured_secret is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Email intake is not configured.",
         )
     provided = request.headers.get("X-Intake-Secret", "")
-    if not hmac.compare_digest(provided, secret):
+    if not hmac.compare_digest(provided, configured_secret.get_secret_value()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid intake secret."
         )
-    raw = await request.body()
+    content_length = request.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            declared_bytes = 0  # Starlette/ASGI still enforces the streamed bound below.
+        if declared_bytes > deps.settings.email_intake_max_body_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Inbound message exceeds the configured byte limit.",
+            )
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > deps.settings.email_intake_max_body_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Inbound message exceeds the configured byte limit.",
+            )
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Empty message body."
         )
-    email = parse_inbound_email(raw)
-    report = await process_inbound_email(session, email=email, store=store, scanner=scanner)
+    try:
+        email = parse_inbound_email(
+            bytes(raw),
+            max_attachments=deps.settings.email_intake_max_attachments,
+            max_total_attachment_bytes=deps.settings.email_intake_max_total_attachment_bytes,
+        )
+    except EmailLimitError as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=str(error),
+        ) from error
+    report = await process_inbound_email(
+        session,
+        email=email,
+        store=store,
+        scanner=scanner,
+        platform_limits=FileLimits(
+            max_size_bytes=deps.settings.max_upload_bytes,
+            max_pages=deps.settings.max_pages_per_document,
+            max_total_pixels=deps.settings.max_total_pixels,
+            max_decompressed_bytes=deps.settings.max_decompressed_bytes,
+            max_conversion_seconds=deps.settings.max_conversion_seconds,
+        ),
+    )
     return {
         "outcome": report.outcome,
         "reason": report.reason,

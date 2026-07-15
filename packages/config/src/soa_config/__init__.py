@@ -9,6 +9,7 @@ from soa_config.secrets import (
     SecretStore,
     SecretStoreError,
     SecretStoreReadOnlyError,
+    SecretStoreUnavailableError,
 )
 from soa_config.settings import (
     DEV_SECRET_KEY,
@@ -29,5 +30,6 @@ __all__ = [
     "SecretStore",
     "SecretStoreError",
     "SecretStoreReadOnlyError",
+    "SecretStoreUnavailableError",
     "WebServiceSettings",
 ]

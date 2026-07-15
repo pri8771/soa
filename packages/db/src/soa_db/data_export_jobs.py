@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import String
+from sqlalchemy import String, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
@@ -20,6 +20,7 @@ class DataExportState(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class DataExportJob(
@@ -28,6 +29,8 @@ class DataExportJob(
     __tablename__ = "data_export_jobs"
 
     scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    snapshot_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
     document_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     total_documents: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -41,9 +44,30 @@ class DataExportJob(
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
+    __table_args__ = (UniqueConstraint("organization_id", "request_key"),)
+
 
 class DataExportJobRepository(ScopedRepository[DataExportJob]):
     model = DataExportJob
+
+    async def get_by_request_key(self, request_key: str) -> DataExportJob | None:
+        statement = self._scoped_select().where(DataExportJob.request_key == request_key)
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def list_recent(self, *, limit: int = 50) -> list[DataExportJob]:
+        statement = self._scoped_select().order_by(DataExportJob.created_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars().all())
+
+    async def count_active(self) -> int:
+        statement = (
+            select(func.count())
+            .select_from(DataExportJob)
+            .where(
+                DataExportJob.organization_id == self.organization_id,
+                DataExportJob.state.in_((DataExportState.PENDING, DataExportState.RUNNING)),
+            )
+        )
+        return int((await self._session.execute(statement)).scalar_one())
 
 
 def new_data_export_job(
@@ -52,6 +76,7 @@ def new_data_export_job(
     scope: str,
     created_by: str,
     document_id: uuid.UUID | None = None,
+    request_key: str | None = None,
     retention_days: int = 7,
 ) -> DataExportJob:
     if scope not in ("organization", "document"):
@@ -62,6 +87,7 @@ def new_data_export_job(
         organization_id=organization_id,
         scope=scope,
         document_id=document_id,
+        request_key=request_key,
         created_by=created_by,
         expires_at=utcnow() + timedelta(days=retention_days),
     )

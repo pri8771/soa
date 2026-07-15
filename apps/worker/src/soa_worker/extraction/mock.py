@@ -96,6 +96,10 @@ class MockExtractionProvider:
     def name(self) -> str:
         return PROVIDER_NAME
 
+    @property
+    def runtime_provenance(self) -> dict[str, object]:
+        return {"adapter": "mock-extraction-v1", "model": MODEL_NAME}
+
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
         if self._mode is MockMode.ERROR_RETRYABLE:
             raise ExtractionProviderError(

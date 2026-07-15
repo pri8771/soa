@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from soa_api.domain.identity import Membership, MembershipRepository, MembershipStatus
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
@@ -67,6 +68,11 @@ PERMISSION_REGISTRY: frozenset[str] = frozenset(
         # (SEC-009) is a sensitive portability/subject-access action —
         # its own grant, separate from documents.read.
         "data.export",
+        # Erasure is intentionally split: one principal requests, another
+        # approves. Legal holds are a separate absolute-veto permission.
+        "data.delete.request",
+        "data.delete.approve",
+        "data.retention.manage",
         "jobs.read",
         "jobs.manage",
         "jobs.admin",
@@ -87,6 +93,10 @@ class UnknownPermissionError(Exception):
     def __init__(self, permission: str, *, reason: str = "permissions fail closed") -> None:
         self.permission = permission
         super().__init__(f"unknown permission {permission!r} — {reason}")
+
+
+class LastActiveOrgAdminError(Exception):
+    """Removing this grant/access would leave no active organization admin."""
 
 
 def validate_permissions(permissions: Iterable[str], *, allow_internal: bool = False) -> list[str]:
@@ -121,6 +131,7 @@ SYSTEM_ROLE_TEMPLATES: dict[str, frozenset[str]] = {
             "catalogs.read",
             "analytics.read",
             "audit.read",
+            "data.delete.request",
             "jobs.read",
         }
     ),
@@ -197,12 +208,28 @@ class RoleRepository(ScopedRepository[Role]):
         stmt = self._scoped_select().where(Role.slug == slug)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def list_by_ids(self, role_ids: Iterable[uuid.UUID]) -> Sequence[Role]:
+        ids = list(role_ids)
+        if not ids:
+            return []
+        stmt = self._scoped_select().where(Role.id.in_(ids))
+        return (await self._session.execute(stmt)).scalars().all()
+
 
 class RoleAssignmentRepository(ScopedRepository[RoleAssignment]):
     model = RoleAssignment
 
     async def list_for_membership(self, membership_id: uuid.UUID) -> Sequence[RoleAssignment]:
         stmt = self._scoped_select().where(RoleAssignment.membership_id == membership_id)
+        return (await self._session.execute(stmt)).scalars().all()
+
+    async def list_for_memberships(
+        self, membership_ids: Iterable[uuid.UUID]
+    ) -> Sequence[RoleAssignment]:
+        ids = list(membership_ids)
+        if not ids:
+            return []
+        stmt = self._scoped_select().where(RoleAssignment.membership_id.in_(ids))
         return (await self._session.execute(stmt)).scalars().all()
 
 
@@ -314,6 +341,49 @@ async def revoke_role(
         organization_id=context.organization_id,
         summary={"role_id": str(assignment.role_id)},
     )
+
+
+async def ensure_can_remove_active_org_admin(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    membership_id: uuid.UUID,
+) -> None:
+    """Lock active org-admin assignments and preserve one active admin.
+
+    This is called before revoking the org-admin grant and before moving
+    an active org-admin membership to a non-active status. Locking the
+    matching rows makes concurrent removals serialize on PostgreSQL.
+    """
+    admin_role = await RoleRepository(session, context).get_by_slug("org-admin")
+    if admin_role is None:
+        raise LastActiveOrgAdminError("the organization has no org-admin role")
+    membership = await MembershipRepository(session, context).get(membership_id)
+    if membership is None or membership.status != MembershipStatus.ACTIVE:
+        return
+    target_assignments = await RoleAssignmentRepository(session, context).list_for_membership(
+        membership_id
+    )
+    if not any(assignment.role_id == admin_role.id for assignment in target_assignments):
+        return
+    stmt = (
+        select(RoleAssignment)
+        .join(Membership, Membership.id == RoleAssignment.membership_id)
+        .where(
+            RoleAssignment.organization_id == context.organization_id,
+            Membership.organization_id == context.organization_id,
+            RoleAssignment.role_id == admin_role.id,
+            Membership.status == MembershipStatus.ACTIVE,
+        )
+        .order_by(RoleAssignment.id)
+        .with_for_update()
+    )
+    active_admin_assignments = list((await session.execute(stmt)).scalars().all())
+    if len(active_admin_assignments) <= 1:
+        raise LastActiveOrgAdminError(
+            "At least one active organization admin must remain. Assign another active member "
+            "the org-admin role before removing this access."
+        )
 
 
 async def permissions_for_membership(

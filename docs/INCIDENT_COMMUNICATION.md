@@ -11,6 +11,11 @@ per-incident mechanics of *acting* on a failure live in
 *how to communicate*, and [`runbooks/security-communication.md`](runbooks/security-communication.md)
 is the entry point they call.
 
+> **Implementation status:** the severity model, templates, alert owners, and
+> runbooks exist. A status-page vendor, incident channel/bridge, concrete
+> contacts/pagers, support-plan deadlines, and completed game-day record do not
+> live in this repository and must be configured/proved before production.
+
 ## Severity model
 
 | Severity | Definition | Internal | Customer |
@@ -95,5 +100,7 @@ The process is exercised, not just written: a **game-day / tabletop
 drill** runs each severity through declaration → response → comms →
 review against a simulated failure, confirming the roles, channels, and
 templates work and that commitments match the support plan. The first
-full drill runs during the pilot (PIL) against the staging environment
-REL-002 provides; record the drill's findings and fold gaps back here.
+full drill runs during pilot preparation against the applied staging
+environment. Run it before customer data is accepted; record participants,
+timestamps, notifications, observed gaps, and remediation owners and fold the
+results back here.

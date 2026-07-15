@@ -35,8 +35,9 @@ region). It declares that honestly in its registration
 (:func:`register_anthropic_extraction`) so tenant retention/provider
 policy is enforced against the truth — a hosted adapter is only ever
 eligible when the resolved policy explicitly allows third-party
-processing (see ``select_providers``). It registers ONLY when an API key
-is present; a missing key disables the capability cleanly (AIO-006).
+processing (see ``select_providers``). Registration supports either a
+deployment key or a run-pinned tenant secret; construction fails closed
+when the selected credential is missing or empty (AIO-006).
 """
 
 from typing import Any
@@ -54,6 +55,8 @@ from soa_worker.model_request_builder import (
     BuiltModelRequest,
     build_extraction_messages,
 )
+from soa_worker.model_usage import ProviderUsage, TokenPricing
+from soa_worker.runtime_provenance import endpoint_fingerprint
 
 PROVIDER_NAME = "anthropic-claude"
 
@@ -62,6 +65,11 @@ PROVIDER_NAME = "anthropic-claude"
 DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages"
 DEFAULT_API_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_PRICING = TokenPricing(
+    reference="soa-rate-card-v1:anthropic:claude-sonnet-4-5",
+    input_cents_per_million=300,
+    output_cents_per_million=1500,
+)
 
 CAPABILITY_WARNING = (
     "hosted Claude extraction: content is sent to Anthropic (third party); "
@@ -78,6 +86,8 @@ class AnthropicExtractionProvider:
     through unchanged, so the request is built by the SAME AIO-011
     injection-safe path the local adapter uses."""
 
+    supports_repair = True
+
     def __init__(
         self,
         *,
@@ -91,6 +101,7 @@ class AnthropicExtractionProvider:
         instructions: dict[str, Any] | None = None,
         instruction_reference: str | None = None,
         build_limits: BuildLimits | None = None,
+        pricing: TokenPricing = DEFAULT_PRICING,
     ) -> None:
         if not api_key:
             raise ValueError("the Claude adapter needs an API key")
@@ -104,10 +115,21 @@ class AnthropicExtractionProvider:
         self._instructions = instructions
         self._instruction_reference = instruction_reference
         self._build_limits = build_limits
+        self._pricing = pricing
 
     @property
     def name(self) -> str:
         return PROVIDER_NAME
+
+    @property
+    def runtime_provenance(self) -> dict[str, object]:
+        return {
+            "adapter": "anthropic-messages-v1",
+            "api_version": self._api_version,
+            "model": self._model,
+            "endpoint_sha256": endpoint_fingerprint(self._endpoint),
+            "pricing": self._pricing.as_dict(),
+        }
 
     def build_payload(self, request: ExtractionRequest) -> tuple[dict[str, Any], BuiltModelRequest]:
         """The exact Messages-API payload — exposed for tests. The
@@ -150,18 +172,20 @@ class AnthropicExtractionProvider:
                 },
             ]
         assert "tools" not in payload  # the model reads; it never acts
-        content = await self._complete(payload)
+        content, usage = await self._complete(payload)
         return parse_model_extraction(
             request,
             content,
             built,
             provider=self.name,
             model=self._model,
-            cost_cents=0,
+            cost_cents=self._pricing.estimate_cost_cents(usage),
+            usage=usage,
+            pricing_reference=self._pricing.reference,
             lead_warnings=(CAPABILITY_WARNING,),
         )
 
-    async def _complete(self, payload: dict[str, Any]) -> str:
+    async def _complete(self, payload: dict[str, Any]) -> tuple[str, ProviderUsage]:
         headers = {
             "x-api-key": self._api_key,
             "anthropic-version": self._api_version,
@@ -202,13 +226,18 @@ class AnthropicExtractionProvider:
                 for block in blocks
                 if isinstance(block, dict) and block.get("type") == "text"
             )
+            raw_usage = body["usage"]
+            usage = ProviderUsage.from_provider_counts(
+                input_tokens=raw_usage["input_tokens"],
+                output_tokens=raw_usage["output_tokens"],
+            )
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionProviderError(
                 "Claude returned an unexpected response shape", retryable=True
             ) from None
         if not content:
             raise ExtractionProviderError("Claude returned no text content", retryable=True)
-        return content
+        return content, usage
 
 
 def register_anthropic_extraction(
@@ -216,12 +245,14 @@ def register_anthropic_extraction(
     *,
     model: str = DEFAULT_MODEL,
     endpoint: str = DEFAULT_ENDPOINT,
+    pricing: TokenPricing = DEFAULT_PRICING,
 ) -> None:
-    """Register the hosted Claude adapter. Call this ONLY when the
-    deployment configured an API key (worker startup does); without a key
-    the capability simply does not exist (AIO-006 fail-closed). The data
-    policy declares the truth — content leaves the deployment to a hosted
-    US third party — so tenant policy is enforced against it."""
+    """Register hosted Claude for deployment or run-pinned credentials.
+
+    A supplied tenant ``credential_value`` is authoritative, including an
+    invalid empty value; it never silently falls through to shared billing.
+    With neither credential source, construction fails closed (AIO-006).
+    """
     from soa_worker.providers.capabilities import (
         ANY_LANGUAGE,
         Capability,
@@ -247,11 +278,14 @@ def register_anthropic_extraction(
             ),
         ),
         lambda **runtime: AnthropicExtractionProvider(
-            api_key=runtime.get("credential_value") or api_key or "",
+            api_key=(
+                runtime["credential_value"] if "credential_value" in runtime else api_key or ""
+            ),
             model=model,
             endpoint=endpoint,
             instructions=runtime.get("instructions"),
             instruction_reference=runtime.get("instruction_reference"),
+            pricing=pricing,
         ),
     )
 
@@ -261,6 +295,7 @@ __all__ = [
     "DEFAULT_API_VERSION",
     "DEFAULT_ENDPOINT",
     "DEFAULT_MODEL",
+    "DEFAULT_PRICING",
     "PROVIDER_NAME",
     "AnthropicExtractionProvider",
     "register_anthropic_extraction",

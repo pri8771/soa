@@ -20,7 +20,7 @@ Design decisions the contract bakes in:
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -55,6 +55,9 @@ class SignedUrl:
     url: str
     expires_at: datetime
     method: str  # "GET" | "PUT"
+    # Headers covered by the signature and therefore required on the client
+    # request (for example the declared SHA-256 metadata on a direct upload).
+    required_headers: dict[str, str] = field(default_factory=dict)
 
 
 def sha256_hex(data: bytes) -> str:
@@ -107,9 +110,21 @@ class ObjectStore(Protocol):
         ...
 
     async def signed_upload_url(
-        self, key: str, *, expires_in_seconds: int, content_type: str
+        self,
+        key: str,
+        *,
+        expires_in_seconds: int,
+        content_type: str,
+        size_bytes: int,
+        sha256: str | None = None,
     ) -> SignedUrl:
-        """Short-lived URL a client can PUT bytes to."""
+        """Short-lived URL a client can PUT bytes to.
+
+        ``size_bytes`` is bound at the storage authorization boundary so a
+        client cannot declare a small file and use the capability to store an
+        unbounded object. When ``sha256`` is supplied, production adapters
+        also bind it into signed object metadata.
+        """
         ...
 
     async def signed_download_url(self, key: str, *, expires_in_seconds: int) -> SignedUrl:

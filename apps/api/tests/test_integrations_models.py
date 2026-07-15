@@ -24,6 +24,7 @@ from soa_api.domain.versioning import ImmutableVersionError, InvalidVersionState
 from soa_config import MemorySecretStore, SecretNotFoundError, SecretReference
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
+from soa_db.jobs import Job
 from soa_db.repository import OrganizationContext
 
 ORG_A = uuid.UUID("11111111-1111-4111-8111-111111111111")
@@ -112,9 +113,18 @@ async def test_credentials_are_references_rotated_and_never_audited(
         assert rotated.secret_reference != first_reference, "rotation issues a fresh reference"
         stale = await IntegrationCredentialRepository(session, CONTEXT).get(first.id)
         assert stale is not None and stale.revoked_at is not None
-        # The rotated-out VALUE is revoked in the store too.
-        with pytest.raises(SecretNotFoundError):
-            await secrets.resolve(SecretReference.parse(first_reference))
+        # The old value remains live until the DB transaction commits and
+        # the durable post-commit revocation job runs. It is never deleted
+        # synchronously while a rollback could restore this DB pointer.
+        assert (
+            await secrets.resolve(SecretReference.parse(first_reference)) == "whsec_original_value"
+        )
+        revoke_job = (
+            await session.execute(select(Job).where(Job.job_type == "secret.revoke"))
+        ).scalar_one()
+        assert revoke_job.organization_id == ORG_A
+        assert revoke_job.payload["credential_id"] == str(first.id)
+        assert revoke_job.payload["secret_reference"] == first_reference
         assert (
             await credential_secret_for_delivery(
                 session, CONTEXT, integration=integration, secret_store=secrets
@@ -156,6 +166,32 @@ async def test_credentials_are_references_rotated_and_never_audited(
             "integration.credential_rotated",
         }
         assert "whsec" not in str([event.summary for event in events])
+
+
+async def test_failed_database_unit_of_work_revokes_new_integration_secret(
+    db: DatabaseSessions,
+) -> None:
+    integration_id = await make_integration(db)
+    secrets = MemorySecretStore()
+    reference = ""
+    with pytest.raises(RuntimeError, match="rollback integration credential"):
+        async with db.session_scope() as session:
+            integration = await IntegrationRepository(session, CONTEXT).get(integration_id)
+            assert integration is not None
+            credential = await store_integration_credential(
+                session,
+                CONTEXT,
+                integration=integration,
+                kind="webhook_hmac_secret",
+                secret="must-not-be-orphaned",
+                actor_id="user:x",
+                secret_store=secrets,
+            )
+            reference = credential.secret_reference
+            raise RuntimeError("rollback integration credential")
+
+    with pytest.raises(SecretNotFoundError):
+        await secrets.resolve(SecretReference.parse(reference))
 
 
 async def test_published_mappings_are_immutable_and_superseded_in_order(

@@ -26,7 +26,7 @@ in the deployment, not in code.
 | --- | --- | --- | --- | --- | --- | --- |
 | `queue.backlog_growing` | queue | high | platform-on-call | `soa.jobs.oldest_pending_age_seconds` | oldest pending job age > 900s for 10m | `backlog` |
 | `queue.dead_letter_spike` | queue | high | platform-on-call | `soa.jobs.dead_lettered` | dead-letter rate > 0 sustained 5m | `backlog` |
-| `provider.extraction_unavailable` | provider | critical | platform-on-call | pending AIO-013 | provider error+timeout ratio > 25% over 5m | `provider-outage` |
+| `provider.extraction_unavailable` | provider | critical | platform-on-call | `soa_db.provider_runtime_metrics` | all attempted configured extraction providers degraded/unreachable with no success for 5m | `provider-outage` |
 | `schema.repair_fallback_rate` | schema_error | warning | platform-on-call | pending AIO-012 | repair fallback ratio > 10% over 1h | `bad-release` |
 | `cost.budget_burn` | cost | high | finops | usage ledger (ANA-003) | projected monthly cost > budget (ANA-009) | `quota-exhaustion` |
 | `sla.review_overdue` | sla | high | platform-on-call | operational snapshot (ANA-001) | overdue/open review > 20% for 30m | `backlog` |
@@ -37,14 +37,24 @@ in the deployment, not in code.
 
 ## Signals that are not live yet
 
-Three alerts name a **pending** signal rather than a live `soa.*`
+Two alerts name a **pending** signal rather than a live `soa.*`
 metric, because the code that emits the signal is not built yet — this is
 stated honestly in the catalog rather than papered over:
 
-- `provider.extraction_unavailable` → the provider router's failover
-  telemetry (AIO-013 is wired per-stream during the pipeline build-out).
 - `schema.repair_fallback_rate` → the schema-repair counter (AIO-012).
 - `backup.stale_or_failed` → backup freshness (REL-003).
 
+Provider extraction health is now a live application fact: the per-run router
+atomically updates tenant-scoped `provider_runtime_metrics` for every attempt
+and fallback, and the administration API derives health from those shared facts
+rather than replica-local memory. It is not yet a deployed Cloud Monitoring
+policy; the selected collector/adapter must poll or export that fact and the
+staging alert test must prove the notification.
+
 Each becomes armable when its task lands; the alert definition, owner,
 and runbook are already fixed so nothing is forgotten.
+
+The reference Terraform provisions an uptime check and, when notification
+channels are supplied, one sample API-down policy. It does **not** materialize
+this complete catalog. Production readiness requires backend-specific policies,
+dashboards, real rotation mappings, and a fired test signal for every row.

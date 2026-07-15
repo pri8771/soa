@@ -34,6 +34,12 @@ resource "google_secret_manager_secret_iam_member" "api_secret_key" {
   member    = "serviceAccount:${google_service_account.api.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "api_email_intake_secret" {
+  secret_id = google_secret_manager_secret.email_intake_secret.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
 resource "google_secret_manager_secret_iam_member" "worker_db_url" {
   secret_id = google_secret_manager_secret.database_url.id
   role      = "roles/secretmanager.secretAccessor"
@@ -53,28 +59,28 @@ resource "google_secret_manager_secret_iam_member" "worker_outbox_signing_secret
 }
 
 resource "google_secret_manager_secret_iam_member" "migrator_db_url" {
-  secret_id = google_secret_manager_secret.database_url.id
+  secret_id = google_secret_manager_secret.migrator_database_url.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.migrator.email}"
 }
 
-# The API creates, resolves, and revokes opaque tenant integration secrets.
-# A custom role grants exactly the four Secret Manager operations exercised
-# by GcpSecretManagerStore rather than the broad secret-admin role.
+# The API creates and resolves opaque tenant integration secrets. Revocation
+# is a post-commit worker job, so the request-serving identity cannot delete.
 resource "google_project_iam_custom_role" "api_tenant_secret_manager" {
+  project     = var.tenant_secrets_project_id
   role_id     = "${replace(local.name_prefix, "-", "_")}_tenant_secret_manager"
   title       = "SOA tenant secret manager (${var.environment})"
-  description = "Create, resolve, and revoke application-managed tenant secrets."
+  description = "Create and resolve application-managed tenant secrets."
   permissions = [
     "secretmanager.secrets.create",
-    "secretmanager.secrets.delete",
     "secretmanager.versions.access",
     "secretmanager.versions.add",
   ]
+  depends_on = [google_project_service.tenant_secret_manager]
 }
 
 resource "google_project_iam_member" "api_tenant_secret_manager" {
-  project = var.project_id
+  project = var.tenant_secrets_project_id
   role    = google_project_iam_custom_role.api_tenant_secret_manager.name
   member  = "serviceAccount:${google_service_account.api.email}"
 }
@@ -82,8 +88,26 @@ resource "google_project_iam_member" "api_tenant_secret_manager" {
 # The worker resolves tenant BYO keys at runtime, so it needs project-wide
 # accessor for secrets it did not create at apply time.
 resource "google_project_iam_member" "worker_secret_accessor" {
-  project = var.project_id
+  project = var.tenant_secrets_project_id
   role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+}
+
+# Credential rotation commits a durable secret.revoke job with the old
+# reference. The worker gets delete-only container permission in addition to
+# its existing version accessor; it cannot create or add tenant secret values.
+resource "google_project_iam_custom_role" "worker_tenant_secret_revoker" {
+  project     = var.tenant_secrets_project_id
+  role_id     = "${replace(local.name_prefix, "-", "_")}_tenant_secret_revoker"
+  title       = "SOA tenant secret revoker (${var.environment})"
+  description = "Delete rotated application-managed tenant secrets after database commit."
+  permissions = ["secretmanager.secrets.delete"]
+  depends_on  = [google_project_service.tenant_secret_manager]
+}
+
+resource "google_project_iam_member" "worker_tenant_secret_revoker" {
+  project = var.tenant_secrets_project_id
+  role    = google_project_iam_custom_role.worker_tenant_secret_revoker.name
   member  = "serviceAccount:${google_service_account.worker.email}"
 }
 
@@ -118,7 +142,8 @@ resource "google_cloud_run_v2_service" "api" {
   labels              = local.labels
 
   template {
-    service_account = google_service_account.api.email
+    service_account                  = google_service_account.api.email
+    max_instance_request_concurrency = var.api_concurrency
     scaling {
       min_instance_count = var.api_min_instances
       max_instance_count = var.api_max_instances
@@ -163,12 +188,38 @@ resource "google_cloud_run_v2_service" "api" {
         value = jsonencode(var.api_cors_allowed_origins)
       }
       env {
+        name  = "SOA_API_OUTBOUND_DESTINATION_ALLOWLIST"
+        value = jsonencode(var.worker_export_destination_allowlist)
+      }
+      env {
         name  = "SOA_API_CLAMAV_HOST"
         value = var.api_clamav_host
       }
       env {
         name  = "SOA_API_CLAMAV_PORT"
         value = tostring(var.api_clamav_port)
+      }
+      # Cloud Run reaches this HTTP/1 container through a 32 MiB request
+      # ceiling. Leave headroom for headers and MIME/base64 expansion.
+      env {
+        name  = "SOA_API_EMAIL_INTAKE_MAX_BODY_BYTES"
+        value = "31457280"
+      }
+      env {
+        name  = "SOA_API_EMAIL_INTAKE_MAX_TOTAL_ATTACHMENT_BYTES"
+        value = "20971520"
+      }
+      env {
+        name  = "SOA_API_PUBLIC_INGEST_MAX_FILE_BYTES"
+        value = "31457280"
+      }
+      env {
+        name  = "SOA_API_TELEMETRY_PROFILE"
+        value = "otlp"
+      }
+      env {
+        name  = "SOA_API_OTLP_ENDPOINT"
+        value = var.telemetry_otlp_endpoint
       }
       env {
         name  = "SOA_API_STORAGE_BACKEND"
@@ -188,7 +239,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "SOA_API_SECRETS_GCP_PROJECT"
-        value = var.project_id
+        value = var.tenant_secrets_project_id
       }
       env {
         name = "SOA_API_DATABASE_URL"
@@ -204,6 +255,15 @@ resource "google_cloud_run_v2_service" "api" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.app_secret_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "SOA_API_EMAIL_INTAKE_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.email_intake_secret.secret_id
             version = "latest"
           }
         }
@@ -269,12 +329,16 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
         value = var.environment == "production" ? "production" : "staging"
       }
       env {
+        name  = "SOA_WORKER_MAX_CONCURRENCY"
+        value = tostring(var.worker_concurrency)
+      }
+      env {
         name  = "SOA_WORKER_SECRETS_BACKEND"
         value = "gcp-secret-manager"
       }
       env {
         name  = "SOA_WORKER_SECRETS_GCP_PROJECT"
-        value = var.project_id
+        value = var.tenant_secrets_project_id
       }
       env {
         name  = "SOA_WORKER_STORAGE_BACKEND"
@@ -291,6 +355,14 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
       env {
         name  = "SOA_WORKER_EXPORT_DESTINATION_ALLOWLIST"
         value = jsonencode(var.worker_export_destination_allowlist)
+      }
+      env {
+        name  = "SOA_WORKER_TELEMETRY_PROFILE"
+        value = "otlp"
+      }
+      env {
+        name  = "SOA_WORKER_OTLP_ENDPOINT"
+        value = var.telemetry_otlp_endpoint
       }
       env {
         name  = "SOA_WORKER_OUTBOX_PUBLISH_URL"

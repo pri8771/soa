@@ -2,6 +2,11 @@
 
 > **Status:** implementation contract
 >
+> This is the long-form target plan, not a completion ledger. Current code and
+> release blockers are tracked in
+> [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md); active task
+> state belongs in Jira/Notion.
+>
 > **Audience:** product, design, engineering, security, QA, operations, and coding agents
 >
 > **Primary objective:** build a local-first, free-first, paid-ready, production-grade B2B intelligent document operations platform whose first complete solution converts customer purchase orders into validated, ERP-ready sales orders.
@@ -359,11 +364,11 @@ soa/
 │           ├── handlers/
 │           └── heartbeat.py
 ├── packages/
-│   ├── contracts/                   # OpenAPI-derived TS client and JSON schemas
+│   ├── contracts/                   # future generated client/schema package; not present
 │   ├── design-system/               # tokens, primitives, patterns, Storybook
-│   ├── provider-contracts/          # provider DTOs and shared fixtures
-│   ├── canonical-order/             # versioned sales-order schema
-│   ├── config/                      # shared lint/build/test config
+│   ├── provider-contracts/          # future shared DTO package if reuse justifies it; not present
+│   ├── canonical/                   # versioned sales-order schema and mapping
+│   ├── config/                      # runtime settings/policy, logging, telemetry, alerts
 │   └── test-fixtures/               # synthetic documents and expected output
 ├── migrations/
 ├── infrastructure/
@@ -677,8 +682,9 @@ PATCH  /memberships/{membership_id}
 GET    /roles
 POST   /roles
 PATCH  /roles/{role_id}
-POST   /service-credentials
-DELETE /service-credentials/{credential_id}
+GET/POST /orgs/{organization_slug}/service-credentials
+POST     /orgs/{organization_slug}/service-credentials/{credential_id}/rotate  (If-Match)
+POST     /orgs/{organization_slug}/service-credentials/{credential_id}/revoke  (If-Match)
 ```
 
 ### 9.3 Workspaces, processes, and streams

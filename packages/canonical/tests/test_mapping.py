@@ -5,7 +5,12 @@ everything that cannot be placed."""
 import pytest
 
 from soa_canonical import validate_order
-from soa_canonical.mapping import CanonicalMappingError, SourceValue, map_sales_order
+from soa_canonical.mapping import (
+    CanonicalMappingError,
+    CatalogReference,
+    SourceValue,
+    map_sales_order,
+)
 
 DOC = "8a111111-1111-4111-8111-111111111111"
 RUN = "a2222222-2222-4222-8222-222222222222"
@@ -81,6 +86,39 @@ def test_full_fixture_maps_with_provenance() -> None:
         "document_sha256": "d" * 64,
         "received_at": "2026-03-14T09:20:00+00:00",
     }
+
+
+def test_catalog_identities_become_neutral_master_ids_and_trace_extensions() -> None:
+    customer = CatalogReference(
+        catalog_id="11111111-1111-4111-8111-111111111111",
+        catalog_version_id="22222222-2222-4222-8222-222222222222",
+        catalog_record_id="33333333-3333-4333-8333-333333333333",
+        source_id="CUST-100",
+        display_name="Acme Master Name",
+    )
+    material = CatalogReference(
+        catalog_id="44444444-4444-4444-8444-444444444444",
+        catalog_version_id="55555555-5555-4555-8555-555555555555",
+        catalog_record_id="66666666-6666-4666-8666-666666666666",
+        source_id="SKU-900",
+        display_name="Widget 900",
+    )
+    header = header_fixture()
+    header["customer_name"] = SourceValue("acme alias", catalog=customer)
+    lines = lines_fixture()
+    lines[0]["lines.sku"] = SourceValue("widget nine hundred", catalog=material)
+
+    order = map_sales_order(header=header, lines=lines, document_id=DOC, run_id=RUN)
+
+    assert order["parties"]["buyer"] == {  # type: ignore[index]
+        "name": "Acme Master Name",
+        "identifiers": [{"scheme": "customer-account", "value": "CUST-100"}],
+    }
+    assert order["line_items"][0]["sku"] == "SKU-900"
+    extension = order["extensions"]["x_soa_catalog"]  # type: ignore[index]
+    assert extension["customer"]["catalog_record_id"] == customer.catalog_record_id
+    assert extension["line_items"][0]["catalog_version_id"] == material.catalog_version_id
+    validate_order(dict(order))
 
 
 def test_every_missing_required_value_is_named() -> None:

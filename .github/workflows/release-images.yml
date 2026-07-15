@@ -27,6 +27,19 @@ jobs:
       GCP_REGION: ${{ vars.GCP_REGION }}
       AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
       WEB_API_BASE_URL: ${{ vars.WEB_API_BASE_URL }}
+      WEB_AUTH_MODE: ${{ vars.WEB_AUTH_MODE }}
+      WEB_FIREBASE_API_KEY: ${{ vars.WEB_FIREBASE_API_KEY }}
+      WEB_FIREBASE_AUTH_DOMAIN: ${{ vars.WEB_FIREBASE_AUTH_DOMAIN }}
+      WEB_FIREBASE_PROJECT_ID: ${{ vars.WEB_FIREBASE_PROJECT_ID }}
+      WEB_FIREBASE_APP_ID: ${{ vars.WEB_FIREBASE_APP_ID }}
+      WEB_FIREBASE_TENANT_ID: ${{ vars.WEB_FIREBASE_TENANT_ID }}
+      WEB_FIREBASE_PROVIDER_ID: ${{ vars.WEB_FIREBASE_PROVIDER_ID }}
+      WEB_FIREBASE_LOGIN_METHOD: ${{ vars.WEB_FIREBASE_LOGIN_METHOD }}
+      WEB_OIDC_ISSUER: ${{ vars.WEB_OIDC_ISSUER }}
+      WEB_OIDC_CLIENT_ID: ${{ vars.WEB_OIDC_CLIENT_ID }}
+      WEB_OIDC_SCOPE: ${{ vars.WEB_OIDC_SCOPE }}
+      WEB_OIDC_AUDIENCE: ${{ vars.WEB_OIDC_AUDIENCE }}
+      WEB_OIDC_BEARER_TOKEN: ${{ vars.WEB_OIDC_BEARER_TOKEN }}
       SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -89,8 +102,36 @@ jobs:
           build_image migrator apps/api/Dockerfile migrator
           test -n "$WEB_API_BASE_URL"
           [[ "$WEB_API_BASE_URL" =~ ^https:// ]]
+          [[ "$WEB_AUTH_MODE" = "firebase" || "$WEB_AUTH_MODE" = "oidc" ]]
+          if [ "$WEB_AUTH_MODE" = "firebase" ]; then
+            test -n "$WEB_FIREBASE_API_KEY"
+            test -n "$WEB_FIREBASE_AUTH_DOMAIN"
+            [[ "$WEB_FIREBASE_AUTH_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+            test -n "$WEB_FIREBASE_PROJECT_ID"
+            test -n "$WEB_FIREBASE_APP_ID"
+            test -n "$WEB_FIREBASE_PROVIDER_ID"
+            [[ "${WEB_FIREBASE_LOGIN_METHOD:-redirect}" = "redirect" || "$WEB_FIREBASE_LOGIN_METHOD" = "popup" ]]
+          else
+            [[ "$WEB_OIDC_ISSUER" =~ ^https:// ]]
+            test -n "$WEB_OIDC_CLIENT_ID"
+            test -n "${WEB_OIDC_SCOPE:-openid profile email offline_access}"
+            [[ "${WEB_OIDC_BEARER_TOKEN:-id_token}" = "id_token" || "$WEB_OIDC_BEARER_TOKEN" = "access_token" ]]
+          fi
           build_image web apps/web/Dockerfile runtime \
-            --build-arg "VITE_API_BASE_URL=${WEB_API_BASE_URL}"
+            --build-arg "VITE_API_BASE_URL=${WEB_API_BASE_URL}" \
+            --build-arg "VITE_AUTH_MODE=${WEB_AUTH_MODE}" \
+            --build-arg "VITE_FIREBASE_API_KEY=${WEB_FIREBASE_API_KEY}" \
+            --build-arg "VITE_FIREBASE_AUTH_DOMAIN=${WEB_FIREBASE_AUTH_DOMAIN}" \
+            --build-arg "VITE_FIREBASE_PROJECT_ID=${WEB_FIREBASE_PROJECT_ID}" \
+            --build-arg "VITE_FIREBASE_APP_ID=${WEB_FIREBASE_APP_ID}" \
+            --build-arg "VITE_FIREBASE_TENANT_ID=${WEB_FIREBASE_TENANT_ID}" \
+            --build-arg "VITE_FIREBASE_PROVIDER_ID=${WEB_FIREBASE_PROVIDER_ID}" \
+            --build-arg "VITE_FIREBASE_LOGIN_METHOD=${WEB_FIREBASE_LOGIN_METHOD:-redirect}" \
+            --build-arg "VITE_OIDC_ISSUER=${WEB_OIDC_ISSUER}" \
+            --build-arg "VITE_OIDC_CLIENT_ID=${WEB_OIDC_CLIENT_ID}" \
+            --build-arg "VITE_OIDC_SCOPE=${WEB_OIDC_SCOPE:-openid profile email offline_access}" \
+            --build-arg "VITE_OIDC_AUDIENCE=${WEB_OIDC_AUDIENCE}" \
+            --build-arg "VITE_OIDC_BEARER_TOKEN=${WEB_OIDC_BEARER_TOKEN:-id_token}"
 
       - name: Scan API image
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0

@@ -205,7 +205,7 @@ async def replay_export(
     audited reason. Nothing is re-extracted; the fixed payload
     redelivers under the same business key."""
     # Abuse control (SEC-003): per-principal cap on replays.
-    deps.rate_limiter.enforce(
+    await deps.rate_limiter.enforce(
         "replays",
         f"user:{authorized.membership.user_id}",
         deps.settings.rate_limit_replays_per_minute,

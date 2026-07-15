@@ -15,7 +15,7 @@ matrix runs against the new aggregate automatically.
 """
 
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from soa_api.domain.rbac import (
 )
 from soa_api.domain.tenancy import Workspace, WorkspaceRepository
 from soa_db import Base, CursorRequest, DatabaseSessions, create_database_engine
+from soa_db.provider_credentials import ProviderCredential, ProviderCredentialRepository
 from soa_db.repository import OrganizationContext, ScopedRepository, TenantMismatchError
 
 ORG_A = OrganizationContext(organization_id=uuid.UUID(int=0xAAA))
@@ -88,13 +89,25 @@ TENANT_CASES: list[TenantCase] = [
             created_by="test",
         ),
     ),
+    TenantCase(
+        name="provider_credential",
+        repository=ProviderCredentialRepository,
+        factory=lambda org, tag: ProviderCredential(
+            organization_id=org,
+            provider_name=f"provider-{tag}",
+            label=tag,
+            kind="api_key",
+            secret_reference=f"secretref://memory/orgs/{org}/providers/{tag}",
+            created_by="user:test",
+        ),
+    ),
 ]
 
 CASE_IDS = [case.name for case in TENANT_CASES]
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> DatabaseSessions:
+async def db(tmp_path: Path) -> AsyncIterator[DatabaseSessions]:
     engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/matrix.db")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

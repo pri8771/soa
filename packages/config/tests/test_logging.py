@@ -59,6 +59,16 @@ def test_correlation_context_generates_id_when_absent() -> None:
 
 
 @pytest.mark.parametrize(
+    "untrusted",
+    ["contains spaces", "line\nbreak", "x" * 65, "credential=CANARY-secret"],
+)
+def test_untrusted_correlation_id_is_replaced(untrusted: str) -> None:
+    with correlation_context(untrusted) as resolved:
+        assert resolved != untrusted
+        assert len(resolved) == 32
+
+
+@pytest.mark.parametrize(
     "key",
     [
         "password",
@@ -99,9 +109,9 @@ def test_non_serializable_extras_do_not_crash_formatter() -> None:
     assert payload["context"] == "opaque-object"
 
 
-def test_exception_info_records_type_and_message() -> None:
+def test_exception_info_records_only_the_safe_type() -> None:
     try:
-        raise ValueError("boom")
+        raise ValueError("CANARY customer document and credential")
     except ValueError:
         record = logging.LogRecord(
             name="test.logger",
@@ -119,6 +129,8 @@ def test_exception_info_records_type_and_message() -> None:
     exception = payload["exception"]
     assert isinstance(exception, dict)
     assert exception["type"] == "ValueError"
+    assert "message" not in exception
+    assert "CANARY" not in json.dumps(payload)
 
 
 def test_configure_logging_is_idempotent() -> None:

@@ -2,29 +2,63 @@
  * API client (TEN-012): thin fetch wrapper over the control-plane API.
  *
  * Development identity: when a dev user is selected (stored locally), the
- * X-Dev-User header rides on every request — the server only honors it in
- * development/test environments (TEN-002).
+ * X-Dev-User header rides on requests only in Vite's development mode. Every
+ * other browser build uses a production-shaped bearer session (TEN-002/003).
  */
 
+import { expireAuthSession, forceRefreshBearerToken, getBearerToken } from "../auth/runtime";
 import { env } from "../env";
 import type { CanonicalOrder } from "./canonical-order";
 
 export const DEV_USER_STORAGE_KEY = "soa.dev.user";
 
+export interface ApiValidationDetail {
+  location: string[];
+  message: string;
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface ApiErrorMetadata {
+  code?: string;
+  correlationId?: string;
+  details?: ApiValidationDetail[];
+  retryAfter?: string;
+  retryAfterSeconds?: number;
+}
+
 export class ApiError extends Error {
+  public readonly code: string | null;
+  public readonly correlationId: string | null;
+  public readonly details: readonly ApiValidationDetail[];
+  public readonly retryAfter: string | null;
+  public readonly retryAfterSeconds: number | null;
+
   constructor(
     public readonly status: number,
     message: string,
+    metadata: ApiErrorMetadata = {},
   ) {
     super(message);
+    this.name = "ApiError";
+    this.code = metadata.code ?? null;
+    this.correlationId = metadata.correlationId ?? null;
+    this.details = metadata.details ?? [];
+    this.retryAfter = metadata.retryAfter ?? null;
+    this.retryAfterSeconds = metadata.retryAfterSeconds ?? null;
   }
 }
 
 export function getDevUser(): string | null {
+  if (env.MODE !== "development" || env.VITE_AUTH_MODE !== undefined) return null;
   return globalThis.localStorage?.getItem(DEV_USER_STORAGE_KEY) ?? null;
 }
 
 export function setDevUser(value: string | null): void {
+  if (env.MODE !== "development" || env.VITE_AUTH_MODE !== undefined) {
+    globalThis.localStorage?.removeItem(DEV_USER_STORAGE_KEY);
+    return;
+  }
   if (value === null) {
     globalThis.localStorage?.removeItem(DEV_USER_STORAGE_KEY);
   } else {
@@ -32,26 +66,100 @@ export function setDevUser(value: string | null): void {
   }
 }
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+function retryDelay(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(header);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1_000));
+}
+
+async function apiErrorFromResponse(response: Response): Promise<ApiError> {
+  let body: {
+    error?: {
+      code?: unknown;
+      message?: unknown;
+      correlation_id?: unknown;
+      details?: unknown;
+    };
+  } = {};
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    // Non-JSON error body: retain HTTP and response-header metadata.
+  }
+  const error = body.error;
+  const retryAfter = response.headers.get("Retry-After") ?? undefined;
+  const details = Array.isArray(error?.details)
+    ? error.details.filter(
+        (detail): detail is ApiValidationDetail =>
+          Boolean(detail) &&
+          typeof detail === "object" &&
+          Array.isArray((detail as ApiValidationDetail).location) &&
+          typeof (detail as ApiValidationDetail).message === "string" &&
+          typeof (detail as ApiValidationDetail).type === "string",
+      )
+    : undefined;
+  return new ApiError(
+    response.status,
+    typeof error?.message === "string" ? error.message : `Request failed (${response.status}).`,
+    {
+      code: typeof error?.code === "string" ? error.code : undefined,
+      correlationId:
+        typeof error?.correlation_id === "string"
+          ? error.correlation_id
+          : (response.headers.get("X-Request-ID") ?? undefined),
+      details,
+      retryAfter,
+      retryAfterSeconds: retryDelay(retryAfter ?? null),
+    },
+  );
+}
+
+function requestHeaders(init: RequestInit | undefined, bearerToken: string | null): Headers {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
-  if (init?.body) {
+  if (init?.body && typeof init.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const devUser = getDevUser();
-  if (devUser) {
-    headers.set("X-Dev-User", devUser);
+  if (bearerToken) headers.set("Authorization", `Bearer ${bearerToken}`);
+  if (env.MODE === "development" && env.VITE_AUTH_MODE === undefined) {
+    const devUser = getDevUser();
+    if (devUser) headers.set("X-Dev-User", devUser);
+  } else {
+    // Never let a shared helper or caller leak the development bypass header
+    // into a production-shaped browser request.
+    headers.delete("X-Dev-User");
   }
-  const response = await fetch(`${env.VITE_API_BASE_URL}${path}`, { ...init, headers });
-  if (!response.ok) {
-    let message = `Request failed (${response.status}).`;
+  return headers;
+}
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const explicitAuthorization = new Headers(init?.headers).has("Authorization");
+  let bearerToken = explicitAuthorization ? null : await getBearerToken();
+  let response = await fetch(`${env.VITE_API_BASE_URL}${path}`, {
+    ...init,
+    headers: requestHeaders(init, bearerToken),
+  });
+
+  // A rejected bearer is refreshed once. There is no recursive retry, and a
+  // second 401 always destroys the local session before the error propagates.
+  if (response.status === 401 && bearerToken) {
     try {
-      const body = (await response.json()) as { error?: { message?: string } };
-      message = body.error?.message ?? message;
+      bearerToken = await forceRefreshBearerToken();
+      response = await fetch(`${env.VITE_API_BASE_URL}${path}`, {
+        ...init,
+        headers: requestHeaders(init, bearerToken),
+      });
     } catch {
-      // Non-JSON error body: keep the generic message.
+      expireAuthSession();
     }
-    throw new ApiError(response.status, message);
+  }
+
+  if (!response.ok) {
+    if (response.status === 401) expireAuthSession();
+    throw await apiErrorFromResponse(response);
   }
   return (await response.json()) as T;
 }
@@ -81,6 +189,165 @@ export interface MeResponse {
 
 export function fetchMe(): Promise<MeResponse> {
   return apiFetch<MeResponse>("/me");
+}
+
+// --- Organizations, invitations, members, roles, and exports (TEN-008/SEC-009) ---
+
+export interface OrganizationRecord {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  version: number;
+}
+
+export interface OrganizationMember {
+  membership_id: string;
+  user_id: string | null;
+  invited_email: string;
+  status: "invited" | "active" | "suspended" | "removed";
+  version: number;
+  assigned_roles: Array<Pick<OrganizationRole, "id" | "name" | "slug" | "is_system">>;
+}
+
+export interface OrganizationRole {
+  id: string;
+  name: string;
+  slug: string;
+  is_system: boolean;
+  permissions: string[];
+}
+
+export interface DataExportJob {
+  id: string;
+  scope: string;
+  snapshot_at: string;
+  state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  total_documents: number;
+  processed_documents: number;
+  progress: number;
+  total_records: number;
+  safe_error: string | null;
+  expires_at: string;
+  manifest_download_url: string | null;
+  manifest_expires_at: string | null;
+  parts: Array<{
+    name?: string;
+    category?: string;
+    download_url?: string;
+    download_expires_at?: string;
+  }>;
+}
+
+export function createOrganization(name: string, slug: string): Promise<OrganizationRecord> {
+  return apiFetch("/organizations", {
+    method: "POST",
+    body: JSON.stringify({ name, slug }),
+  });
+}
+
+export function acceptInvitation(organizationSlug: string): Promise<OrganizationMember> {
+  return apiFetch("/invitations/accept", {
+    method: "POST",
+    body: JSON.stringify({ organization_slug: organizationSlug }),
+  });
+}
+
+export function fetchOrganizationMembers(
+  organizationSlug: string,
+): Promise<{ items: OrganizationMember[]; has_more: boolean; next_cursor: string | null }> {
+  return apiFetch(`/orgs/${organizationSlug}/members`);
+}
+
+export function inviteOrganizationMember(
+  organizationSlug: string,
+  email: string,
+): Promise<{ membership_id: string; email: string; status: string; created: boolean }> {
+  return apiFetch(`/orgs/${organizationSlug}/invitations`, {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function changeOrganizationMemberStatus(
+  organizationSlug: string,
+  member: Pick<OrganizationMember, "membership_id" | "version">,
+  status: "active" | "suspended" | "removed",
+): Promise<OrganizationMember> {
+  return apiFetch(`/orgs/${organizationSlug}/members/${member.membership_id}`, {
+    method: "PATCH",
+    headers: { "If-Match": String(member.version) },
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function fetchOrganizationRoles(organizationSlug: string): Promise<OrganizationRole[]> {
+  return apiFetch(`/orgs/${organizationSlug}/roles`);
+}
+
+export function createOrganizationRole(
+  organizationSlug: string,
+  body: { name: string; slug: string; permissions: string[] },
+): Promise<OrganizationRole> {
+  return apiFetch(`/orgs/${organizationSlug}/roles`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function assignOrganizationRole(
+  organizationSlug: string,
+  membershipId: string,
+  roleSlug: string,
+): Promise<{ membership_id: string; role_slug: string }> {
+  return apiFetch(`/orgs/${organizationSlug}/members/${membershipId}/roles`, {
+    method: "POST",
+    body: JSON.stringify({ role_slug: roleSlug }),
+  });
+}
+
+export function fetchOrganizationMemberRoles(
+  organizationSlug: string,
+  membershipId: string,
+): Promise<OrganizationRole[]> {
+  return apiFetch(`/orgs/${organizationSlug}/members/${membershipId}/roles`);
+}
+
+export function revokeOrganizationRole(
+  organizationSlug: string,
+  membershipId: string,
+  roleSlug: string,
+): Promise<{ membership_id: string; role_slug: string; revoked: boolean }> {
+  return apiFetch(`/orgs/${organizationSlug}/members/${membershipId}/roles/${roleSlug}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchOrganizationDataExports(
+  organizationSlug: string,
+): Promise<{ items: DataExportJob[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/data-exports`);
+}
+
+export function createOrganizationDataExport(
+  organizationSlug: string,
+  idempotencyKey = crypto.randomUUID(),
+): Promise<DataExportJob> {
+  return apiFetch(`/orgs/${organizationSlug}/data-exports`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+export function cancelOrganizationDataExport(
+  organizationSlug: string,
+  exportId: string,
+  reason: string,
+): Promise<DataExportJob> {
+  return apiFetch(`/orgs/${organizationSlug}/data-exports/${exportId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
 }
 
 // --- Jobs (JOB-006/007) ---
@@ -217,6 +484,66 @@ export function archiveStream(
   return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/archive`, {
     method: "POST",
     body: JSON.stringify({ impact }),
+  });
+}
+
+// --- Versioned extraction instructions (AIO-010) ---
+
+export interface InstructionVersion {
+  id: string;
+  stream_version_id: string;
+  schema_version_id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  reference: string;
+  content: { instructions: string; field_guidance: Record<string, string> };
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+}
+
+export function fetchInstructionVersions(
+  organizationSlug: string,
+  streamVersionId: string,
+): Promise<{ items: InstructionVersion[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/stream-versions/${streamVersionId}/instructions`);
+}
+
+export function createInstructionDraft(
+  organizationSlug: string,
+  streamVersionId: string,
+  schemaVersionId: string,
+  content: InstructionVersion["content"],
+  changeSummary: string | null,
+): Promise<InstructionVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/stream-versions/${streamVersionId}/instructions`, {
+    method: "POST",
+    body: JSON.stringify({
+      schema_version_id: schemaVersionId,
+      content,
+      change_summary: changeSummary,
+    }),
+  });
+}
+
+export function updateInstructionDraft(
+  organizationSlug: string,
+  instructionId: string,
+  content: InstructionVersion["content"],
+  changeSummary: string | null,
+): Promise<InstructionVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/instructions/${instructionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content, change_summary: changeSummary }),
+  });
+}
+
+export function publishInstructionVersion(
+  organizationSlug: string,
+  instructionId: string,
+): Promise<InstructionVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/instructions/${instructionId}/publish`, {
+    method: "POST",
   });
 }
 
@@ -530,6 +857,7 @@ export interface UploadSessionCreated {
   document_id: string;
   upload_url: string;
   upload_method: string;
+  upload_headers: Record<string, string>;
   expires_at: string;
   state: string;
 }
@@ -724,6 +1052,9 @@ export interface ProcessingRunEntry {
   triggered_by: string;
   stream_version_id: string | null;
   config_fingerprint: string | null;
+  contract_fingerprint?: string | null;
+  runtime_fingerprint?: string | null;
+  runtime_provenance?: Record<string, unknown> | null;
   started_at: string;
   finished_at: string | null;
   total_latency_ms: number;
@@ -954,6 +1285,36 @@ export function correctField(
   return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/corrections`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+// --- Review collaboration (REV-011) ---
+
+export interface ReviewComment {
+  id: string;
+  task_id: string;
+  document_id: string;
+  author: string;
+  body: string;
+  mentions: string[];
+  created_at: string;
+}
+
+export function fetchReviewComments(
+  organizationSlug: string,
+  taskId: string,
+): Promise<{ items: ReviewComment[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/comments`);
+}
+
+export function addReviewComment(
+  organizationSlug: string,
+  taskId: string,
+  body: string,
+): Promise<ReviewComment> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
   });
 }
 
@@ -1253,9 +1614,12 @@ export interface IntegrationEntry {
   name: string;
   slug: string;
   integration_type: string;
-  status: string;
+  status: "active" | "paused" | "archived";
   endpoint_url: string | null;
   credential_configured: boolean;
+  production_ready: boolean;
+  readiness_detail: string;
+  idempotency_mechanism: string;
   active_mapping_version_id: string | null;
   version: number;
   created_at: string;
@@ -1306,6 +1670,83 @@ export function fetchIntegrations(organizationSlug: string): Promise<{
   items: IntegrationEntry[];
 }> {
   return apiFetch(`/orgs/${organizationSlug}/integrations`);
+}
+
+export function createIntegration(
+  organizationSlug: string,
+  body: {
+    name: string;
+    slug: string;
+    integration_type: string;
+    endpoint_url: string | null;
+  },
+): Promise<IntegrationEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function setIntegrationCredential(
+  organizationSlug: string,
+  integrationSlug: string,
+  kind: string,
+  secret: string,
+): Promise<{ credential_configured: true; kind: string; rotated: boolean }> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integrationSlug}/credential`, {
+    method: "PUT",
+    body: JSON.stringify({ kind, secret }),
+  });
+}
+
+export interface IntegrationConnectionResult {
+  ok: boolean;
+  detail: string;
+}
+
+export interface IntegrationActivationResult {
+  activated: boolean;
+  detail: string;
+  integration: IntegrationEntry;
+}
+
+export function testIntegrationConnection(
+  organizationSlug: string,
+  integrationSlug: string,
+): Promise<IntegrationConnectionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integrationSlug}/connection-test`, {
+    method: "POST",
+  });
+}
+
+export function activateIntegration(
+  organizationSlug: string,
+  integration: Pick<IntegrationEntry, "slug" | "version">,
+): Promise<IntegrationActivationResult> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integration.slug}/activate`, {
+    method: "POST",
+    headers: { "If-Match": String(integration.version) },
+  });
+}
+
+export function deactivateIntegration(
+  organizationSlug: string,
+  integration: Pick<IntegrationEntry, "slug" | "version">,
+): Promise<IntegrationEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integration.slug}/deactivate`, {
+    method: "POST",
+    headers: { "If-Match": String(integration.version) },
+  });
+}
+
+export function archiveIntegration(
+  organizationSlug: string,
+  integration: Pick<IntegrationEntry, "slug" | "version">,
+): Promise<IntegrationEntry> {
+  return apiFetch(`/orgs/${organizationSlug}/integrations/${integration.slug}/archive`, {
+    method: "POST",
+    headers: { "If-Match": String(integration.version) },
+  });
 }
 
 export function fetchIntegrationDetail(
@@ -1543,7 +1984,8 @@ export interface ProviderEntry {
   description: string;
   health: string;
   approved: boolean;
-  credential_ref: string | null;
+  credential_configured: boolean;
+  credential_id: string | null;
 }
 
 export interface ProvidersResponse {
@@ -1567,6 +2009,181 @@ export function previewProviderRouting(
   return apiFetch(`/orgs/${organizationSlug}/providers/routing-preview`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export interface ProviderCredentialEntry {
+  id: string;
+  provider_name: string;
+  label: string;
+  kind: "api_key";
+  status: "current" | "superseded" | "revoked";
+  created_by: string;
+  created_at: string;
+  superseded_at: string | null;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+}
+
+export function fetchProviderCredentials(
+  organizationSlug: string,
+): Promise<{ items: ProviderCredentialEntry[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/provider-credentials`);
+}
+
+export function setProviderCredential(
+  organizationSlug: string,
+  providerName: string,
+  body: { label: string; kind: "api_key"; secret: string },
+): Promise<{
+  credential: ProviderCredentialEntry;
+  rotated: boolean;
+  retained_credential_id: string | null;
+  detail: string;
+}> {
+  return apiFetch(`/orgs/${organizationSlug}/providers/${providerName}/credential`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function revokeProviderCredential(
+  organizationSlug: string,
+  credentialId: string,
+  body: { reason: string; force: boolean; confirmation?: string | null },
+): Promise<{
+  credential: ProviderCredentialEntry;
+  revocation_queued: boolean;
+  affected_policy_ids: string[];
+  detail: string;
+}> {
+  return apiFetch(`/orgs/${organizationSlug}/provider-credentials/${credentialId}/revoke`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// --- Public-ingestion service credentials (TEN-009) ---
+
+export interface ServiceCredentialEntry {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: Array<"documents.upload">;
+  allowed_stream_ids: string[];
+  status: "active" | "revoked";
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface ServiceCredentialSecretResponse {
+  credential: ServiceCredentialEntry;
+  api_key: string;
+  warning: string;
+}
+
+export function fetchServiceCredentials(
+  organizationSlug: string,
+): Promise<{ items: ServiceCredentialEntry[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/service-credentials`);
+}
+
+export function createServiceCredential(
+  organizationSlug: string,
+  body: {
+    name: string;
+    scopes: Array<"documents.upload">;
+    allowed_stream_ids: string[];
+    expires_in_days: number;
+  },
+): Promise<ServiceCredentialSecretResponse> {
+  return apiFetch(`/orgs/${organizationSlug}/service-credentials`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function rotateServiceCredential(
+  organizationSlug: string,
+  credential: Pick<ServiceCredentialEntry, "id" | "version">,
+  expiresInDays = 90,
+): Promise<ServiceCredentialSecretResponse> {
+  return apiFetch(`/orgs/${organizationSlug}/service-credentials/${credential.id}/rotate`, {
+    method: "POST",
+    headers: { "If-Match": String(credential.version) },
+    body: JSON.stringify({ expires_in_days: expiresInDays }),
+  });
+}
+
+export function revokeServiceCredential(
+  organizationSlug: string,
+  credential: Pick<ServiceCredentialEntry, "id" | "version">,
+): Promise<{ credential: ServiceCredentialEntry }> {
+  return apiFetch(`/orgs/${organizationSlug}/service-credentials/${credential.id}/revoke`, {
+    method: "POST",
+    headers: { "If-Match": String(credential.version) },
+  });
+}
+
+export type AdminPolicyType = "provider" | "confidence";
+
+export interface AdminPolicyVersion {
+  id: string;
+  policy_type: AdminPolicyType;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  definition: Record<string, unknown>;
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+  version: number;
+}
+
+export interface PolicyValidationFinding {
+  level: "error" | "warning";
+  path: string;
+  message: string;
+}
+
+export function fetchAdminPolicies(
+  organizationSlug: string,
+  policyType: AdminPolicyType,
+): Promise<{ items: AdminPolicyVersion[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/policies/${policyType}`);
+}
+
+export function createAdminPolicyDraft(
+  organizationSlug: string,
+  policyType: AdminPolicyType,
+  body: { definition: Record<string, unknown>; change_summary: string | null },
+): Promise<AdminPolicyVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/policies/${policyType}/drafts`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function validateAdminPolicy(
+  organizationSlug: string,
+  policyType: AdminPolicyType,
+  policyId: string,
+): Promise<{ valid: boolean; findings: PolicyValidationFinding[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/policies/${policyType}/${policyId}/validate`, {
+    method: "POST",
+  });
+}
+
+export function publishAdminPolicy(
+  organizationSlug: string,
+  policyType: AdminPolicyType,
+  policyId: string,
+): Promise<AdminPolicyVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/policies/${policyType}/${policyId}/publish`, {
+    method: "POST",
   });
 }
 

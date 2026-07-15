@@ -188,23 +188,44 @@ async def enqueue_job(
     ``run_after`` in the future makes a scheduled job: it stays pending and
     is not claimable until then (JOB-003).
     """
+    values: dict[str, Any] = {
+        "job_type": job_type,
+        "payload": payload,
+        "organization_id": organization_id,
+        "dedupe_key": dedupe_key,
+        "correlation_id": correlation_id,
+        "priority": priority,
+        "max_attempts": max_attempts,
+        "payload_schema_version": payload_schema_version,
+        **({"run_after": run_after} if run_after is not None else {}),
+    }
+    if dedupe_key is not None and session.get_bind().dialect.name == "postgresql":
+        # A select followed by an ORM insert races across replicas: both
+        # transactions can observe absence and one then aborts on the unique
+        # index. PostgreSQL's conflict-aware insert makes dedupe atomic while
+        # preserving the caller's surrounding domain transaction.
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        statement = (
+            postgresql_insert(Job)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[Job.dedupe_key])
+            .returning(Job)
+        )
+        inserted = (await session.execute(statement)).scalar_one_or_none()
+        if inserted is not None:
+            return inserted
+        pg_existing = (
+            await session.execute(select(Job).where(Job.dedupe_key == dedupe_key))
+        ).scalar_one()
+        return pg_existing
     if dedupe_key is not None:
         existing = (
             await session.execute(select(Job).where(Job.dedupe_key == dedupe_key))
         ).scalar_one_or_none()
         if existing is not None:
             return existing
-    job = Job(
-        job_type=job_type,
-        payload=payload,
-        organization_id=organization_id,
-        dedupe_key=dedupe_key,
-        correlation_id=correlation_id,
-        priority=priority,
-        max_attempts=max_attempts,
-        payload_schema_version=payload_schema_version,
-        **({"run_after": run_after} if run_after is not None else {}),
-    )
+    job = Job(**values)
     session.add(job)
     return job
 

@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from fastapi.testclient import TestClient
 
 import soa_api
@@ -29,7 +32,11 @@ def test_readiness_with_healthy_database_is_ok() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["dependencies"] == [{"name": "database", "healthy": True}]
+    assert body["dependencies"] == [
+        {"name": "database", "healthy": True},
+        {"name": "object-storage", "healthy": True},
+        {"name": "malware-scanner", "healthy": True},
+    ]
 
 
 def test_readiness_reports_unhealthy_dependency_as_503() -> None:
@@ -39,7 +46,7 @@ def test_readiness_reports_unhealthy_dependency_as_503() -> None:
     async def failing_check() -> bool:
         raise RuntimeError("connection refused")
 
-    deps.register_readiness_check("object-store", failing_check)
+    deps.register_readiness_check("forced-failure", failing_check)
 
     client = TestClient(app, raise_server_exceptions=False)
     response = client.get("/health/ready")
@@ -47,7 +54,29 @@ def test_readiness_reports_unhealthy_dependency_as_503() -> None:
     body = response.json()
     assert body["status"] == "degraded"
     statuses = {dep["name"]: dep["healthy"] for dep in body["dependencies"]}
-    assert statuses == {"database": True, "object-store": False}
+    assert statuses == {
+        "database": True,
+        "object-storage": True,
+        "malware-scanner": True,
+        "forced-failure": False,
+    }
+
+
+async def test_readiness_checks_run_concurrently() -> None:
+    dependencies = Dependencies(settings=ApiSettings(environment=Environment.TEST))
+
+    async def slow_check() -> bool:
+        await asyncio.sleep(0.05)
+        return True
+
+    dependencies.register_readiness_check("first", slow_check)
+    dependencies.register_readiness_check("second", slow_check)
+    started = time.perf_counter()
+
+    results = await dependencies.run_readiness_checks()
+
+    assert [result.name for result in results] == ["first", "second"]
+    assert time.perf_counter() - started < 0.09
 
 
 def test_version_endpoint() -> None:

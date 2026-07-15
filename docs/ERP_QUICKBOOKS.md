@@ -31,9 +31,10 @@ https://quickbooks.api.intuit.com/v3/company/{realmId}/estimate
 2. Store the OAuth2 **access token** as the integration's credential — it
    is never written to the database as a raw value; only a
    `secretref://…` reference is persisted (SEC-005), and the worker
-   resolves it per delivery. Token **refresh** is the credential layer's
-   responsibility; the adapter treats a `401` as terminal because
-   retrying an expired token cannot succeed.
+   resolves it per delivery. Token **refresh is not implemented by this
+   adapter**; an operator/integration credential service must refresh and rotate
+   the reference before expiry. The adapter treats a `401` as terminal because
+   retrying the same expired token cannot succeed.
 3. Configure the integration with `integration_type = "quickbooks_online"`
    and the endpoint URL above (the `realmId` is parsed from the path).
 4. Author a mapping profile that produces a valid Estimate/Invoice object
@@ -55,24 +56,24 @@ https://quickbooks.api.intuit.com/v3/company/{realmId}/estimate
   so only the fault **type and code** enter the redacted error; the
   message, detail, and token never do.
 
-## Other ERPs
+## Other ERP connection profiles
 
-NetSuite, SAP S/4HANA, and Microsoft Dynamics 365 are also built, behind
-the same EXP-010 contract — each a registered integration type, not an
-orchestration change. Because all three share one shape (OAuth2 bearer
-auth over a JSON/OData REST endpoint), the transport lives once in a
-shared base and each vendor is a thin subclass; see
-[`erp_rest_adapters.py`](../apps/worker/src/soa_worker/erp_rest_adapters.py).
+NetSuite, SAP S/4HANA, and Microsoft Dynamics 365 are registered so an
+administrator can store credentials and run an SSRF-safe, read-only metadata
+connection test. They are **not delivery adapters yet**. A generic bearer JSON
+`POST` can duplicate orders under retry, so each `deliver` method returns a
+terminal disabled result until the vendor-specific contract is executable.
 
-| Integration type | Vendor | Sales-order object | Idempotency |
+| Integration type | Connection test | Delivery | Required before enablement |
 | --- | --- | --- | --- |
-| `quickbooks_online` | QuickBooks Online | Estimate | RequestId parameter |
-| `netsuite` | NetSuite | `salesOrder` record | external-id upsert |
-| `microsoft_dynamics365` | Dynamics 365 | `salesorders` (OData) | alternate-key upsert |
-| `sap_s4hana` | SAP S/4HANA | `A_SalesOrder` (OData) | ETag (If-Match) |
+| `quickbooks_online` | Read-only `CompanyInfo` | Stable `requestid` | Live sandbox, mapping fixtures, OAuth refresh/rotation, retry/duplicate/error certification |
+| `netsuite` | Metadata catalog | Disabled | External-id upsert implementation and official sandbox tests |
+| `microsoft_dynamics365` | OData `$metadata` | Disabled | Alternate-key/precondition implementation and official sandbox tests |
+| `sap_s4hana` | OData `$metadata` | Disabled | A proven external-reference/idempotency contract and official sandbox tests |
 
-Each adapter is transport, auth, and response classification; the
-**mapping profile** (EXP-002/003) produces the vendor's object shape and
-sets the idempotency key. QuickBooks Online is documented in detail above
-because its API is the simplest to integrate; the others follow the same
-model. See [`erp_adapter.py`](../apps/worker/src/soa_worker/erp_adapter.py).
+Every connection test and delivery path shares exact HTTPS-host allowlisting
+and public-address resolution. Passing a connection test proves only endpoint
+reachability and authorization; it does not prove payload mapping,
+idempotency, token refresh, or production readiness. See
+[`erp_rest_adapters.py`](../apps/worker/src/soa_worker/erp_rest_adapters.py) and
+[`erp_adapter.py`](../apps/worker/src/soa_worker/erp_adapter.py).

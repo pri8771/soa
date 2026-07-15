@@ -29,6 +29,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from soa_config import SecretNotFoundError, SecretReference, SecretStore
 from soa_db import Base, TimestampMixin, UuidPrimaryKeyMixin, VersionedMixin
 from soa_db.audit import ActorType, record_audit_event
+from soa_db.external_cleanup import (
+    ExternalResourceType,
+    register_external_resource_rollback,
+)
+from soa_db.jobs import enqueue_job
 from soa_db.outbox import PORTABLE_JSON
 from soa_db.repository import OrganizationContext, OrganizationScopedMixin, ScopedRepository
 from soa_db.types import GUID, UTCDateTime, utcnow, uuid7
@@ -54,6 +59,8 @@ INTEGRATION_TYPES = frozenset(
     }
 )
 
+SECRET_REVOKE_JOB_TYPE = "secret.revoke"
+
 
 class UnknownIntegrationTypeError(Exception):
     def __init__(self, integration_type: str) -> None:
@@ -69,6 +76,18 @@ class IntegrationStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+_ALLOWED_STATUS_TRANSITIONS = {
+    IntegrationStatus.PAUSED: {IntegrationStatus.ACTIVE, IntegrationStatus.ARCHIVED},
+    IntegrationStatus.ACTIVE: {IntegrationStatus.PAUSED, IntegrationStatus.ARCHIVED},
+    IntegrationStatus.ARCHIVED: set(),
+}
+
+
+class InvalidIntegrationTransitionError(Exception):
+    def __init__(self, *, current: str, requested: str) -> None:
+        super().__init__(f"integration cannot move from {current!r} to {requested!r}")
+
+
 class Integration(
     UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base
 ):
@@ -78,7 +97,7 @@ class Integration(
     slug: Mapped[str] = mapped_column(String(100), nullable=False)
     integration_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default=IntegrationStatus.ACTIVE
+        String(20), nullable=False, default=IntegrationStatus.PAUSED
     )
     #: Delivery endpoint (webhook URL). Not a secret, but operator data.
     endpoint_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -186,7 +205,11 @@ async def create_integration(
         raise UnknownIntegrationTypeError(integration_type)
     integration = IntegrationRepository(session, context).add(
         Integration(
-            name=name, slug=slug, integration_type=integration_type, endpoint_url=endpoint_url
+            name=name,
+            slug=slug,
+            integration_type=integration_type,
+            endpoint_url=endpoint_url,
+            status=IntegrationStatus.PAUSED,
         )
     )
     await session.flush()
@@ -199,6 +222,34 @@ async def create_integration(
         target_id=str(integration.id),
         organization_id=context.organization_id,
         summary={"slug": slug, "type": integration_type},
+    )
+    return integration
+
+
+async def transition_integration(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    integration: Integration,
+    requested: IntegrationStatus,
+    actor_id: str,
+) -> Integration:
+    current = IntegrationStatus(integration.status)
+    if requested == current:
+        return integration
+    if requested not in _ALLOWED_STATUS_TRANSITIONS[current]:
+        raise InvalidIntegrationTransitionError(current=current, requested=requested)
+    integration.status = requested
+    await session.flush()
+    await record_audit_event(
+        session,
+        actor_type=ActorType.USER,
+        actor_id=actor_id,
+        action=f"integration.{requested.value}",
+        target_type="integration",
+        target_id=str(integration.id),
+        organization_id=context.organization_id,
+        summary={"from": current.value, "to": requested.value},
     )
     return integration
 
@@ -216,13 +267,15 @@ async def store_integration_credential(
     """Store (or rotate) the integration's credential. The VALUE goes
     into the secret store under a fresh name; the database keeps only
     the reference. Any previous credential row is revoked and its
-    stored value revoked with it, and the audit event records THAT a
+    stored value queued for revocation with it, and the audit event records THAT a
     credential changed — never its value or reference.
 
-    Ordering keeps the database reference always resolvable: the new
-    value is stored FIRST, then the rows change, then the OLD value is
-    revoked last — a failure part-way never leaves a live row pointing
-    at a dead secret (at worst an unreferenced value awaits cleanup)."""
+    The new value is stored first. The database pointer, old-row revocation,
+    and durable ``secret.revoke`` intent then commit atomically. The old
+    external value is never deleted before that commit, so a database
+    failure cannot leave the live DB pointer referencing a deleted secret.
+    The new external value has an idempotent rollback compensation, so a failed
+    flush or commit does not leave an orphaned credential."""
     if not secret.strip():
         raise ValueError("a credential needs a non-empty secret")
     repo = IntegrationCredentialRepository(session, context)
@@ -230,6 +283,17 @@ async def store_integration_credential(
     reference = await secret_store.put(
         f"orgs/{context.organization_id}/integrations/{integration.id}/credentials/{uuid7()}",
         secret,
+    )
+
+    async def revoke_new_reference() -> None:
+        await secret_store.revoke(reference)
+
+    register_external_resource_rollback(
+        session,
+        organization_id=context.organization_id,
+        resource_type=ExternalResourceType.SECRET,
+        resource_locator=str(reference),
+        cleanup=revoke_new_reference,
     )
     previous_id: uuid.UUID | None = None
     previous_reference: str | None = None
@@ -261,8 +325,19 @@ async def store_integration_credential(
         # THAT it changed, never WHAT it is.
         summary={"kind": kind, "revoked_credential_id": str(previous_id) if previous_id else None},
     )
-    if previous_reference is not None:
-        await secret_store.revoke(SecretReference.parse(previous_reference))
+    if previous_id is not None and previous_reference is not None:
+        await enqueue_job(
+            session,
+            job_type=SECRET_REVOKE_JOB_TYPE,
+            organization_id=context.organization_id,
+            payload={
+                "credential_type": "integration",
+                "credential_id": str(previous_id),
+                "secret_reference": previous_reference,
+            },
+            dedupe_key=f"secret.revoke:{previous_id}",
+            max_attempts=10,
+        )
     return credential
 
 

@@ -3,10 +3,12 @@ secret hygiene in every response, and optimistic concurrency."""
 
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from soa_api.app import create_app
+from soa_api.routers import integrations as integrations_router
 from soa_api.routers.integrations import DEFAULT_SAMPLE
 from soa_api.settings import ApiSettings, Environment
 from soa_canonical import validate_order
@@ -38,7 +40,10 @@ async def client(tmp_path: Path) -> TestClient:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     app = create_app(
-        ApiSettings(environment=Environment.TEST),
+        ApiSettings(
+            environment=Environment.TEST,
+            outbound_destination_allowlist=("erp.northstar.example",),
+        ),
         db=DatabaseSessions(engine),
         object_store=MemoryObjectStore(),
     )
@@ -86,6 +91,12 @@ def test_default_sample_is_a_valid_canonical_order() -> None:
 
 def test_integration_lifecycle_and_secret_hygiene(client: TestClient) -> None:
     make_integration(client)
+    assert (
+        client.get("/orgs/northstar/integrations/erp", headers=ADMIN).json()["integration"][
+            "status"
+        ]
+        == "paused"
+    )
     # Unknown types fail closed; duplicate slugs conflict.
     unknown = client.post(
         "/orgs/northstar/integrations",
@@ -140,6 +151,128 @@ def test_integration_lifecycle_and_secret_hygiene(client: TestClient) -> None:
         == 403
     )
     assert client.get("/orgs/northstar/integrations", headers=REVIEWER).status_code == 403
+
+
+def test_connection_test_and_explicit_status_transitions(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_integration(client)
+    assert (
+        client.put(
+            "/orgs/northstar/integrations/erp/credential",
+            json={"kind": "webhook_hmac_secret", "secret": "whsec_connection_test_value"},
+            headers=ADMIN,
+        ).status_code
+        == 200
+    )
+    draft = client.post(
+        "/orgs/northstar/integrations/erp/mapping-versions",
+        json={"definition": GOOD_DEFINITION, "target_schema": TARGET_SCHEMA},
+        headers=ADMIN,
+    ).json()
+    assert (
+        client.post(
+            f"/orgs/northstar/integrations/erp/mapping-versions/{draft['id']}/publish",
+            headers=ADMIN,
+        ).status_code
+        == 200
+    )
+
+    seen: list[httpx.Request] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            request = httpx.Request(
+                "POST",
+                url,
+                content=kwargs.get("content", b""),
+                headers=kwargs.get("headers"),
+            )
+            seen.append(request)
+            return httpx.Response(204, request=request)
+
+    monkeypatch.setattr(integrations_router.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(
+        "soa_integrations.destination._default_resolver",
+        lambda _host: ["93.184.216.34"],
+    )
+
+    tested = client.post("/orgs/northstar/integrations/erp/connection-test", headers=ADMIN)
+    assert tested.status_code == 200, tested.text
+    assert tested.json() == {"ok": True, "detail": "receiver accepted a signed test event"}
+    assert "whsec_connection_test_value" not in tested.text
+    assert b"connection_test" in seen[-1].content
+
+    detail = client.get("/orgs/northstar/integrations/erp", headers=ADMIN).json()["integration"]
+    activated = client.post(
+        "/orgs/northstar/integrations/erp/activate",
+        headers={**ADMIN, "If-Match": str(detail["version"])},
+    )
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["activated"] is True
+    assert activated.json()["integration"]["status"] == "active"
+    active = activated.json()["integration"]
+
+    stale = client.post(
+        "/orgs/northstar/integrations/erp/deactivate",
+        headers={**ADMIN, "If-Match": str(active["version"] - 1)},
+    )
+    assert stale.status_code == 409
+    paused = client.post(
+        "/orgs/northstar/integrations/erp/deactivate",
+        headers={**ADMIN, "If-Match": str(active["version"])},
+    )
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["status"] == "paused"
+
+    archived = client.post(
+        "/orgs/northstar/integrations/erp/archive",
+        headers={**ADMIN, "If-Match": str(paused.json()["version"])},
+    )
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["status"] == "archived"
+    calls_before = len(seen)
+    archived_test = client.post(
+        "/orgs/northstar/integrations/erp/connection-test",
+        headers=ADMIN,
+    )
+    assert archived_test.json()["ok"] is False
+    archived_activation = client.post(
+        "/orgs/northstar/integrations/erp/activate",
+        headers={**ADMIN, "If-Match": str(archived.json()["version"])},
+    )
+    assert archived_activation.json()["activated"] is False
+    assert len(seen) == calls_before
+
+
+def test_unimplemented_erp_cannot_be_activated(client: TestClient) -> None:
+    created = client.post(
+        "/orgs/northstar/integrations",
+        json={
+            "name": "SAP",
+            "slug": "sap",
+            "integration_type": "sap_s4hana",
+            "endpoint_url": "https://erp.northstar.example/sap/orders",
+        },
+        headers=ADMIN,
+    ).json()
+    assert created["production_ready"] is False
+    result = client.post(
+        "/orgs/northstar/integrations/sap/activate",
+        headers={**ADMIN, "If-Match": str(created["version"])},
+    )
+    assert result.status_code == 200
+    assert result.json()["activated"] is False
+    assert "idempotency" in result.json()["detail"].lower()
 
 
 def test_mapping_draft_validate_publish_compare(client: TestClient) -> None:

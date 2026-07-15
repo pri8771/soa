@@ -178,12 +178,20 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
         # Public API ingestion: happy path, a WRONG key (401), and the
         # rate limit (429) — error paths must not echo keys either.
         org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+        stream_id = uuid.UUID(
+            next(
+                stream["id"]
+                for stream in client.get("/orgs/northstar/streams", headers=ADMIN).json()
+                if stream["slug"] == "email"
+            )
+        )
         async with db.session_scope() as session:
             _credential, raw_api_key = await create_credential(
                 session,
                 OrganizationContext(organization_id=org_id),
                 name="erp-connector",
                 scopes=["documents.upload"],
+                allowed_stream_ids=[stream_id],
                 actor_id="user:test",
             )
 

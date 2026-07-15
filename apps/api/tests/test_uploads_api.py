@@ -16,6 +16,8 @@ from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import Artifact
 from soa_db.documents import Document
+from soa_db.jobs import Job
+from soa_db.types import utcnow
 from soa_storage import MemoryObjectStore, sha256_hex
 
 ADMIN = {"X-Dev-User": "user:reviewer"}
@@ -102,6 +104,18 @@ async def test_happy_path_and_idempotent_complete(
     await seed_stream(client, db)
     payload = declare(client, client_reference="batch-42")
     assert payload["upload_method"] == "PUT"
+    assert payload["upload_headers"] == {}
+    async with db.session_scope() as session:
+        cleanup_jobs = list(
+            (await session.execute(select(Job).where(Job.job_type == "upload.cleanup"))).scalars()
+        )
+        assert len(cleanup_jobs) == 2
+        assert all(
+            cleanup.payload["upload_session_id"] == payload["session_id"]
+            for cleanup in cleanup_jobs
+        )
+        assert all(cleanup.organization_id is not None for cleanup in cleanup_jobs)
+        assert all(cleanup.run_after > cleanup.created_at for cleanup in cleanup_jobs)
     await upload_bytes(store, payload, PDF_BYTES)
 
     completed = client.post(
@@ -154,6 +168,25 @@ async def test_wrong_bytes_block_completion_until_fixed(
     )
     assert refused.status_code == 422
     assert "mismatch" in refused.text
+
+    # Size equality is not enough: the exact downloaded bytes are hashed at
+    # completion even when an object-store metadata implementation is absent.
+    same_size_payload = declare(client)
+    same_size_wrong = b"X" * len(PDF_BYTES)
+    await upload_bytes(store, same_size_payload, same_size_wrong)
+    same_size_refused = client.post(
+        f"/orgs/northstar/uploads/{same_size_payload['session_id']}/complete",
+        headers=ADMIN,
+    )
+    assert same_size_refused.status_code == 422
+    assert "SHA-256" in same_size_refused.text or "mismatch" in same_size_refused.text
+    assert (
+        client.post(
+            f"/orgs/northstar/uploads/{same_size_payload['session_id']}/abort",
+            headers=ADMIN,
+        ).status_code
+        == 200
+    )
 
     # Completing with no object at all is a clear conflict.
     other = declare(client)
@@ -275,6 +308,69 @@ async def test_expired_sessions_answer_410_and_stay_expired(
     async with db.session_scope() as session:
         documents = (await session.execute(select(Document))).scalars().all()
         assert documents == []
+        upload = (
+            await session.execute(
+                select(UploadSession).where(
+                    UploadSession.id == uuid.UUID(str(payload["session_id"]))
+                )
+            )
+        ).scalar_one()
+        assert upload.state == "expired"
+
+
+async def test_live_verification_claim_fences_duplicates_and_stale_claim_is_reclaimed(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, store = harness
+    await seed_stream(client, db)
+    payload = declare(client)
+    await upload_bytes(store, payload, PDF_BYTES)
+    session_id = uuid.UUID(str(payload["session_id"]))
+
+    async with db.session_scope() as session:
+        record = (
+            await session.execute(select(UploadSession).where(UploadSession.id == session_id))
+        ).scalar_one()
+        record.state = "verifying"
+        record.verification_token = uuid.uuid4()
+        record.verification_started_at = utcnow()
+
+    duplicate = client.post(f"/orgs/northstar/uploads/{session_id}/complete", headers=ADMIN)
+    assert duplicate.status_code == 409
+    assert "already being verified" in duplicate.text
+    abort = client.post(f"/orgs/northstar/uploads/{session_id}/abort", headers=ADMIN)
+    assert abort.status_code == 409
+
+    async with db.session_scope() as session:
+        record = (
+            await session.execute(select(UploadSession).where(UploadSession.id == session_id))
+        ).scalar_one()
+        record.verification_started_at = utcnow() - timedelta(minutes=10)
+
+    reclaimed = client.post(f"/orgs/northstar/uploads/{session_id}/complete", headers=ADMIN)
+    assert reclaimed.status_code == 200, reclaimed.text
+    assert reclaimed.json()["state"] == "queued"
+
+
+async def test_abandoned_expired_sessions_do_not_exhaust_active_quota(
+    harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
+) -> None:
+    client, db, _store = harness
+    await seed_stream(client, db)
+    first = declare(client)
+    second = declare(client)
+
+    async with db.session_scope() as session:
+        records = list((await session.execute(select(UploadSession))).scalars())
+        assert {str(record.id) for record in records} == {
+            str(first["session_id"]),
+            str(second["session_id"]),
+        }
+        for record in records:
+            record.expires_at = record.expires_at - timedelta(days=2)
+
+    replacement = declare(client)
+    assert replacement["state"] == "pending"
 
 
 async def test_abort_discards_uploaded_bytes(

@@ -37,6 +37,18 @@ async def test_tampered_signed_url_is_rejected() -> None:
         store.verify_signed_url(tampered)
 
 
+async def test_upload_signature_binds_declared_size() -> None:
+    store = MemoryObjectStore()
+    signed = await store.signed_upload_url(
+        "org-1/doc-9/original.pdf",
+        expires_in_seconds=60,
+        content_type="application/pdf",
+        size_bytes=42,
+    )
+    with pytest.raises(ValueError, match="failed verification"):
+        store.verify_signed_url(signed.url.replace("size_bytes=42", "size_bytes=43"))
+
+
 async def test_urls_from_a_different_store_instance_fail() -> None:
     issuing = MemoryObjectStore()
     other = MemoryObjectStore()

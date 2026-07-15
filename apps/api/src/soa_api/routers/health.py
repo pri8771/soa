@@ -2,11 +2,12 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
 import soa_api
 from soa_api.dependencies import Dependencies, get_dependencies
+from soa_api.services.rate_limit import RateLimitBackendUnavailable
 
 router = APIRouter(tags=["health"])
 
@@ -68,6 +69,16 @@ async def version(
 async def rate_limit_counters(
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> dict[str, dict[str, int]]:
-    """Per-operation allowed/denied totals since process start (SEC-003
-    observability). Counters only — identities never appear here."""
-    return deps.rate_limiter.snapshot()
+    """Aggregate per-operation allow/deny totals (SEC-003).
+
+    Durable environments combine all replicas; development totals cover the
+    local process. Counters only—identities never appear here.
+    """
+    try:
+        return await deps.rate_limiter.snapshot()
+    except RateLimitBackendUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate-limit counters are unavailable.",
+            headers={"Retry-After": "1"},
+        ) from exc

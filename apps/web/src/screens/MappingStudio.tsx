@@ -15,15 +15,28 @@
  * screen — published mappings are read-only with a "new draft" path.
  */
 
-import { Badge, Banner, Button, Skeleton, TextField } from "@soa/design-system";
+import {
+  Badge,
+  Banner,
+  Button,
+  Dialog,
+  DialogTrigger,
+  Skeleton,
+  TextField,
+} from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 
 import {
+  activateIntegration,
+  archiveIntegration,
   createMappingDraft,
+  deactivateIntegration,
   fetchIntegrationDetail,
   publishMappingVersion,
+  setIntegrationCredential,
+  testIntegrationConnection,
   updateMappingDraft,
   validateMappingVersion,
   type MappingDefinition,
@@ -57,6 +70,76 @@ const LINE_SOURCES = [
   "unit_price.amount",
   "line_total.amount",
 ];
+
+function CredentialDialog({
+  configured,
+  isPending,
+  error,
+  onSave,
+}: {
+  configured: boolean;
+  isPending: boolean;
+  error: Error | null;
+  onSave: (kind: string, secret: string, onSuccess: () => void) => void;
+}) {
+  const [kind, setKind] = useState("bearer_token");
+  const [secret, setSecret] = useState("");
+  return (
+    <Dialog title={configured ? "Rotate credential" : "Configure credential"}>
+      {({ close }) => (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave(kind.trim(), secret, () => {
+              // A write-only secret must not remain in React state after the
+              // server accepts it; reopening the dialog always starts blank.
+              setSecret("");
+              close();
+            });
+          }}
+          style={{ display: "grid", gap: "var(--soa-space-4)", minWidth: "min(28rem, 80vw)" }}
+        >
+          <Banner tone="warning" title="Write-only secret">
+            The value is sent once to the secret store and is never returned by the UI or API.
+            Rotating queues the previous credential for durable post-commit revocation.
+          </Banner>
+          <TextField label="Credential kind" value={kind} onChange={setKind} isRequired />
+          <TextField
+            label="Secret value"
+            type="password"
+            autoComplete="new-password"
+            value={secret}
+            onChange={setSecret}
+            isRequired
+          />
+          {error ? (
+            <Banner tone="critical" title="Credential wasn’t stored">
+              {error.message}
+            </Banner>
+          ) : null}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--soa-space-2)" }}>
+            <Button
+              variant="subtle"
+              onPress={() => {
+                setSecret("");
+                close();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              isDisabled={kind.trim().length < 1 || secret.length < 8 || isPending}
+            >
+              {configured ? "Rotate credential" : "Store credential"}
+            </Button>
+          </div>
+        </form>
+      )}
+    </Dialog>
+  );
+}
 
 //: Transforms the studio edits directly; value maps stay JSON-level
 //: (the API accepts them; the form keeps to single-parameter kinds).
@@ -218,6 +301,7 @@ export function MappingStudio() {
   const { integrationSlug } = useParams({ strict: false }) as { integrationSlug: string };
   const queryClient = useQueryClient();
   const canManage = session.permissions.has("integrations.manage");
+  const canManageCredentials = session.permissions.has("credentials.manage");
 
   const detail = useQuery({
     queryKey: ["integration", slug, integrationSlug],
@@ -322,6 +406,44 @@ export function MappingStudio() {
     onError: (error: unknown) =>
       setMessage(error instanceof Error ? `Publish failed: ${error.message}` : "Publish failed."),
   });
+  const credential = useMutation({
+    mutationFn: ({ kind, secret }: { kind: string; secret: string }) =>
+      setIntegrationCredential(slug, integrationSlug, kind, secret),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["integration", slug, integrationSlug] }),
+  });
+  const connectionTest = useMutation({
+    mutationFn: () => testIntegrationConnection(slug, integrationSlug),
+    onSuccess: (result) => setMessage(result.detail),
+    onError: (error: unknown) =>
+      setMessage(
+        error instanceof Error ? `Connection test failed: ${error.message}` : "Connection failed.",
+      ),
+  });
+  const activate = useMutation({
+    mutationFn: () => activateIntegration(slug, detail.data!.integration),
+    onSuccess: (result) => {
+      setMessage(result.detail);
+      void queryClient.invalidateQueries({ queryKey: ["integration", slug, integrationSlug] });
+      void queryClient.invalidateQueries({ queryKey: ["integrations", slug] });
+    },
+  });
+  const deactivate = useMutation({
+    mutationFn: () => deactivateIntegration(slug, detail.data!.integration),
+    onSuccess: () => {
+      setMessage("Integration paused; new delivery attempts are blocked.");
+      void queryClient.invalidateQueries({ queryKey: ["integration", slug, integrationSlug] });
+      void queryClient.invalidateQueries({ queryKey: ["integrations", slug] });
+    },
+  });
+  const archive = useMutation({
+    mutationFn: () => archiveIntegration(slug, detail.data!.integration),
+    onSuccess: () => {
+      setMessage("Integration archived.");
+      void queryClient.invalidateQueries({ queryKey: ["integration", slug, integrationSlug] });
+      void queryClient.invalidateQueries({ queryKey: ["integrations", slug] });
+    },
+  });
 
   if (detail.status === "pending") {
     return (
@@ -368,6 +490,12 @@ export function MappingStudio() {
             flexWrap: "wrap",
           }}
         >
+          <Badge tone={integration.status === "active" ? "success" : "warning"}>
+            integration {integration.status}
+          </Badge>
+          <Badge tone={integration.credential_configured ? "success" : "warning"}>
+            {integration.credential_configured ? "credential configured" : "credential required"}
+          </Badge>
           {working ? (
             <>
               <Badge
@@ -387,6 +515,86 @@ export function MappingStudio() {
             <Badge tone="neutral">no mapping versions yet</Badge>
           )}
           <span style={{ flex: 1 }} />
+          {canManageCredentials ? (
+            <DialogTrigger>
+              <Button size="sm" variant="subtle">
+                {integration.credential_configured ? "Rotate credential" : "Configure credential"}
+              </Button>
+              <CredentialDialog
+                configured={integration.credential_configured}
+                isPending={credential.isPending}
+                error={credential.error}
+                onSave={(kind, secret, onSuccess) =>
+                  credential.mutate({ kind, secret }, { onSuccess })
+                }
+              />
+            </DialogTrigger>
+          ) : null}
+          {canManageCredentials && integration.credential_configured && integration.endpoint_url ? (
+            <Button
+              size="sm"
+              variant="subtle"
+              isDisabled={connectionTest.isPending}
+              onPress={() => connectionTest.mutate()}
+            >
+              Test connection
+            </Button>
+          ) : null}
+          {canManage && integration.status === "paused" ? (
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={
+                !canManageCredentials ||
+                !integration.production_ready ||
+                !integration.credential_configured ||
+                !integration.active_mapping_version_id ||
+                activate.isPending
+              }
+              onPress={() => activate.mutate()}
+            >
+              Activate
+            </Button>
+          ) : null}
+          {canManage && integration.status === "active" ? (
+            <Button size="sm" variant="subtle" onPress={() => deactivate.mutate()}>
+              Pause delivery
+            </Button>
+          ) : null}
+          {canManage && integration.status !== "archived" ? (
+            <DialogTrigger>
+              <Button size="sm" variant="destructive">
+                Archive
+              </Button>
+              <Dialog title="Archive integration?" alert>
+                {({ close }) => (
+                  <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+                    <p style={{ margin: 0 }}>
+                      Archiving is irreversible and blocks every future delivery attempt.
+                    </p>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: "var(--soa-space-2)",
+                      }}
+                    >
+                      <Button variant="subtle" onPress={close}>
+                        Keep integration
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        isDisabled={archive.isPending}
+                        onPress={() => archive.mutate(undefined, { onSuccess: close })}
+                      >
+                        Archive integration
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </Dialog>
+            </DialogTrigger>
+          ) : null}
           {canManage && (working === null || working.state !== "draft") ? (
             <Button size="sm" onPress={() => newDraft.mutate()}>
               New draft
@@ -410,6 +618,16 @@ export function MappingStudio() {
             </>
           ) : null}
         </div>
+        <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+          Destination: {integration.endpoint_url ?? "not configured"}. “Validate with sample” is a
+          read-only mapping execution and does not contact the destination.
+        </p>
+        {!integration.production_ready ? (
+          <Banner tone="critical" title="Production delivery is disabled">
+            {integration.readiness_detail} A successful connection test proves reachability only; it
+            does not enable order delivery.
+          </Banner>
+        ) : null}
         {dirty ? (
           <p style={{ margin: 0, font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
             Save the draft to enable validation and publishing.

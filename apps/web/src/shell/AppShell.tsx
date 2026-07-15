@@ -8,9 +8,11 @@
  */
 
 import { Badge, Button } from "@soa/design-system";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { useAuth } from "../auth/AuthContext";
 import { CommandPalette } from "./CommandPalette";
 import { OrganizationSwitcher } from "./OrganizationSwitcher";
 import { useShellSession } from "./ShellContext";
@@ -113,6 +115,8 @@ export function AppShell({
   children: ReactNode;
 }) {
   const session = useShellSession();
+  const auth = useAuth();
+  const queryClient = useQueryClient();
   const [collapsed, setCollapsed] = useState<boolean>(
     () => globalThis.localStorage?.getItem(NAV_COLLAPSE_KEY) === "true",
   );
@@ -122,6 +126,10 @@ export function AppShell({
   }, [collapsed]);
 
   const visibleItems = NAV_ITEMS.filter((item) => session.permissions.has(item.permission));
+  const signOut = async () => {
+    queryClient.removeQueries();
+    await auth.logout();
+  };
 
   return (
     <div className="soa-shell" data-nav-collapsed={collapsed}>
@@ -166,6 +174,11 @@ export function AppShell({
         <span style={{ font: "var(--soa-font-body-sm)", color: "var(--soa-text-secondary)" }}>
           {session.userLabel}
         </span>
+        {!session.devSession ? (
+          <Button variant="subtle" size="sm" onPress={() => void signOut()}>
+            Sign out
+          </Button>
+        ) : null}
       </header>
 
       <div className="soa-shell-main">

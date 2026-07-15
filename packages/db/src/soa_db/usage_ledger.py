@@ -133,6 +133,7 @@ async def record_usage(
     run_id: uuid.UUID | None = None,
     page_count: int = 0,
     source_reference: str | None = None,
+    reason: str | None = None,
 ) -> UsageEntry:
     """Append one usage entry. Idempotent on ``source_reference``: a
     retried stage returns the existing entry instead of double-billing."""
@@ -149,6 +150,8 @@ async def record_usage(
         )
     if billed_quantity is not None and billed_quantity < 0:
         raise UsageLedgerError("billed_quantity cannot be negative")
+    if reason is not None and (not reason.strip() or len(reason) > 500):
+        raise UsageLedgerError("reason must be 1..500 characters when supplied")
 
     repo = UsageEntryRepository(session, context)
     if source_reference is not None:
@@ -169,6 +172,7 @@ async def record_usage(
             billed_quantity=billed_quantity,
             estimated_cost_cents=estimated_cost_cents,
             source_reference=source_reference,
+            reason=reason,
             created_by=actor_id,
         )
     )

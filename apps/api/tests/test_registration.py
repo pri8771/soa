@@ -96,7 +96,9 @@ async def test_completion_registers_everything_exactly_once(
         assert again.status_code == 200
 
     counts = await count_rows(db)
-    assert counts == {"documents": 1, "artifacts": 1, "jobs": 2, "outbox": 1}
+    # Two intake jobs (preprocess + outbox publication) plus the upload
+    # session's primary and late-sweep cleanup intents.
+    assert counts == {"documents": 1, "artifacts": 1, "jobs": 4, "outbox": 1}
 
     async with db.session_scope() as session:
         job = (
@@ -127,8 +129,10 @@ async def test_failure_rolls_back_registration_and_leaves_session_explainable(
     failed = client.post(f"/orgs/northstar/uploads/{payload['session_id']}/complete", headers=ADMIN)
     assert failed.status_code == 500
 
-    # Nothing partial: no document, artifact, job, or outbox row.
-    assert await count_rows(db) == {"documents": 0, "artifacts": 0, "jobs": 0, "outbox": 0}
+    # Nothing partial from registration: the two cleanup intents committed
+    # with the earlier upload declaration and remain responsible for its
+    # object; no preprocess/outbox job leaks from the failed transaction.
+    assert await count_rows(db) == {"documents": 0, "artifacts": 0, "jobs": 2, "outbox": 0}
     # The session state explains where things stand: still pending.
     async with db.session_scope() as session:
         record = (
@@ -146,4 +150,4 @@ async def test_failure_rolls_back_registration_and_leaves_session_explainable(
         f"/orgs/northstar/uploads/{payload['session_id']}/complete", headers=ADMIN
     )
     assert retried.status_code == 200, retried.text
-    assert await count_rows(db) == {"documents": 1, "artifacts": 1, "jobs": 2, "outbox": 1}
+    assert await count_rows(db) == {"documents": 1, "artifacts": 1, "jobs": 4, "outbox": 1}

@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from soa_api.services.export_orchestration import schedule_exports_on_approval
+from soa_api.services.export_orchestration import _deliverable, schedule_exports_on_approval
 from soa_config import MemorySecretStore
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import SourceChannel, create_document
 from soa_db.exports import ExportJobRepository
 from soa_db.integrations import (
+    Integration,
+    IntegrationStatus,
     create_integration,
     create_mapping_draft,
     publish_mapping_draft,
@@ -56,6 +58,7 @@ async def test_duplicate_approval_schedules_exactly_one_export(db: DatabaseSessi
             endpoint_url="https://erp.northstar.example/orders",
             actor_id="user:test",
         )
+        deliverable.status = IntegrationStatus.ACTIVE
         await store_integration_credential(
             session,
             CONTEXT,
@@ -117,3 +120,28 @@ async def test_duplicate_approval_schedules_exactly_one_export(db: DatabaseSessi
         )
         assert len(queue_jobs) == 1
         assert queue_jobs[0].payload["export_job_id"] == str(first[0].id)
+
+
+@pytest.mark.parametrize(
+    ("integration_type", "expected"),
+    [
+        ("webhook", True),
+        ("quickbooks_online", True),
+        ("netsuite", False),
+        ("microsoft_dynamics365", False),
+        ("sap_s4hana", False),
+    ],
+)
+def test_only_production_ready_connector_types_schedule(
+    integration_type: str, expected: bool
+) -> None:
+    integration = Integration(
+        name="ERP",
+        slug="erp",
+        integration_type=integration_type,
+        status=IntegrationStatus.ACTIVE,
+        endpoint_url="https://erp.example/orders",
+        credential_id=uuid.uuid4(),
+        active_mapping_version_id=uuid.uuid4(),
+    )
+    assert _deliverable(integration) is expected

@@ -13,6 +13,7 @@ from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.audit import AuditEvent
+from soa_db.catalog_selections import CatalogFieldSelection
 from soa_db.data_export import EXPORT_CATEGORIES
 from soa_db.data_export_jobs import DataExportJob
 from soa_db.documents import SourceChannel, create_document
@@ -99,6 +100,27 @@ async def seed_document_with_data(client: TestClient, db: DatabaseSessions) -> u
             confidence=0.98,
             provider="mock",
         )
+        session.add(
+            CatalogFieldSelection(
+                organization_id=org_id,
+                document_id=document.id,
+                run_id=run.id,
+                task_id=None,
+                field_key="lines.sku",
+                row_index=0,
+                status="selected",
+                selection_source="machine",
+                catalog_id=uuid.uuid4(),
+                catalog_version_id=uuid.uuid4(),
+                catalog_record_id=uuid.uuid4(),
+                source_id="WID-100",
+                display_name="Widget",
+                matched_value="WID-100",
+                value_fingerprint="f" * 64,
+                decision_json=None,
+                selected_by="worker",
+            )
+        )
         return document.id
 
 
@@ -121,6 +143,7 @@ async def test_export_bundle_documents_all_categories_and_is_signed(
     assert body["counts"]["document"] == 1
     assert body["counts"]["processing_runs"] == 1
     assert body["counts"]["extracted_fields"] == 1
+    assert body["counts"]["catalog_field_selections"] == 1
     assert body["counts"]["delivery_attempts"] == 0
     assert body["total_records"] >= 3
 
@@ -132,6 +155,18 @@ async def test_export_bundle_documents_all_categories_and_is_signed(
         assert len(entry["sha256"]) == 64
     assert body["manifest_download_url"]
     assert body["manifest_expires_at"]
+
+    async with db.session_scope() as session:
+        cleanup = (
+            await session.execute(
+                select(Job).where(
+                    Job.job_type == "data_export.cleanup",
+                    Job.payload["organization_id"].as_string()
+                    == str(uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])),
+                )
+            )
+        ).scalar_one()
+        assert cleanup.run_after > cleanup.created_at
 
     # No extracted VALUE leaks into the API response envelope — content
     # lives only inside the signed bundle files.
@@ -219,3 +254,36 @@ async def test_organization_export_is_durable_and_cancellable(
     )
     assert cancelled.status_code == 200
     assert cancelled.json()["state"] == "cancelled"
+
+
+async def test_organization_exports_are_idempotent_listed_and_quota_bounded(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await seed_document_with_data(client, db)
+    created = []
+    for key in ("request-1", "request-2", "request-3"):
+        response = client.post(
+            "/orgs/northstar/data-exports",
+            headers={**AUDITOR, "Idempotency-Key": key},
+        )
+        assert response.status_code == 202, response.text
+        created.append(response.json())
+        assert response.json()["snapshot_at"]
+
+    replay = client.post(
+        "/orgs/northstar/data-exports",
+        headers={**AUDITOR, "Idempotency-Key": "request-1"},
+    )
+    assert replay.status_code == 202
+    assert replay.json()["id"] == created[0]["id"]
+
+    limited = client.post(
+        "/orgs/northstar/data-exports",
+        headers={**AUDITOR, "Idempotency-Key": "request-4"},
+    )
+    assert limited.status_code == 429
+
+    listing = client.get("/orgs/northstar/data-exports", headers=AUDITOR)
+    assert listing.status_code == 200
+    assert {item["id"] for item in listing.json()["items"]} == {item["id"] for item in created}

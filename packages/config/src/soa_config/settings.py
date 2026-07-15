@@ -79,6 +79,8 @@ class BaseServiceSettings(BaseSettings):
                 "production requires a managed secrets backend (aws-secrets-manager "
                 "or gcp-secret-manager) — memory/file stores are development-only"
             )
+        if self.telemetry_profile != "otlp":
+            problems.append("production requires the OTLP telemetry profile")
         if problems:
             raise ValueError("; ".join(problems))
         return self

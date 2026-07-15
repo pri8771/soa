@@ -1,33 +1,30 @@
 """Customer data export workflow (SEC-009).
 
-One endpoint: build a scoped, signed, expiring export bundle of
-everything the platform holds for a single document — the portability /
-subject-access unit. Reuses the ANA-007 bundle discipline: JSON files
-plus a manifest carrying each file's SHA-256 and byte size, written to
-object storage, handed out ONLY as short-lived signed URLs, and audited
-counts-only.
+Build scoped, signed, expiring export bundles for a single document or an
+entire organization. Reuses the ANA-007 bundle discipline: JSON parts plus
+a manifest carrying each file's SHA-256 and byte size, written to object
+storage, handed out ONLY as short-lived signed URLs, and audited counts-only.
 
 Authorization is the central path (``data.export`` on a membership in
-the document's organization). The manifest documents EVERY data category
-(with counts, including empty ones), states plainly that artifact FILE
-bytes are delivered through signed downloads rather than copied into the
-bundle, and records the retention posture. Bundles build synchronously
-under the per-document scale; the queued-job path for organization-wide
-exports arrives when the worker claim loop is wired (documented, not
-faked).
+the document's organization). Per-document bundles build synchronously;
+organization bundles are snapshot-consistent, durable, bounded, resumable,
+cancellable jobs. Generated objects are deleted by a scheduled cleanup job
+when their retention window closes.
 """
 
 import hashlib
 import json
 import uuid
+from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
+from soa_db.advisory import transaction_advisory_lock
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.data_export import EXPORT_CATEGORIES, collect_document_export
 from soa_db.data_export_jobs import (
@@ -36,6 +33,7 @@ from soa_db.data_export_jobs import (
     DataExportState,
     new_data_export_job,
 )
+from soa_db.deletion_requests import DeletionRequestRepository, DeletionRequestState
 from soa_db.documents import DocumentRepository
 from soa_db.jobs import enqueue_job
 from soa_db.types import utcnow
@@ -50,6 +48,7 @@ class CancelExportRequest(BaseModel):
 async def _durable_response(job: DataExportJob, store: Any, ttl: int) -> dict[str, Any]:
     manifest_url = None
     manifest_expires_at = None
+    signed_parts: list[dict[str, Any]] = []
     if (
         job.state == DataExportState.SUCCEEDED
         and job.manifest_object_key
@@ -61,9 +60,28 @@ async def _durable_response(job: DataExportJob, store: Any, ttl: int) -> dict[st
         )
         manifest_url = signed.url
         manifest_expires_at = signed.expires_at.isoformat()
+        effective_ttl = min(ttl, max(1, int((job.expires_at - utcnow()).total_seconds())))
+        for part in job.parts:
+            if not isinstance(part, dict) or not part.get("object_key"):
+                continue
+            part_signed = await store.signed_download_url(
+                str(part["object_key"]), expires_in_seconds=effective_ttl
+            )
+            signed_parts.append(
+                {
+                    key: value
+                    for key, value in part.items()
+                    if key not in {"object_key", "cursor", "complete"}
+                }
+                | {
+                    "download_url": part_signed.url,
+                    "download_expires_at": part_signed.expires_at.isoformat(),
+                }
+            )
     return {
         "id": str(job.id),
         "scope": job.scope,
+        "snapshot_at": job.snapshot_at.isoformat(),
         "state": job.state,
         "total_documents": job.total_documents,
         "processed_documents": job.processed_documents,
@@ -75,6 +93,7 @@ async def _durable_response(job: DataExportJob, store: Any, ttl: int) -> dict[st
         "expires_at": job.expires_at.isoformat(),
         "manifest_download_url": manifest_url,
         "manifest_expires_at": manifest_expires_at,
+        "parts": signed_parts,
     }
 
 
@@ -87,11 +106,27 @@ async def create_organization_data_export(
     session: DbSession,
     store: ObjectStoreDep,
     deps: Annotated[Dependencies, Depends(get_dependencies)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise HTTPException(status_code=422, detail="Idempotency-Key must be 1-200 characters.")
+    repository = DataExportJobRepository(session, authorized.org_context)
+    if idempotency_key:
+        existing = await repository.get_by_request_key(idempotency_key)
+        if existing is not None:
+            return await _durable_response(existing, store, deps.settings.download_url_ttl_seconds)
+    if await repository.count_active() >= deps.settings.max_active_data_exports:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many active organization exports; wait, cancel one, or retry later.",
+        )
     job = new_data_export_job(
         organization_id=authorized.org_context.organization_id,
         scope="organization",
         created_by=authorized.principal.subject,
+        request_key=idempotency_key,
     )
     session.add(job)
     await session.flush()
@@ -106,6 +141,18 @@ async def create_organization_data_export(
         dedupe_key=f"data-export:{job.id}:start",
         max_attempts=5,
     )
+    await enqueue_job(
+        session,
+        job_type="data_export.cleanup",
+        organization_id=authorized.org_context.organization_id,
+        payload={
+            "organization_id": str(authorized.org_context.organization_id),
+            "data_export_id": str(job.id),
+        },
+        dedupe_key=f"data-export:{job.id}:cleanup",
+        run_after=job.expires_at,
+        max_attempts=10,
+    )
     await record_audit_event(
         session,
         actor_type=ActorType.USER,
@@ -117,6 +164,22 @@ async def create_organization_data_export(
         summary={"scope": "organization", "expires_at": job.expires_at.isoformat()},
     )
     return await _durable_response(job, store, deps.settings.download_url_ttl_seconds)
+
+
+@router.get("/orgs/{organization_slug}/data-exports")
+async def list_durable_data_exports(
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("data.export"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
+) -> dict[str, Any]:
+    jobs = await DataExportJobRepository(session, authorized.org_context).list_recent(limit=50)
+    return {
+        "items": [
+            await _durable_response(job, store, deps.settings.download_url_ttl_seconds)
+            for job in jobs
+        ]
+    }
 
 
 @router.get("/orgs/{organization_slug}/data-exports/{export_id}")
@@ -176,11 +239,30 @@ async def create_document_data_export(
 ) -> dict[str, Any]:
     """Build a signed, expiring data-export bundle for one document."""
     organization_id = authorized.org_context.organization_id
+    # Serialize bundle creation with request/hold/erasure state. Otherwise a
+    # synchronous export could copy personal data after the eraser took its
+    # object inventory but before commit.
+    await transaction_advisory_lock(
+        session, "document-deletion-lifecycle", organization_id, document_id
+    )
     # Tenant scope first: a document outside the caller's organization is
     # indistinguishable from one that does not exist.
-    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    document = await DocumentRepository(session, authorized.org_context).get(
+        document_id, for_update=True
+    )
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    deletion_request = await DeletionRequestRepository(
+        session, authorized.org_context
+    ).get_for_document(document_id)
+    if (
+        deletion_request is not None
+        and deletion_request.state != DeletionRequestState.CANCELLED.value
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Document export is unavailable after a deletion request is recorded.",
+        )
 
     export = await collect_document_export(
         session, organization_id=organization_id, document_id=document_id
@@ -191,6 +273,7 @@ async def create_document_data_export(
     prefix = f"data-exports/{organization_id}/{document_id}/{export_id}"
     ttl = deps.settings.download_url_ttl_seconds
     files: list[dict[str, Any]] = []
+    created_object_keys: list[str] = []
     for category in EXPORT_CATEGORIES:
         records = export.records.get(category.key, [])
         payload = json.dumps(
@@ -208,6 +291,7 @@ async def create_document_data_export(
         name = f"{category.key}.json"
         key = f"{prefix}/{name}"
         await store.put(key, payload, content_type="application/json", sha256=digest)
+        created_object_keys.append(key)
         signed = await store.signed_download_url(key, expires_in_seconds=ttl)
         files.append(
             {
@@ -252,7 +336,21 @@ async def create_document_data_export(
     await store.put(
         manifest_key, manifest_bytes, content_type="application/json", sha256=manifest_sha256
     )
+    created_object_keys.append(manifest_key)
     manifest_signed = await store.signed_download_url(manifest_key, expires_in_seconds=ttl)
+    cleanup_at = utcnow() + timedelta(seconds=ttl)
+    await enqueue_job(
+        session,
+        job_type="data_export.cleanup",
+        organization_id=organization_id,
+        payload={
+            "organization_id": str(organization_id),
+            "object_keys": created_object_keys,
+        },
+        dedupe_key=f"data-export:{export_id}:cleanup",
+        run_after=cleanup_at,
+        max_attempts=10,
+    )
 
     await record_audit_event(
         session,

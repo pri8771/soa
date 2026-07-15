@@ -26,7 +26,8 @@ from soa_worker.llm_extraction import (
     register_hosted_openai_extraction,
     register_local_llm_extraction,
 )
-from soa_worker.providers import Capability, provider_info, unregister_provider
+from soa_worker.model_usage import TokenPricing
+from soa_worker.providers import Capability, create_provider, provider_info, unregister_provider
 
 ENDPOINT = "http://llm.local/v1/chat/completions"
 DOC_ID = uuid.UUID("1f4b8a00-0000-4000-8000-0000000000ee")
@@ -53,7 +54,10 @@ def extraction_request(
 def model_answer(fields: list[dict[str, Any]]) -> httpx.Response:
     return httpx.Response(
         200,
-        json={"choices": [{"message": {"content": json.dumps({"fields": fields})}}]},
+        json={
+            "choices": [{"message": {"content": json.dumps({"fields": fields})}}],
+            "usage": {"prompt_tokens": 2_000, "completion_tokens": 1_000, "total_tokens": 3_100},
+        },
     )
 
 
@@ -179,6 +183,17 @@ class TestHonestOutputHandling:
         result = await provider_with().extract(extraction_request())
         assert CAPABILITY_WARNING in result.warnings
 
+    async def test_local_usage_is_retained_but_cost_remains_zero(self) -> None:
+        result = await provider_with().extract(extraction_request())
+        assert result.usage is not None
+        assert result.usage.as_dict() == {
+            "input_tokens": 2_000,
+            "output_tokens": 1_000,
+            "total_tokens": 3_100,
+        }
+        assert result.cost_cents == 0
+        assert result.pricing_reference is None
+
     async def test_confidence_is_clamped_to_the_unit_interval(self) -> None:
         fields = [
             {"key": "po_number", "value": "PO-4711", "confidence": 1.7, "page_number": 1},
@@ -214,7 +229,14 @@ class TestErrorClassification:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
-                json={"choices": [{"message": {"content": "SECRET-DOC-TEXT not json {"}}]},
+                json={
+                    "choices": [{"message": {"content": "SECRET-DOC-TEXT not json {"}}],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 2,
+                        "total_tokens": 7,
+                    },
+                },
             )
 
         with pytest.raises(ExtractionProviderError) as caught:
@@ -317,3 +339,101 @@ class TestHostedOpenAiProfile:
                 api_key="",
                 region="us",
             )
+
+    async def test_hosted_usage_is_metered_with_the_explicit_rate_card(self) -> None:
+        pricing = TokenPricing(
+            reference="tenant-rate-card:v7",
+            input_cents_per_million=500,
+            output_cents_per_million=2_000,
+        )
+        provider = OpenAiCompatibleExtractionProvider(
+            endpoint="https://api.example/v1/chat/completions",
+            model="pinned-model",
+            name="hosted-example",
+            api_key="secret",
+            pricing=pricing,
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _r: model_answer(DEFAULT_FIELDS))
+            ),
+        )
+        result = await provider.extract(extraction_request())
+        assert result.usage is not None and result.usage.total_tokens == 3_100
+        assert result.cost_cents == 3
+        assert result.pricing_reference == "tenant-rate-card:v7"
+        assert provider.runtime_provenance["pricing"] == pricing.as_dict()
+
+    async def test_hosted_response_without_usage_fails_safe(self) -> None:
+        provider = OpenAiCompatibleExtractionProvider(
+            endpoint="https://api.example/v1/chat/completions",
+            model="pinned-model",
+            name="hosted-example",
+            api_key="secret",
+            pricing=TokenPricing("rate:v1", 1, 1),
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda _r: httpx.Response(
+                        200,
+                        json={
+                            "choices": [
+                                {"message": {"content": json.dumps({"fields": DEFAULT_FIELDS})}}
+                            ]
+                        },
+                    )
+                )
+            ),
+        )
+        with pytest.raises(ExtractionProviderError, match="no token usage metadata") as caught:
+            await provider.extract(extraction_request())
+        assert caught.value.retryable is True
+
+    def test_explicit_tenant_credential_never_falls_back_to_deployment_key(self) -> None:
+        name = "hosted-credential-test"
+        register_hosted_openai_extraction(
+            name=name,
+            endpoint="https://api.example/v1/chat/completions",
+            model="pinned-model",
+            api_key="deployment-key",
+            region="us",
+        )
+        try:
+            assert isinstance(
+                create_provider(Capability.FIELD_EXTRACTION, name),
+                OpenAiCompatibleExtractionProvider,
+            )
+            with pytest.raises(ValueError, match="needs an API key"):
+                create_provider(
+                    Capability.FIELD_EXTRACTION,
+                    name,
+                    credential_value="",
+                )
+            tenant = create_provider(
+                Capability.FIELD_EXTRACTION,
+                name,
+                credential_value="tenant-key",
+            )
+            assert isinstance(tenant, OpenAiCompatibleExtractionProvider)
+        finally:
+            unregister_provider(Capability.FIELD_EXTRACTION, name)
+
+    def test_tenant_only_registration_requires_runtime_credential(self) -> None:
+        name = "hosted-tenant-only-test"
+        register_hosted_openai_extraction(
+            name=name,
+            endpoint="https://api.example/v1/chat/completions",
+            model="pinned-model",
+            api_key=None,
+            region="us",
+        )
+        try:
+            with pytest.raises(ValueError, match="needs an API key"):
+                create_provider(Capability.FIELD_EXTRACTION, name)
+            assert isinstance(
+                create_provider(
+                    Capability.FIELD_EXTRACTION,
+                    name,
+                    credential_value="tenant-key",
+                ),
+                OpenAiCompatibleExtractionProvider,
+            )
+        finally:
+            unregister_provider(Capability.FIELD_EXTRACTION, name)

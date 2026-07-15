@@ -4,6 +4,7 @@ the RequestId idempotency parameter, read-only connection test, and safe
 fault redaction that never leaks the token or submitted content."""
 
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -27,6 +28,8 @@ TOKEN = "qbo-access-token-secret"
 
 
 def request(url: str = ESTIMATE_URL, body: bytes = b'{"Line":[],"CustomerRef":{"value":"1"}}'):
+    host = urlparse(url).hostname
+    assert host is not None
     return AdapterDeliveryRequest(
         url=url,
         body=body,
@@ -34,8 +37,8 @@ def request(url: str = ESTIMATE_URL, body: bytes = b'{"Line":[],"CustomerRef":{"
         business_key="export:int-1:doc-2:run-3",
         attempt_number=1,
         timestamp=1_800_000_000,
-        allowlist=[],
-        resolve=None,
+        allowlist=[host],
+        resolve=lambda _host: ["93.184.216.34"],
     )
 
 
@@ -107,6 +110,23 @@ class TestAuthAndIdempotency:
             await QuickBooksOnlineAdapter().deliver(client, request())
         assert urls[0] == urls[1]  # a retry reuses the same RequestId
 
+    async def test_connector_replaces_configured_idempotency_parameters(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(incoming: httpx.Request) -> httpx.Response:
+            seen.append(incoming)
+            return httpx.Response(200)
+
+        configured = f"{ESTIMATE_URL}?requestid=attacker&minorversion=1&custom=kept"
+        async with client_for(handler) as client:
+            result = await QuickBooksOnlineAdapter().deliver(client, request(configured))
+        assert result.outcome == "delivered"
+        (sent,) = seen
+        params = parse_qs(sent.url.query.decode())
+        assert params["requestid"] == ["exportint1doc2run3"]
+        assert params["minorversion"] == [QBO_MINOR_VERSION]
+        assert params["custom"] == ["kept"]
+
 
 class TestConnectionTest:
     async def test_connection_test_reads_companyinfo_never_writes(self) -> None:
@@ -136,6 +156,35 @@ class TestConnectionTest:
             )
         assert result.ok is False
         assert "realm" in result.detail
+
+    async def test_connection_test_does_not_parse_a_realm_from_the_query_string(self) -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200)
+
+        url = f"{BASE}/not-quickbooks?next=/v3/company/{REALM}/estimate"
+        async with client_for(handler) as client:
+            result = await QuickBooksOnlineAdapter().test_connection(client, request(url))
+        assert result.ok is False
+        assert "realm" in result.detail
+        assert calls == 0
+
+    async def test_connection_test_never_follows_redirects(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(incoming: httpx.Request) -> httpx.Response:
+            seen.append(incoming)
+            return httpx.Response(302, headers={"Location": "https://169.254.169.254/latest"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True
+        ) as client:
+            result = await QuickBooksOnlineAdapter().test_connection(client, request())
+        assert result.ok is False
+        assert len(seen) == 1
 
 
 class TestSafeErrors:
@@ -185,6 +234,30 @@ class TestSafeErrors:
             result = await QuickBooksOnlineAdapter().deliver(client, request())
         assert result.outcome == "retryable_error"
         assert result.response_status is None
+
+    async def test_destination_policy_blocks_every_network_operation(self) -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200)
+
+        refused = AdapterDeliveryRequest(
+            **{
+                **request().__dict__,
+                "allowlist": ["other.example"],
+            }
+        )
+        async with client_for(handler) as client:
+            assert (await QuickBooksOnlineAdapter().deliver(client, refused)).outcome == (
+                "terminal_error"
+            )
+            assert (await QuickBooksOnlineAdapter().test_connection(client, refused)).ok is False
+            assert (await QuickBooksOnlineAdapter().health(client, refused)).status == (
+                "unreachable"
+            )
+        assert calls == 0
 
 
 class TestRegistration:

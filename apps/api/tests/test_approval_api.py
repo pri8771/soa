@@ -438,6 +438,83 @@ async def canonical_payloads_for(
         return list((await session.execute(stmt)).scalars().all())
 
 
+async def bind_approval_catalogs(client: TestClient, db: DatabaseSessions) -> None:
+    from soa_db.catalogs import (
+        CatalogBindingMode,
+        activate_catalog_version,
+        add_catalog_record,
+        bind_catalog_to_stream,
+        create_catalog,
+        create_catalog_version,
+    )
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        for slug, catalog_type, source_id, name, aliases in (
+            ("approval-products", "products", "WID-100", "Widget Master", ["Widget"]),
+            ("approval-customers", "customers", "CUST-1", "Acme Master", ["Acme"]),
+        ):
+            catalog = await create_catalog(
+                session,
+                context,
+                name=name,
+                slug=slug,
+                catalog_type=catalog_type,
+                source="manual",
+                actor_id="user:test",
+            )
+            version = await create_catalog_version(
+                session, context, catalog=catalog, actor_id="user:test"
+            )
+            await add_catalog_record(
+                session,
+                context,
+                version=version,
+                source_id=source_id,
+                display_name=name,
+                aliases=aliases,
+            )
+            await activate_catalog_version(
+                session, context, catalog=catalog, version=version, actor_id="user:test"
+            )
+            await bind_catalog_to_stream(
+                session,
+                context,
+                stream_id=stream_id,
+                catalog=catalog,
+                mode=CatalogBindingMode.ROLLING,
+                actor_id="user:test",
+            )
+
+
+def pick_catalog(
+    client: TestClient,
+    task_id: str,
+    version: int,
+    *,
+    field_key: str,
+    row_index: int | None,
+    query: str,
+    source_id: str,
+) -> int:
+    response = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+        json={
+            "field_key": field_key,
+            "row_index": row_index,
+            "query": query,
+            "selected_source_id": source_id,
+            "expected_version": version,
+        },
+        headers=SUPERVISOR,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["selection"]["catalog_record_id"]
+    return int(response.json()["task_version"])
+
+
 async def test_approval_persists_the_immutable_canonical_payload(
     harness: tuple[TestClient, DatabaseSessions],
 ) -> None:
@@ -476,6 +553,122 @@ async def test_approval_persists_the_immutable_canonical_payload(
     )
     assert duplicate.status_code == 200
     assert len(await canonical_payloads_for(db, client, task_id)) == 1
+
+
+async def test_approval_revalidates_exact_catalog_ids_and_propagates_them(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    task_id = await seed_reviewable(client, db)
+    await bind_approval_catalogs(client, db)
+    version = claim(client, task_id, SUPERVISOR)
+    version = correct(client, task_id, version, SUPERVISOR, field_key="po_number", value="PO-1")
+    version = correct(
+        client, task_id, version, SUPERVISOR, field_key="total_amount", value="450.00"
+    )
+    version = pick_catalog(
+        client,
+        task_id,
+        version,
+        field_key="lines.sku",
+        row_index=0,
+        query="WID-100",
+        source_id="WID-100",
+    )
+    pick_catalog(
+        client,
+        task_id,
+        version,
+        field_key="customer_name",
+        row_index=None,
+        query="Acme",
+        source_id="CUST-1",
+    )
+
+    approved = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve", json={}, headers=SUPERVISOR
+    )
+    assert approved.status_code == 200, approved.text
+    (payload_row,) = await canonical_payloads_for(db, client, task_id)
+    payload = payload_row.payload
+    assert payload["parties"]["buyer"] == {
+        "name": "Acme Master",
+        "identifiers": [{"scheme": "customer-account", "value": "CUST-1"}],
+    }
+    assert payload["line_items"][0]["sku"] == "WID-100"
+    extension = payload["extensions"]["x_soa_catalog"]
+    assert uuid.UUID(extension["customer"]["catalog_record_id"])
+    assert uuid.UUID(extension["line_items"][0]["catalog_version_id"])
+
+
+async def test_catalog_version_change_blocks_canonicalization_even_with_override(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.catalogs import (
+        CatalogRepository,
+        activate_catalog_version,
+        add_catalog_record,
+        create_catalog_version,
+    )
+
+    client, db = harness
+    task_id = await seed_reviewable(client, db)
+    await bind_approval_catalogs(client, db)
+    version = claim(client, task_id, SUPERVISOR)
+    version = correct(client, task_id, version, SUPERVISOR, field_key="po_number", value="PO-1")
+    version = correct(
+        client, task_id, version, SUPERVISOR, field_key="total_amount", value="450.00"
+    )
+    version = pick_catalog(
+        client,
+        task_id,
+        version,
+        field_key="lines.sku",
+        row_index=0,
+        query="WID-100",
+        source_id="WID-100",
+    )
+    pick_catalog(
+        client,
+        task_id,
+        version,
+        field_key="customer_name",
+        row_index=None,
+        query="Acme",
+        source_id="CUST-1",
+    )
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        catalog = await CatalogRepository(session, context).get_by_slug("approval-products")
+        assert catalog is not None
+        replacement = await create_catalog_version(
+            session, context, catalog=catalog, actor_id="user:test"
+        )
+        await add_catalog_record(
+            session,
+            context,
+            version=replacement,
+            source_id="WID-100",
+            display_name="Widget Master rev B",
+        )
+        await activate_catalog_version(
+            session,
+            context,
+            catalog=catalog,
+            version=replacement,
+            actor_id="user:test",
+        )
+
+    blocked = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/approve",
+        json={"override_reason": "attempting an authorized rule override"},
+        headers=SUPERVISOR,
+    )
+    assert blocked.status_code == 409
+    assert "catalog version changed" in blocked.json()["error"]["message"]
+    assert await canonical_payloads_for(db, client, task_id) == []
 
 
 async def test_mapping_errors_block_approval_clearly(

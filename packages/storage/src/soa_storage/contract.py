@@ -87,7 +87,9 @@ class ObjectStoreContract:
         url_b = await store.signed_download_url("b", expires_in_seconds=60)
         assert url_a.url != url_b.url, "a signed URL must not grant access to other keys"
         assert url_a.method == "GET"
-        upload = await store.signed_upload_url("c", expires_in_seconds=60, content_type="text/csv")
+        upload = await store.signed_upload_url(
+            "c", expires_in_seconds=60, content_type="text/csv", size_bytes=1
+        )
         assert upload.method == "PUT"
         assert upload.expires_at.tzinfo is not None, "expiry must be timezone-aware"
         assert upload.expires_at > datetime.now(tz=UTC), "expiry must be in the future"

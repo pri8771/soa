@@ -26,6 +26,7 @@ from soa_worker.llm_extraction import (
     ModelOutputInvalidError,
     OpenAiCompatibleExtractionProvider,
 )
+from soa_worker.model_usage import ProviderUsage
 
 DOC_ID = uuid.UUID("6a2c7b00-0000-4000-8000-0000000000ff")
 
@@ -157,12 +158,58 @@ class TestBounds:
     async def test_successful_repair_accounts_the_failed_attempts_cost(self) -> None:
         scripted = _ScriptedProvider(
             [
-                ModelOutputInvalidError("bad", cost_cents=10),
-                ExtractionResult(provider="scripted", fields=(), cost_cents=15),
+                ModelOutputInvalidError(
+                    "bad",
+                    cost_cents=10,
+                    usage=ProviderUsage(10, 2, 12),
+                    pricing_reference="rate:v1",
+                ),
+                ExtractionResult(
+                    provider="scripted",
+                    fields=(),
+                    cost_cents=15,
+                    usage=ProviderUsage(20, 5, 25),
+                    pricing_reference="rate:v1",
+                ),
             ]
         )
         outcome = await extract_with_repair(scripted, request())
         assert outcome.result.cost_cents == 25
+        assert outcome.result.usage == ProviderUsage(30, 7, 37)
+        assert outcome.result.pricing_reference == "rate:v1"
+        assert [item.outcome for item in outcome.result.usage_records] == [
+            "invalid_output",
+            "succeeded",
+        ]
+        assert [item.estimated_cost_cents for item in outcome.result.usage_records] == [10, 15]
+
+    async def test_exhausted_fallback_retains_paid_attempt_usage(self) -> None:
+        scripted = _ScriptedProvider(
+            [
+                ModelOutputInvalidError(
+                    "bad",
+                    cost_cents=4,
+                    usage=ProviderUsage(10, 2, 12),
+                    pricing_reference="rate:v1",
+                )
+            ]
+        )
+        outcome = await extract_with_repair(
+            scripted, request(), RepairPolicy(max_attempts=1, max_cost_cents=100)
+        )
+        assert outcome.fallback == FALLBACK_MANUAL_REVIEW
+        assert outcome.result.cost_cents == 4
+        assert outcome.result.usage == ProviderUsage(10, 2, 12)
+        assert outcome.result.pricing_reference == "rate:v1"
+        assert [item.outcome for item in outcome.result.usage_records] == ["invalid_output"]
+
+    async def test_zero_cost_repair_is_not_stopped_by_a_zero_cost_budget(self) -> None:
+        scripted = _ScriptedProvider([ModelOutputInvalidError("bad", cost_cents=0), GOOD_RESULT])
+        outcome = await extract_with_repair(
+            scripted, request(), RepairPolicy(max_attempts=2, max_cost_cents=0)
+        )
+        assert outcome.fallback is None
+        assert len(scripted.hints) == 2
 
 
 class TestClassification:

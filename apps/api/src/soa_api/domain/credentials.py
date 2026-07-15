@@ -11,6 +11,7 @@ cannot distinguish unknown prefix from wrong secret, revoked, or expired.
 import hashlib
 import hmac
 import secrets
+import string
 import uuid
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -30,7 +31,14 @@ from soa_db.types import UTCDateTime, utcnow
 
 KEY_NAMESPACE = "soa"
 PREFIX_LENGTH = 8
+PREFIX_ALPHABET = string.ascii_letters + string.digits
 API_KEY_ISSUER = "soa-api-key"
+
+# Service credentials are deliberately narrower than human RBAC grants. The
+# public machine API currently exposes ingestion only; allowing a caller to
+# mint (for example) ``credentials.manage`` into an API key would turn a
+# future endpoint mistake into privilege escalation.
+SERVICE_CREDENTIAL_SCOPES: frozenset[str] = frozenset({"documents.upload"})
 
 _SAFE_FAILURE = "Invalid API key."
 
@@ -51,6 +59,12 @@ class ServiceCredential(
     )
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     scopes: Mapped[list[str]] = mapped_column(PORTABLE_JSON, nullable=False, default=list)
+    # UUIDs are stored as canonical strings because PORTABLE_JSON must work on
+    # SQLite as well as PostgreSQL. An empty list fails closed: legacy keys
+    # migrated from before stream scoping cannot ingest until replaced.
+    allowed_stream_ids: Mapped[list[str]] = mapped_column(
+        PORTABLE_JSON, nullable=False, default=list
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=CredentialStatus.ACTIVE)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -69,13 +83,41 @@ def _hash_key(raw_key: str) -> str:
 
 
 def _generate_key() -> tuple[str, str]:
-    prefix = secrets.token_hex(PREFIX_LENGTH // 2)
+    # Eight hexadecimal characters carry only 32 bits and begin colliding at
+    # ordinary multi-tenant scale. Base62 keeps the existing indexed column
+    # and key shape while providing ~48 bits; the prefix is a locator, while
+    # the independent 256-bit secret remains the authenticator.
+    prefix = "".join(secrets.choice(PREFIX_ALPHABET) for _ in range(PREFIX_LENGTH))
     secret = secrets.token_urlsafe(32)
     return prefix, f"{KEY_NAMESPACE}_{prefix}_{secret}"
 
 
+def _safe_string_list(value: object) -> list[str]:
+    """Normalize JSON claims without letting malformed persisted shapes widen access."""
+
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return []
+    return list(value)
+
+
 class ServiceCredentialRepository(ScopedRepository[ServiceCredential]):
     model = ServiceCredential
+
+    async def list_all(self) -> list[ServiceCredential]:
+        stmt = self._scoped_select().order_by(ServiceCredential.created_at.desc())
+        return list((await self._session.execute(stmt)).scalars().all())
+
+
+def validate_credential_scopes(scopes: list[str]) -> list[str]:
+    """Validate machine capabilities independently from human RBAC grants."""
+
+    validated = validate_permissions(scopes)
+    unsupported = sorted(set(validated) - SERVICE_CREDENTIAL_SCOPES)
+    if unsupported:
+        raise ScopeError(f"unsupported service-credential scopes: {unsupported}")
+    if not validated:
+        raise ScopeError("a service credential requires at least one scope")
+    return validated
 
 
 async def create_credential(
@@ -84,6 +126,7 @@ async def create_credential(
     *,
     name: str,
     scopes: list[str],
+    allowed_stream_ids: list[uuid.UUID] | None = None,
     actor_id: str,
     expires_in: timedelta | None = None,
 ) -> tuple[ServiceCredential, str]:
@@ -94,7 +137,8 @@ async def create_credential(
             name=name,
             key_prefix=prefix,
             key_hash=_hash_key(raw_key),
-            scopes=validate_permissions(scopes),
+            scopes=validate_credential_scopes(scopes),
+            allowed_stream_ids=sorted({str(stream_id) for stream_id in (allowed_stream_ids or [])}),
             expires_at=(utcnow() + expires_in) if expires_in else None,
             created_by=actor_id,
         )
@@ -108,7 +152,13 @@ async def create_credential(
         target_type="service_credential",
         target_id=str(credential.id),
         organization_id=context.organization_id,
-        summary={"name": name, "scopes": credential.scopes, "prefix": prefix},
+        summary={
+            "name": name,
+            "scopes": credential.scopes,
+            "allowed_stream_ids": credential.allowed_stream_ids,
+            "prefix": prefix,
+            "expires_at": credential.expires_at.isoformat() if credential.expires_at else None,
+        },
     )
     return credential, raw_key
 
@@ -119,11 +169,14 @@ async def rotate_credential(
     *,
     credential: ServiceCredential,
     actor_id: str,
+    expires_in: timedelta | None = None,
 ) -> str:
     """Replace the secret in place: the old key stops working immediately."""
     prefix, raw_key = _generate_key()
     credential.key_prefix = prefix
     credential.key_hash = _hash_key(raw_key)
+    if expires_in is not None:
+        credential.expires_at = utcnow() + expires_in
     await record_audit_event(
         session,
         actor_type=ActorType.USER,
@@ -132,7 +185,10 @@ async def rotate_credential(
         target_type="service_credential",
         target_id=str(credential.id),
         organization_id=context.organization_id,
-        summary={"prefix": prefix},
+        summary={
+            "prefix": prefix,
+            "expires_at": credential.expires_at.isoformat() if credential.expires_at else None,
+        },
     )
     return raw_key
 
@@ -192,8 +248,9 @@ async def authenticate_api_key(session: AsyncSession, raw_key: str) -> Principal
         auth_method=AuthMethod.API_KEY,
         display_name=credential.name,
         claims={
-            "scopes": list(credential.scopes),
+            "scopes": _safe_string_list(credential.scopes),
             "organization_id": str(credential.organization_id),
+            "allowed_stream_ids": _safe_string_list(credential.allowed_stream_ids),
         },
     )
 
@@ -204,6 +261,16 @@ def require_scope(principal: Principal, required_scope: str) -> None:
     scopes = principal.claims.get("scopes")
     if not isinstance(scopes, list) or required_scope not in scopes:
         raise ScopeError(f"API key lacks required scope {required_scope!r}")
+
+
+def require_stream_access(principal: Principal, stream_id: uuid.UUID) -> None:
+    """Require an explicit stream allowlist match; malformed claims fail closed."""
+
+    raw_ids = principal.claims.get("allowed_stream_ids")
+    if not isinstance(raw_ids, list) or not all(isinstance(item, str) for item in raw_ids):
+        raise ScopeError("API key carries no valid stream scope")
+    if str(stream_id) not in raw_ids:
+        raise ScopeError("API key is not authorized for this stream")
 
 
 def credential_organization_id(principal: Principal) -> uuid.UUID:

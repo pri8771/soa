@@ -42,6 +42,7 @@ from soa_worker.providers.native_text import (
 )
 from soa_worker.render_sandbox import EXIT_MALFORMED
 from soa_worker.rendering import RenderLimits
+from soa_worker.runtime_provenance import package_version
 from soa_worker.sandbox import kill_process_tree, python_child_environment
 
 PROVIDER_NAME = "pdfium-native-text"
@@ -186,7 +187,12 @@ class PdfiumNativeTextProvider:
             warnings.append(
                 f"{empty} of {len(pages)} pages carry no native text (scanned or image-only)"
             )
-        return NativeTextResult(provider=self.name, pages=tuple(pages), warnings=tuple(warnings))
+        return NativeTextResult(
+            provider=self.name,
+            pages=tuple(pages),
+            model=f"pdfium {package_version('pypdfium2')}",
+            warnings=tuple(warnings),
+        )
 
 
 __all__ = ["PROVIDER_NAME", "PdfiumNativeTextProvider"]

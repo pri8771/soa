@@ -18,14 +18,19 @@ from soa_db.integrations import Integration, IntegrationRepository
 from soa_db.jobs import enqueue_job
 from soa_db.pagination import CursorRequest
 from soa_db.repository import OrganizationContext
+from soa_integrations import capabilities_for
 
 EXPORT_JOB_TYPE = "export.deliver"
 
 
 def _deliverable(integration: Integration) -> bool:
+    try:
+        production_ready = capabilities_for(integration.integration_type).production_ready
+    except ValueError:
+        production_ready = False
     return (
         integration.status == "active"
-        and integration.integration_type == "webhook"
+        and production_ready
         and integration.endpoint_url is not None
         and integration.credential_id is not None
         and integration.active_mapping_version_id is not None

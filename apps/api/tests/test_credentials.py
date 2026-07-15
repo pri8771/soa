@@ -37,7 +37,7 @@ async def make_key(db: DatabaseSessions, **kwargs: object) -> str:
             session,
             ORG,
             name="ERP intake",
-            scopes=["documents.upload", "documents.read"],
+            scopes=["documents.upload"],
             actor_id="user:admin",
             **kwargs,  # type: ignore[arg-type]
         )
@@ -162,5 +162,20 @@ async def test_create_with_unregistered_scope_is_rejected(db: DatabaseSessions) 
         async with db.session_scope() as session:
             await create_credential(
                 session, ORG, name="bad", scopes=["everything.always"], actor_id="u:a"
+            )
+    await db.dispose()
+
+
+async def test_human_only_permission_cannot_be_minted_into_service_key(
+    db: DatabaseSessions,
+) -> None:
+    with pytest.raises(ScopeError, match="unsupported service-credential scopes"):
+        async with db.session_scope() as session:
+            await create_credential(
+                session,
+                ORG,
+                name="overprivileged",
+                scopes=["credentials.manage"],
+                actor_id="u:a",
             )
     await db.dispose()

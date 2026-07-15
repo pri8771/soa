@@ -17,6 +17,10 @@ export function SelectOrganization() {
   return (
     <main style={{ maxWidth: "32rem", margin: "8vh auto", padding: "0 var(--soa-space-6)" }}>
       <h1 style={{ font: "var(--soa-font-heading-xl)" }}>Choose an organization</h1>
+      <p style={{ display: "flex", gap: "var(--soa-space-4)", flexWrap: "wrap" }}>
+        <Link to="/create-organization">Create an organization</Link>
+        <Link to="/accept-invitation">Accept an invitation</Link>
+      </p>
 
       {status === "pending" ? (
         <div

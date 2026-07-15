@@ -16,10 +16,11 @@ components in `tests/resilience/`.
 
 These run in the normal Python CI job (SQLite / in-memory, deterministic
 with injected clocks) — a fast regression guard on the recovery and
-idempotency paths. Full fault-injection under real infrastructure
-(network partitions, a killed Postgres, a storage-provider outage) is
-part of the staging resilience exercises that REL-002 stands up; the unit
-suite here proves the code-level invariants those exercises depend on.
+idempotency paths. Full fault-injection under real infrastructure (network
+partitions, a killed Postgres, a storage-provider outage) is not automated in
+this repository. It remains a staging release gate that needs executable
+scenarios and captured evidence; the unit suite proves only the code-level
+invariants those exercises depend on.
 
 The corresponding operator response for each mode is in
 [`runbooks/`](runbooks/README.md) (REL-008).

@@ -23,7 +23,7 @@ backend so the API and worker construct secrets access identically.
 
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from soa_config import (
     FileSecretStore,
@@ -32,6 +32,7 @@ from soa_config import (
     SecretReference,
     SecretStore,
     SecretStoreError,
+    SecretStoreUnavailableError,
 )
 
 __all__ = ["AwsSecretsManagerStore", "build_secret_store"]
@@ -73,7 +74,13 @@ class AwsSecretsManagerStore:
                     raise SecretStoreError(
                         f"secret {name!r} already exists — rotation uses a new name"
                     ) from None
-                raise
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
+            except BotoCoreError as error:
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
         return reference
 
     async def resolve(self, reference: SecretReference) -> str:
@@ -91,7 +98,13 @@ class AwsSecretsManagerStore:
                     # revoked secret must not resolve during its recovery
                     # window.
                     raise SecretNotFoundError(f"no live secret behind {reference}") from None
-                raise
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
+            except BotoCoreError as error:
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
         value = response.get("SecretString")
         if value is None:
             raise SecretStoreError(f"secret behind {reference} is binary, not a string")
@@ -111,7 +124,13 @@ class AwsSecretsManagerStore:
             except ClientError as error:
                 if _error_code(error) in ("ResourceNotFoundException", "InvalidRequestException"):
                     return  # idempotent: already gone or already scheduled
-                raise
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
+            except BotoCoreError as error:
+                raise SecretStoreUnavailableError(
+                    "AWS Secrets Manager is temporarily unavailable"
+                ) from error
 
 
 def build_secret_store(

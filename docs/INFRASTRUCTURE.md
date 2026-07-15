@@ -17,9 +17,9 @@ Web application
 FastAPI API
 Worker
 PostgreSQL
-S3-compatible object storage
-Local queue/task runner
-Tesseract/PaddleOCR
+Filesystem or MinIO object storage
+PostgreSQL durable queue
+Tesseract OCR
 Mock or local LLM
 Local email catcher
 Local telemetry
@@ -56,22 +56,22 @@ Must use paid services wherever required for:
 
 Uses paid plans matched to contractual availability, recovery, security, data residency, support, and scale commitments.
 
-## 3. Initial provider choices
+## 3. Implemented reference choices
 
 These are replaceable defaults rather than permanent dependencies.
 
-| Capability | Local/default | Shared free-first | Production upgrade |
-|---|---|---|---|
-| Web | Local Node server | Cloudflare-style edge/static hosting | Paid edge hosting or cloud CDN |
-| API/worker | Docker | Scale-to-zero container platform | Paid container compute with reserved capacity as needed |
-| Database | Local PostgreSQL | Managed PostgreSQL free plan | Paid PostgreSQL with backups/PITR/read replicas as needed |
-| Authentication | Local/dev mode | Managed auth free plan | Paid auth, SSO/SCIM, or enterprise identity provider |
-| Object storage | MinIO/local filesystem | S3-compatible free allowance | Paid regional object storage with lifecycle and stronger support |
-| Queue | Local database/Redis task runner | Managed free-allowance task queue | Paid durable workflow/queue service |
-| OCR | Native parsing + Tesseract/PaddleOCR | Same, optional developer managed OCR | Managed OCR fallback or dedicated licensed engine |
-| LLM | Mock/local model | Free developer endpoint for synthetic data | Paid zero/limited-retention enterprise endpoint |
-| Telemetry | Console/local collector | Free observability allowance | Paid retention, alerting, audit, and on-call integration |
-| Email | Local catcher | Developer email service | Paid inbound and transactional email service |
+| Capability | Local/development | Reference staging/production | Honest status |
+| --- | --- | --- | --- |
+| Web | Vite | Firebase Hosting, publishing exact scanned web-image bytes | Implemented; live project/domain/auth configuration pending |
+| API/worker | Local processes or Docker | Cloud Run API plus Cloud Run worker pool | Terraform/workflows implemented; live apply/soak pending |
+| Database/jobs | PostgreSQL | Private Cloud SQL PostgreSQL with database-backed queue | Code/IaC implemented; backup/PITR/restore evidence pending |
+| Authentication | Development identity | Firebase Authentication / Identity Platform through OIDC/JWT | Browser/API implemented; live MFA/session/revocation tests pending |
+| Object storage | Filesystem or MinIO | Regional GCS with versioning/lifecycle/checksums | Adapter/IaC implemented; real-bucket and restore evidence pending |
+| Secrets | Memory/file | Dedicated tenant-credential GCP Secret Manager project, isolated from runtime-project platform secrets (AWS adapter also available) | References/rotation/IAM boundary implemented; live cross-project plan and rotation drill pending |
+| OCR/malware | Native text + Tesseract; optional ClamAV profile | Tesseract + mandatory ClamAV | Code implemented; scanner capacity/containment evidence pending |
+| LLM | Mock or local OpenAI-compatible model | Stream-pinned local or tenant BYO hosted provider | Implemented; corpus, contract, region, and invoice gates pending |
+| Telemetry | Console or local collector | Authenticated OTLP/HTTP collector | Batched export implemented; collector/alerts/on-call pending |
+| Email/events | Mailpit; raw-MIME development seam | Provider forwarding into bounded intake; signed HTTPS outbox receiver | Application seams implemented; providers/receivers pending |
 
 ## 4. Portability contracts
 
@@ -97,9 +97,9 @@ Vendor implementations are selected through configuration and dependency injecti
 
 ```text
 ObjectStore
-├── LocalObjectStore
-├── R2ObjectStore
-└── S3ObjectStore
+├── FilesystemObjectStore
+├── S3ObjectStore (including MinIO)
+└── GcsObjectStore
 ```
 
 Moving from a free object-storage plan to paid capacity on the same provider should be an account/plan change with no code change. Moving to another compatible provider should require an adapter/configuration change and data copy, not a business-logic rewrite.

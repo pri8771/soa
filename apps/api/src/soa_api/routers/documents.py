@@ -269,9 +269,10 @@ async def list_document_runs(
         document.id
     )
     stage_repo = StageRunRepository(session, authorized.org_context)
+    stages_by_run = await stage_repo.list_for_runs([run.id for run in runs])
     payload: list[dict[str, Any]] = []
     for run in runs:
-        stages = await stage_repo.list_for_run(run.id)
+        stages = stages_by_run[run.id]
         payload.append(
             {
                 "id": str(run.id),
@@ -282,6 +283,9 @@ async def list_document_runs(
                     str(run.stream_version_id) if run.stream_version_id else None
                 ),
                 "config_fingerprint": run.config_fingerprint,
+                "contract_fingerprint": run.execution_fingerprint,
+                "runtime_fingerprint": run.runtime_fingerprint,
+                "runtime_provenance": run.runtime_provenance,
                 "started_at": run.started_at.isoformat(),
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,
                 "total_latency_ms": run.total_latency_ms,
@@ -387,7 +391,7 @@ async def reprocess_document(
     the pinned configuration the chosen mode selects. Approved, exporting,
     completed, and archived documents are protected by policy."""
     # Abuse control (SEC-003): per-principal cap on reprocessing.
-    deps.rate_limiter.enforce(
+    await deps.rate_limiter.enforce(
         "reprocess",
         f"user:{authorized.membership.user_id}",
         deps.settings.rate_limit_reprocess_per_minute,

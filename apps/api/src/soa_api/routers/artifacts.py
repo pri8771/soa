@@ -83,7 +83,7 @@ async def issue_download_url(
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> DownloadUrlResponse:
     # Abuse control (SEC-003): per-principal cap on signed-URL minting.
-    deps.rate_limiter.enforce(
+    await deps.rate_limiter.enforce(
         "download_urls",
         f"user:{authorized.membership.user_id}",
         deps.settings.rate_limit_download_urls_per_minute,

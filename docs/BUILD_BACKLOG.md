@@ -1,6 +1,9 @@
 # Executable Build Backlog
 
-> **Purpose:** dependency-ordered implementation tasks for building SOA from a documentation-only repository into a local-first, production-grade sales-order automation platform.
+> **Purpose:** the original dependency-ordered acceptance catalog. Much of the
+> code now exists; task presence is not status or release evidence. Use
+> [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md) for current
+> implementation truth and Jira/Notion for active task state.
 >
 > **Rule:** a task is complete only when its acceptance criteria, tests, telemetry, security implications, and documentation impact are satisfied.
 
@@ -1085,8 +1088,13 @@ No production customer documents may be processed before the pilot-readiness gat
 
 - **Priority/size:** P1 / L
 - **Dependencies:** EXP-010 and pilot ERP choice ADR
-- **Deliver:** selected SAP/Oracle/Dynamics/NetSuite adapter, sandbox tests, runbook.
-- **Acceptance:** idempotency/retry/error classification agreed with destination owner.
+- **Deliver:** the pilot-selected ERP adapter, sandbox tests, credential
+  lifecycle, and runbook. QuickBooks Online is the current executable candidate;
+  NetSuite/Dynamics/SAP are connection-test-only until their idempotent upserts
+  exist.
+- **Acceptance:** idempotency/retry/error classification, mapping, OAuth/token
+  lifecycle, and support ownership are proved with the destination owner in an
+  official sandbox.
 
 ---
 

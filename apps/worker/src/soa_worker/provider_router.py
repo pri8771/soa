@@ -50,12 +50,21 @@ class RoutingPolicy:
     allow_third_party_processing: bool = False
     allow_content_retention: bool = False
     allow_training_on_content: bool = False
+    #: Exact providers this immutable policy permits. ``None`` preserves
+    #: catalog-wide routing for previews and legacy callers; production run
+    #: resolution supplies the pinned primary + fallback chain here so the
+    #: router can never select an adapter whose credentials were not pinned.
+    allowed_providers: tuple[str, ...] | None = None
     #: Explicit fallback order: providers named here are tried first,
     #: in this order; unnamed eligible providers follow by rank.
     preferred_order: tuple[str, ...] = ()
     #: Per-document budget for this capability; None = unmetered.
     budget_cents: int | None = None
-    #: Providers scoring below this (when a score is known) are dropped.
+    #: Immutable evaluation scores pinned by the provider policy. Operational
+    #: confidence is useful telemetry, but it is not ground-truth accuracy and
+    #: therefore cannot satisfy a non-zero quality gate.
+    evaluated_quality_scores: Mapping[str, float] = field(default_factory=dict)
+    #: Providers whose pinned evaluated score is below this are dropped.
     min_quality: float = 0.0
 
 
@@ -72,12 +81,16 @@ class DocumentFacts:
 @dataclass(frozen=True)
 class OperationalSignals:
     """Injected runtime signals; absent entries are handled fail-safe
-    (unknown health treated as ok, unknown quality ranked last, unknown
+    (an absent health entry preserves legacy ``ok`` behavior; callers with a
+    durable health surface pass ``unknown`` explicitly so it ranks last;
+    unknown quality ranks last, unknown
     cost treated as free only for LOCAL providers — hosted providers
     without an estimate are skipped when a budget applies)."""
 
-    health: Mapping[str, str] = field(default_factory=dict)  # ok|degraded|unreachable
-    quality: Mapping[str, float] = field(default_factory=dict)  # 0..1 from evaluation
+    health: Mapping[str, str] = field(default_factory=dict)  # ok|degraded|unknown|unreachable
+    # Live 0..1 ranking signal (for example observed confidence). A non-zero
+    # quality gate uses RoutingPolicy.evaluated_quality_scores instead.
+    quality: Mapping[str, float] = field(default_factory=dict)
     cost_cents: Mapping[str, int] = field(default_factory=dict)  # per-document estimate
 
 
@@ -168,6 +181,16 @@ def route(
         f"{', '.join(info.name for info in candidates) or '(none)'}"
     )
 
+    if policy.allowed_providers is not None:
+        allowed_names = set(policy.allowed_providers)
+        kept = [info for info in candidates if info.name in allowed_names]
+        for info in candidates:
+            if info not in kept:
+                explanation.append(
+                    f"eliminated {info.name}: not present in the pinned provider chain"
+                )
+        candidates = kept
+
     if policy.local_only:
         kept = [info for info in candidates if info.data_policy.processing_region == "local"]
         for info in candidates:
@@ -189,6 +212,9 @@ def route(
     kept = []
     for info in candidates:
         status = effective_signals.health.get(info.name, "ok")
+        if status not in {"ok", "degraded", "unknown", "unreachable"}:
+            explanation.append(f"eliminated {info.name}: health signal is invalid")
+            continue
         if status == "unreachable":
             explanation.append(f"eliminated {info.name}: health is unreachable")
             continue
@@ -197,7 +223,18 @@ def route(
 
     kept = []
     for info in candidates:
-        score = effective_signals.quality.get(info.name)
+        evaluated_score = policy.evaluated_quality_scores.get(info.name)
+        score = (
+            evaluated_score
+            if evaluated_score is not None
+            else effective_signals.quality.get(info.name)
+        )
+        if policy.min_quality > 0 and evaluated_score is None:
+            explanation.append(
+                f"eliminated {info.name}: evaluated quality is not pinned and the policy "
+                f"requires a {policy.min_quality:.2f} floor"
+            )
+            continue
         if score is not None and score < policy.min_quality:
             explanation.append(
                 f"eliminated {info.name}: quality {score:.2f} is below the "
@@ -216,9 +253,15 @@ def route(
             if info.name in policy.preferred_order
             else len(policy.preferred_order)
         )
-        degraded = 1 if effective_signals.health.get(info.name, "ok") == "degraded" else 0
-        quality = effective_signals.quality.get(info.name, -1.0)
-        return (preferred, degraded, -quality, info.name)
+        health_rank = {
+            "ok": 0,
+            "degraded": 1,
+            "unknown": 2,
+        }[effective_signals.health.get(info.name, "ok")]
+        quality = policy.evaluated_quality_scores.get(
+            info.name, effective_signals.quality.get(info.name, -1.0)
+        )
+        return (preferred, health_rank, -quality, info.name)
 
     ordered = sorted(candidates, key=rank)
     explanation.append(

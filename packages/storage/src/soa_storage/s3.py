@@ -218,8 +218,15 @@ class S3ObjectStore:
         return sorted(keys)
 
     async def signed_upload_url(
-        self, key: str, *, expires_in_seconds: int, content_type: str
+        self,
+        key: str,
+        *,
+        expires_in_seconds: int,
+        content_type: str,
+        size_bytes: int,
+        sha256: str | None = None,
     ) -> SignedUrl:
+        metadata = {_SHA256_META: sha256} if sha256 is not None else {}
         async with self._client() as client:
             url = await client.generate_presigned_url(
                 "put_object",
@@ -227,6 +234,8 @@ class S3ObjectStore:
                     "Bucket": self._settings.bucket,
                     "Key": key,
                     "ContentType": content_type,
+                    "ContentLength": size_bytes,
+                    **({"Metadata": metadata} if metadata else {}),
                 },
                 ExpiresIn=expires_in_seconds,
             )
@@ -234,6 +243,7 @@ class S3ObjectStore:
             url=str(url),
             expires_at=datetime.now(tz=UTC) + timedelta(seconds=expires_in_seconds),
             method="PUT",
+            required_headers=({"x-amz-meta-sha256": sha256} if sha256 is not None else {}),
         )
 
     async def signed_download_url(self, key: str, *, expires_in_seconds: int) -> SignedUrl:

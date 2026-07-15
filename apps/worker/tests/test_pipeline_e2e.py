@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
+from soa_db.catalog_selections import CatalogFieldSelectionRepository
 from soa_db.catalogs import (
     CatalogBindingMode,
     activate_catalog_version,
@@ -32,6 +33,7 @@ from soa_db.pages import DocumentPageRepository
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRunRepository, StageRunRepository
 from soa_db.state_projection import verify_state_projection
+from soa_db.usage_ledger import UsageEntry
 from soa_storage.keys import artifact_key
 from soa_storage.memory import MemoryObjectStore
 from soa_storage.store import sha256_hex
@@ -42,9 +44,11 @@ from soa_worker.extraction.mock import (
 )
 from soa_worker.extraction.provider import (
     ExtractedField,
+    ExtractionProviderError,
     ExtractionRequest,
     ExtractionResult,
 )
+from soa_worker.model_usage import ProviderCallUsage, ProviderUsage
 from soa_worker.orchestrator import STAGE_SEQUENCE, Orchestrator
 from soa_worker.pipeline import build_executors
 
@@ -241,11 +245,18 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         by_stage = {s.stage: s for s in stages}
         assert all(s.state == "succeeded" for s in stages)
         assert all(s.latency_ms is not None for s in stages), "metrics recorded per stage"
+        assert by_stage["classifying"].output_summary == {
+            "document_type": "purchase_order",
+            "method": "input_contract",
+            "input_contract": "single_sales_order",
+        }
 
         # Rendered pages exist as rows AND as stored artifacts.
         pages = await DocumentPageRepository(session, CONTEXT).list_for_run(run.id)
         assert [p.page_number for p in pages] == [1]
-        assert by_stage["preprocessing"].output_summary == {"pages": 1}
+        preprocessing_summary = by_stage["preprocessing"].output_summary
+        assert preprocessing_summary["pages"] == 1
+        assert preprocessing_summary["runtime_provenance"]["engine"]["name"] == "pypdfium2"
         artifacts = await ArtifactRepository(session, CONTEXT).list_for_document(document_id)
         page_images = [a for a in artifacts if a.kind == ArtifactKind.PAGE_IMAGE.value]
         assert len(page_images) == 1
@@ -261,6 +272,11 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         assert po.normalized_value == "PO-100042"
         assert po.evidence_spans()[0].polygon is not None
         assert po.validation_status == "passed"
+        assert run.runtime_fingerprint is not None
+        assert len(run.runtime_fingerprint) == 64
+        assert po.execution_fingerprint == run.runtime_fingerprint
+        assert run.runtime_provenance is not None
+        assert run.runtime_provenance["extraction"]["model"] == "mock-v1"
         assert by_key[("order_date", None)].normalized_value == "2026-03-14"
         assert by_key[("requested_delivery_date", None)].normalized_value == "2026-04-01"
         assert by_key[("total_amount", None)].normalized_value == {
@@ -278,6 +294,17 @@ async def test_synthetic_sales_order_reaches_approved_with_full_record(
         assert validating.output_summary["evaluation"]["blocking"] is False
         assert validating.output_summary["rules_version"] == "1.1.0"
         assert by_stage["extracting"].provider == "mock"
+        usage = (await session.execute(select(UsageEntry))).scalars().all()
+        assert [
+            (
+                entry.provider,
+                entry.cost_category,
+                entry.billed_unit,
+                entry.billed_quantity,
+                entry.page_count,
+            )
+            for entry in usage
+        ] == [("mock", "extraction", "calls", 1, 1)]
 
 
 async def test_real_model_provider_receives_recognized_document_text(
@@ -298,6 +325,28 @@ async def test_real_model_provider_receives_recognized_document_text(
                     for spec in request.fields
                     if spec.field_type != "table"
                 ),
+                model="metered-model-v1",
+                cost_cents=7,
+                usage=ProviderUsage(800, 200, 1_050),
+                pricing_reference="test-rate-card:v1",
+                usage_records=(
+                    ProviderCallUsage(
+                        provider="failed-model",
+                        model="failed-v1",
+                        usage=ProviderUsage(400, 100, 500),
+                        estimated_cost_cents=2,
+                        pricing_reference="failed-rate-card:v1",
+                        outcome="invalid_output",
+                    ),
+                    ProviderCallUsage(
+                        provider=self.name,
+                        model="metered-model-v1",
+                        usage=ProviderUsage(800, 200, 1_050),
+                        estimated_cost_cents=5,
+                        pricing_reference="test-rate-card:v1",
+                        outcome="succeeded",
+                    ),
+                ),
             )
 
     data = (Path(__file__).parent / "fixtures" / "pdfs" / "digital-po.pdf").read_bytes()
@@ -316,6 +365,91 @@ async def test_real_model_provider_receives_recognized_document_text(
         assert all(page.text_artifact_id is not None for page in pages)
         artifacts = await ArtifactRepository(session, CONTEXT).list_for_document(document_id)
         assert len([item for item in artifacts if item.kind == ArtifactKind.OCR_TEXT.value]) == 2
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        extracting = next(stage for stage in stages if stage.stage == "extracting")
+        assert extracting.output_summary["provider_usage"] == {
+            "input_tokens": 800,
+            "output_tokens": 200,
+            "total_tokens": 1_050,
+            "estimated_cost_cents": 5,
+            "pricing_reference": "test-rate-card:v1",
+        }
+        assert extracting.output_summary["estimated_stage_cost_cents"] == 7
+        usage_entries = (
+            (
+                await session.execute(
+                    select(UsageEntry).where(UsageEntry.cost_category == "extraction")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(usage_entries) == 2
+        by_provider = {entry.provider: entry for entry in usage_entries}
+        assert (
+            by_provider["failed-model"].billed_unit,
+            by_provider["failed-model"].billed_quantity,
+            by_provider["failed-model"].estimated_cost_cents,
+        ) == ("tokens", 500, 2)
+        assert (
+            by_provider["capturing-model"].billed_unit,
+            by_provider["capturing-model"].billed_quantity,
+            by_provider["capturing-model"].estimated_cost_cents,
+        ) == ("tokens", 1_050, 5)
+        assert "pricing_reference=failed-rate-card:v1" in (by_provider["failed-model"].reason or "")
+
+
+async def test_failed_model_call_is_still_ledgered_and_charged_to_the_run(
+    db: DatabaseSessions,
+) -> None:
+    class FailingProvider:
+        name = "failing-metered-model"
+
+        async def extract(self, _request: ExtractionRequest) -> ExtractionResult:
+            record = ProviderCallUsage(
+                provider=self.name,
+                model="failed-v1",
+                usage=ProviderUsage(300, 50, 350),
+                estimated_cost_cents=4,
+                pricing_reference="failed-rate:v1",
+                outcome="failed",
+            )
+            raise ExtractionProviderError(
+                "the model rejected the request",
+                retryable=False,
+                usage_records=(record,),
+                usage_records_complete=True,
+            )
+
+    data = (Path(__file__).parent / "fixtures" / "pdfs" / "digital-po.pdf").read_bytes()
+    store = MemoryObjectStore()
+    document_id = await seed_document(db, store, data=data)
+    orchestrator = Orchestrator(db, build_executors(store, FailingProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        (run,) = await ProcessingRunRepository(session, CONTEXT).list_for_document(document_id)
+        assert run.total_cost_cents == 4
+        stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
+        extracting = next(stage for stage in stages if stage.stage == "extracting")
+        assert extracting.state == "failed"
+        assert extracting.cost_cents == 4
+        entries = (
+            (
+                await session.execute(
+                    select(UsageEntry).where(UsageEntry.cost_category == "extraction")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(entries) == 1
+        assert (entries[0].provider, entries[0].billed_quantity) == (
+            "failing-metered-model",
+            350,
+        )
+        assert entries[0].estimated_cost_cents == 4
 
 
 async def test_bound_catalogs_match_and_validate_inside_pipeline(db: DatabaseSessions) -> None:
@@ -339,6 +473,17 @@ async def test_bound_catalogs_match_and_validate_inside_pipeline(db: DatabaseSes
         assert matched[("customer_name", None)]["selected_source_id"] == "C-100"
         assert matched[("lines.sku", 0)]["selected_source_id"] == "WID-100"
         assert matched[("lines.sku", 1)]["selected_source_id"] == "GAD-205"
+        selections = await CatalogFieldSelectionRepository(session, CONTEXT).list_for_run(run.id)
+        by_position = {(row.field_key, row.row_index): row for row in selections}
+        assert set(by_position) == {
+            ("customer_name", None),
+            ("lines.sku", 0),
+            ("lines.sku", 1),
+        }
+        assert all(row.catalog_record_id is not None for row in selections)
+        assert all(row.catalog_version_id is not None for row in selections)
+        assert by_position[("customer_name", None)].source_id == "C-100"
+        assert by_position[("lines.sku", 0)].source_id == "WID-100"
         stages = await StageRunRepository(session, CONTEXT).list_for_run(run.id)
         summary = {stage.stage: stage for stage in stages}["validating_data"].output_summary
         assert summary["business_validation"]["matches"] == 3

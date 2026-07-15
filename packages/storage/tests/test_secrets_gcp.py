@@ -10,7 +10,13 @@ plus the cross-provider guard and the backend factory.
 import pytest
 from google.api_core import exceptions as gcp_exceptions
 
-from soa_config import MemorySecretStore, SecretNotFoundError, SecretReference, SecretStoreError
+from soa_config import (
+    MemorySecretStore,
+    SecretNotFoundError,
+    SecretReference,
+    SecretStoreError,
+    SecretStoreUnavailableError,
+)
 from soa_storage.secrets_gcp import GcpSecretManagerStore, _secret_id, build_secret_store
 
 PROJECT = "soa-pilot"
@@ -22,6 +28,8 @@ class FakeSecretManagerClient:
     def __init__(self) -> None:
         # secret_path -> latest payload bytes (None = no live version)
         self.secrets: dict[str, bytes | None] = {}
+        self.fail_add = False
+        self.fail_access = False
 
     async def create_secret(self, request: dict) -> object:
         name = f"{request['parent']}/secrets/{request['secret_id']}"
@@ -31,10 +39,14 @@ class FakeSecretManagerClient:
         return type("Secret", (), {"name": name})()
 
     async def add_secret_version(self, request: dict) -> object:
+        if self.fail_add:
+            raise gcp_exceptions.ServiceUnavailable("version service unavailable")
         self.secrets[request["parent"]] = request["payload"]["data"]
         return type("Version", (), {"name": f"{request['parent']}/versions/1"})()
 
     async def access_secret_version(self, request: dict) -> object:
+        if self.fail_access:
+            raise gcp_exceptions.ServiceUnavailable("access service unavailable")
         secret_path = request["name"].rsplit("/versions/", 1)[0]
         if secret_path not in self.secrets:
             raise gcp_exceptions.NotFound(f"{secret_path} missing")
@@ -98,6 +110,20 @@ class TestRoundTrip:
         reference = await gcp.put("orgs/1/keys/a", "v1")
         await gcp.revoke(reference)
         await gcp.revoke(reference)  # no error the second time
+
+    async def test_transient_access_failure_is_classified_retryable(self) -> None:
+        gcp, client = store()
+        reference = await gcp.put("orgs/1/keys/a", "v1")
+        client.fail_access = True
+        with pytest.raises(SecretStoreUnavailableError, match="temporarily unavailable"):
+            await gcp.resolve(reference)
+
+    async def test_failed_first_version_removes_partial_secret_container(self) -> None:
+        gcp, client = store()
+        client.fail_add = True
+        with pytest.raises(SecretStoreUnavailableError, match="temporarily unavailable"):
+            await gcp.put("orgs/1/keys/a", "v1")
+        assert client.secrets == {}
 
 
 class TestGuards:

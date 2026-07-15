@@ -78,6 +78,11 @@ async def test_run_and_stage_lifecycle_rolls_up_metrics(db: DatabaseSessions) ->
             ("render", 1, "succeeded"),
         ]
         assert stages[1].output_summary == {"pages": 2}
+        grouped = await StageRunRepository(session, CONTEXT).list_for_runs([run_id, uuid.uuid4()])
+        assert [stage.stage for stage in grouped[run_id]] == ["extract", "render"]
+        assert len(grouped) == 2
+        assert grouped[next(key for key in grouped if key != run_id)] == []
+        assert await StageRunRepository(session, CONTEXT).list_for_runs([]) == {}
 
 
 async def test_reprocess_creates_a_new_run(db: DatabaseSessions) -> None:

@@ -194,9 +194,16 @@ def validate_mapping_definition(definition: Any) -> list[str]:
 def _lookup(data: Any, path: str) -> Any:
     current = data
     for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isascii() and part.isdigit() and len(part) <= 9:
+            index = int(part)
+            if index < len(current):
+                current = current[index]
+                continue
             return None
-        current = current[part]
+        return None
     return current
 
 

@@ -4,7 +4,19 @@
 
 variable "project_id" {
   type        = string
-  description = "The GCP project that owns all resources."
+  description = "The GCP project that owns runtime, database, storage, and platform secrets."
+}
+
+variable "tenant_secrets_project_id" {
+  type        = string
+  description = "A separate GCP project used only for application-managed tenant credentials. This isolates dynamic BYO secrets from database and platform secrets."
+  validation {
+    condition = (
+      length(trimspace(var.tenant_secrets_project_id)) > 0 &&
+      var.tenant_secrets_project_id != var.project_id
+    )
+    error_message = "tenant_secrets_project_id must be non-empty and different from project_id."
+  }
 }
 
 variable "environment" {
@@ -70,6 +82,16 @@ variable "api_max_instances" {
   default     = 4
 }
 
+variable "api_concurrency" {
+  type        = number
+  description = "Maximum concurrent HTTP requests per API instance. Kept bounded because upload completion and malware scanning hold document bytes in memory."
+  default     = 8
+  validation {
+    condition     = var.api_concurrency >= 1 && var.api_concurrency <= 32 && floor(var.api_concurrency) == var.api_concurrency
+    error_message = "api_concurrency must be a whole number between 1 and 32."
+  }
+}
+
 variable "worker_instances" {
   type        = number
   description = "Manually allocated Cloud Run worker-pool instances (>=1 so jobs drain)."
@@ -102,6 +124,16 @@ variable "worker_memory" {
   type        = string
   description = "Cloud Run worker-pool memory limit for bounded rendering and OCR."
   default     = "4Gi"
+}
+
+variable "worker_concurrency" {
+  type        = number
+  description = "Maximum concurrently active durable jobs per worker instance."
+  default     = 2
+  validation {
+    condition     = var.worker_concurrency >= 1 && var.worker_concurrency <= 32 && floor(var.worker_concurrency) == var.worker_concurrency
+    error_message = "worker_concurrency must be a whole number between 1 and 32."
+  }
 }
 
 variable "storage_location" {
@@ -199,6 +231,15 @@ variable "worker_outbox_publish_url" {
   validation {
     condition     = startswith(var.worker_outbox_publish_url, "https://")
     error_message = "worker_outbox_publish_url must use HTTPS."
+  }
+}
+
+variable "telemetry_otlp_endpoint" {
+  type        = string
+  description = "HTTPS base URL of the production OTLP/HTTP collector used by API and worker traces and metrics."
+  validation {
+    condition     = startswith(var.telemetry_otlp_endpoint, "https://")
+    error_message = "telemetry_otlp_endpoint must use HTTPS."
   }
 }
 

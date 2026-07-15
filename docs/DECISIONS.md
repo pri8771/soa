@@ -1,6 +1,6 @@
 # Architecture and Product Decisions
 
-> **Last updated:** 2026-07-14
+> **Last updated:** 2026-07-15
 >
 > **Purpose:** record decisions that implementation agents must treat as constraints, plus unresolved choices that require evidence before selection.
 
@@ -72,10 +72,10 @@ Status values:
 - **Consequences:** The job layer implements a `WorkflowEngine` boundary. A dedicated workflow engine may replace scheduling later without moving business state out of canonical storage.
 - **Revisit when:** sustained scale, timers/compensation complexity, customer-hosted workers, or operational evidence justifies migration.
 
-## ADR-009 — S3-compatible object storage with immutable originals
+## ADR-009 — Portable object storage with immutable originals
 
 - **Status:** Accepted
-- **Decision:** Use MinIO locally and S3-compatible object storage in hosted environments behind `ObjectStore`.
+- **Decision:** Use filesystem/MinIO locally and GCS in the reference hosted environment behind `ObjectStore`; retain the S3-compatible adapter as a portable alternative.
 - **Rationale:** Standard object semantics, inexpensive storage, direct uploads, lifecycle control, and provider portability.
 - **Consequences:** Database stores metadata/hashes, not large blobs. Originals are immutable; derived artifacts are run-scoped and versioned.
 
@@ -84,7 +84,7 @@ Status values:
 - **Status:** Accepted
 - **Decision:** Authenticate through OIDC/JWT adapters and own organization membership, roles, permissions, and resource authorization in the application.
 - **Rationale:** Avoid identity-provider lock-in and preserve consistent authorization across web, API keys, workers, SSO, and local operation.
-- **Consequences:** Development identity is local-only. Production OIDC provider selection remains configurable. SAML/SCIM are P1 through an identity provider or adapter.
+- **Consequences:** Development identity is local-only. The reference deployment uses Firebase Authentication / Identity Platform tokens while the browser and API retain a generic OIDC boundary. SAML/SCIM are P1 through an identity provider or adapter.
 
 ## ADR-011 — Tenant isolation is enforced in several layers
 
@@ -112,7 +112,7 @@ Status values:
 - **Status:** Accepted
 - **Decision:** Use file inspection, native text, rendering/preprocessing, OCR/layout, classification/splitting, schema extraction, deterministic normalization, catalogs/rules, confidence, and review. Do not treat one multimodal LLM call as the pipeline.
 - **Rationale:** Better cost, explainability, reliability, evidence, and provider flexibility.
-- **Consequences:** Separate provider contracts and stage artifacts. Not every document runs every stage.
+- **Consequences:** Separate provider contracts and stage artifacts. Not every document runs every stage. The first release enforces one sales order per input; packet classification/splitting stays disabled until independently evaluated.
 
 ## ADR-015 — Evidence is mandatory for automation
 
@@ -175,7 +175,7 @@ Status values:
 - **Status:** Accepted
 - **Decision:** Prove canonical export, signed webhook, retry, idempotency, and replay before building a deep ERP catalog.
 - **Rationale:** Separates core product proof from customer-specific ERP complexity.
-- **Consequences:** First production ERP adapter is selected after canonical and delivery behavior are stable.
+- **Consequences:** QuickBooks Online is the first executable ERP delivery adapter. NetSuite, Dynamics, and SAP may expose read-only connection tests but stay delivery-disabled until their idempotent upsert contracts are implemented and certified.
 
 ## ADR-024 — Production must not rely on unsuitable free plans
 
@@ -231,21 +231,20 @@ Status values:
 
 ---
 
-# Decisions intentionally deferred
+# Provider/product decisions and open questions
 
 ## OPEN-001 — Hosted deployment provider
 
 - **Status:** Accepted (2026-07-14) — Google Cloud / Firebase family, **not Firestore**.
 - **Decision:** Deploy on the Firebase/GCP ecosystem: **Cloud SQL for PostgreSQL** (the RLS tenancy model and Postgres job queue require a real Postgres, so Firestore is a wrong fit and was rejected), **Cloud Run** for the API and worker containers (REL-001 images), **Cloud Storage** for artifacts (behind the existing `ObjectStore` interface), **GCP Secret Manager** for secrets and BYO keys (behind the existing `SecretStore` interface, alongside the AWS adapter), **Firebase Auth / Identity Platform** for login (issues OIDC JWTs the TEN-003 adapter already consumes), and **Firebase Hosting** for the web app.
 - **Rationale:** Owner preference for the Firebase ecosystem, satisfied without discarding the Postgres-RLS security model. Two thin adapters (GCS object store, GCP Secret Manager) are the only new code; both sit behind interfaces that already exist. Keeps local parity — the same containers and Postgres run locally.
-- **Consequences:** Staging infrastructure (REL-002) targets Cloud SQL + Cloud Run. Add a `GcsObjectStore` (behind STO-001) and a `GcpSecretManagerStore` (behind SEC-005). Firestore and GCP-proprietary datastores are out of scope for tenant data.
+- **Consequences:** The committed Terraform targets Cloud SQL + Cloud Run + GCS + Secret Manager + Firebase Hosting/Auth. `GcsObjectStore` and `GcpSecretManagerStore` are implemented. Firestore and GCP-proprietary datastores remain out of scope for canonical tenant data. Live apply/restore/operations evidence is still a release gate.
 
 ## OPEN-002 — Production identity provider
 
-- **Status:** Deferred behind OIDC boundary
-- **Options:** managed auth platform or enterprise identity broker.
-- **Decision criteria:** OIDC, SAML/SCIM roadmap, MFA, custom domains, audit, pricing, migration/export, organization connections.
-- **Deadline:** before production authentication configuration.
+- **Status:** Accepted (2026-07-15) — Firebase Authentication / Identity Platform for the reference deployment, behind generic OIDC validation.
+- **Decision:** The Firebase browser SDK is the default hosted login mode; generic authorization-code/PKCE OIDC remains available. The API owns memberships, roles, permissions, and tenant authorization rather than delegating them to Firebase claims.
+- **Consequences:** Production still requires an applied tenant, MFA/session/revocation policy, custom domains, invitation delivery, and staging tests. SAML/SCIM remain post-pilot.
 
 ## OPEN-003 — First managed OCR provider
 
@@ -256,15 +255,23 @@ Status values:
 ## OPEN-004 — First hosted extraction provider and model
 
 - **Status:** Accepted (2026-07-14) — local-first, with optional BYO hosted keys.
-- **Decision:** Default to **local models** (Qwen2.5-VL-7B-Instruct for vision, Qwen2.5-7B-Instruct for text, via Ollama's OpenAI-compatible endpoint — AIO-007), so no customer data leaves the deployment unless a tenant opts in. Optionally register a **customer-supplied hosted key**: Claude via the dedicated Messages-API adapter (AIO-008), and Gemini/OpenAI via the OpenAI-compatible adapter with Bearer auth. Hosted providers declare third-party processing honestly and are only selected when tenant policy allows it.
+- **Decision:** Start with a **local text model** (Qwen2.5-7B-Instruct via
+  Ollama's OpenAI-compatible endpoint — AIO-007), so no customer data leaves
+  the deployment unless a tenant opts in. The current worker sends recognized
+  native/Tesseract text, not page images; Qwen2.5-VL-7B-Instruct is only a
+  future multimodal candidate. Optionally register a customer-supplied hosted
+  API key: Claude through the dedicated Messages adapter, Gemini through its
+  native adapter or an OpenAI-compatible endpoint, and OpenAI through the
+  OpenAI-compatible adapter. Hosted providers declare third-party processing
+  honestly and are selected only when the published tenant policy allows it.
 - **Rationale:** Owner direction to run and test locally first and to let customers bring their own Claude/Gemini/OpenAI keys. The provider contract (AIO-001) and router (AIO-013) already make this a configuration choice, and the gold evaluation (AIO-016/017) governs any promotion. See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md).
-- **Consequences:** Hosted keys are fail-closed (no key → no provider). Per-tenant BYO keys via the SEC-005 secret store are the follow-on (tracked with AIO-006); today a deployment-level key applies deployment-wide. Contract/retention terms for any hosted provider are documented before production use.
+- **Consequences:** Hosted keys are fail-closed (no valid pinned key → no call). Production stream versions pin per-tenant `secretref://` credentials; an explicit empty tenant value never falls through to a shared deployment key. Contract/region/retention/training/deletion terms and invoice reconciliation are required before production use.
 
 ## OPEN-005 — First production ERP adapter
 
-- **Status:** Deferred
-- **Decision criteria:** pilot customer's destination, sandbox availability, idempotency method, API maturity, field mapping, and support ownership.
-- **Deadline:** after canonical JSON and webhook delivery are stable.
+- **Status:** Accepted for first executable adapter — QuickBooks Online.
+- **Decision:** Deliver mapped Estimate/Invoice payloads with QuickBooks `requestid` idempotency. NetSuite, Dynamics, and SAP stay connection-test-only until vendor-specific idempotent upsert behavior is executable.
+- **Release condition:** Pilot sandbox, OAuth refresh/rotation, mapping fixtures, duplicate/retry/error certification, and support ownership remain mandatory; connector code alone is not production approval.
 
 ## OPEN-006 — Billing vendor
 

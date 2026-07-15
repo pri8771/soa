@@ -10,7 +10,7 @@ const QUARANTINED = DEFAULT_DOCUMENTS[2];
 const FAILED = DEFAULT_DOCUMENTS[3];
 
 describe("Document detail (ING-012)", () => {
-  it("is a stable deep link with summary, files, honest placeholders, and timeline", async () => {
+  it("is a stable deep link with summary, files, live panels, and timeline", async () => {
     await renderApp(`/app/northstar/documents/${QUEUED.id}`);
     expect(await screen.findByRole("heading", { name: "po-4711.pdf" })).toBeInTheDocument();
 
@@ -23,7 +23,7 @@ describe("Document detail (ING-012)", () => {
     expect(within(files).getByText("original")).toBeInTheDocument();
     expect(within(files).getByRole("button", { name: "Download original" })).toBeInTheDocument();
 
-    // Unbuilt/deferred panels are honest, never fake data.
+    // State-dependent panels are honest when their live data is not available yet.
     expect(screen.getByText(/open the task from the Review queue/)).toBeInTheDocument();
     expect(
       screen.getByText(/canonical order is created when the document is approved/),
@@ -86,6 +86,8 @@ describe("Document detail (ING-012)", () => {
     ); // the SAFE error string with its classification
     expect(within(run).getByText("provider responded slowly before failing")).toBeInTheDocument();
     expect(within(run).getByText("ffffffffffff…")).toBeInTheDocument(); // pinned config
+    expect(within(run).getByText("cccccccccccc…")).toBeInTheDocument(); // execution contract
+    expect(within(run).getByText("rrrrrrrrrrrr…")).toBeInTheDocument(); // sanitized runtime
   });
 
   it("offers retry controls with the consequence spelled out, and posts the request", async () => {

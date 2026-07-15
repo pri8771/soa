@@ -2,8 +2,8 @@
 
 > **Purpose:** the single reference for how hostile bytes (customer PDFs,
 > images) are contained while the platform parses them. Read together with
-> `docs/THREAT_MODEL.md` §4.2 (hostile files) — this document is the
-> mitigation detail behind residual risk R5.
+> [`THREAT_MODEL.md`](THREAT_MODEL.md) (hostile files and resource exhaustion)
+> — this document is the mitigation detail behind residual risk R3.
 
 ## 1. What runs inside the sandbox
 
@@ -87,11 +87,16 @@ and active-content classification, bounded rasters).
   is explicit in `ADDRESS_SPACE_LIMIT_SUPPORTED` and covered by the sandbox
   hardening test rather than being silently swallowed.
 
-## 3. Container layer (deployment requirement)
+## 3. Container layer (image built; deployment evidence pending)
 
-There is no production container build yet (deployment lands with the
-release epic). **This profile is a REQUIREMENT for that work, not a
-suggestion** — the worker/converter container MUST run with:
+The worker image exists, runs as uid `10001`, and contains only its locked
+runtime environment plus the required OCR/fonts. That proves the image's
+non-root baseline, not the target platform's complete isolation. Before
+customer documents, run the release digest with the strongest equivalent the
+chosen runtime supports and record evidence for: read-only root where
+available, bounded writable scratch, default seccomp/sandboxing, no privilege
+escalation/capabilities, PID/memory/CPU limits, and only required network
+egress. For a Docker-compatible runtime the intended profile is:
 
 ```yaml
 # docker-compose fragment for the worker service
@@ -102,7 +107,9 @@ tmpfs:
 cap_drop: [ALL]                 # no capabilities whatsoever
 security_opt:
   - no-new-privileges:true      # setuid binaries cannot escalate
-  - seccomp:unconfined-is-forbidden  # use the runtime's DEFAULT seccomp profile (never "unconfined")
+# Do not set seccomp=unconfined. Docker's default profile applies when no
+# seccomp override is supplied; use seccomp=/path/to/reviewed-profile.json only
+# when the deployment owns and tests that profile.
 pids_limit: 256                 # fork bombs die at the cgroup
 mem_limit: 4g
 cpus: 2
@@ -120,17 +127,17 @@ securityContext:
   seccompProfile: { type: RuntimeDefault }
 ```
 
-Network policy: the worker needs egress to Postgres, object storage, and
-configured model providers **only**. If conversion is split into its own
-service, that service gets `network_mode: none` (it reads input and writes
-output through mounted scratch space) — the process layer already assumes
-no network, so the split is a deployment change, not a code change.
+Network policy: the worker needs egress to Postgres, object storage, the
+configured telemetry collector, managed secret service, outbox/ERP targets,
+and enabled model providers **only**. The current converter is a subprocess in
+the worker container. If it is split into its own service, that service gets no
+network and exchanges only bounded input/output through scratch/object storage.
 
 ## 4. Verification
 
 - CI runs the process-layer suite on every push (worker test job).
-- The container profile must be verified at deployment time: start the
-  worker under the profile above and run the worker test suite
-  (`uv run pytest apps/worker`) inside it. A checklist item for this
-  lives in the release epic (REL) — the pilot does not go live on an
-  unprofiled container.
+- CI builds/scans the non-root image, but the container profile must still be
+  verified at deployment time. Start the exact release digest under the target
+  controls, run hostile-file/sandbox tests and a representative workload, and
+  retain the runtime configuration with the release evidence. The pilot does
+  not go live on an unverified profile.

@@ -15,11 +15,13 @@ from soa_api.domain.identity import (
     MembershipStatus,
 )
 from soa_api.domain.rbac import (
+    LastActiveOrgAdminError,
     RoleAssignmentRepository,
     RoleRepository,
     UnknownPermissionError,
     assign_role,
     create_custom_role,
+    ensure_can_remove_active_org_admin,
     revoke_role,
 )
 from soa_api.domain.tenancy import Organization, OrganizationRepository
@@ -59,12 +61,20 @@ class OrganizationResponse(BaseModel):
         )
 
 
+class MemberRoleSummary(BaseModel):
+    id: str
+    name: str
+    slug: str
+    is_system: bool
+
+
 class MemberResponse(BaseModel):
     membership_id: str
     user_id: str | None
     invited_email: str
     status: str
     version: int
+    assigned_roles: list[MemberRoleSummary] = Field(default_factory=list)
 
 
 class MembersPageResponse(BaseModel):
@@ -108,6 +118,37 @@ class RoleResponse(BaseModel):
 
 class RoleAssignRequest(BaseModel):
     role_slug: str
+
+
+async def _member_role_summaries(
+    session: DbSession,
+    authorized: AuthorizedContext,
+    membership_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[MemberRoleSummary]]:
+    assignments = await RoleAssignmentRepository(
+        session, authorized.org_context
+    ).list_for_memberships(membership_ids)
+    roles = await RoleRepository(session, authorized.org_context).list_by_ids(
+        assignment.role_id for assignment in assignments
+    )
+    roles_by_id = {role.id: role for role in roles}
+    result: dict[uuid.UUID, list[MemberRoleSummary]] = {
+        membership_id: [] for membership_id in membership_ids
+    }
+    for assignment in assignments:
+        role = roles_by_id.get(assignment.role_id)
+        if role is not None:
+            result[assignment.membership_id].append(
+                MemberRoleSummary(
+                    id=str(role.id),
+                    name=role.name,
+                    slug=role.slug,
+                    is_system=role.is_system,
+                )
+            )
+    for summaries in result.values():
+        summaries.sort(key=lambda role: role.slug)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +218,9 @@ async def list_members(
     except (InvalidCursorError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
     page = await MembershipRepository(session, authorized.org_context).list_page(request)
+    role_summaries = await _member_role_summaries(
+        session, authorized, [membership.id for membership in page.items]
+    )
     return MembersPageResponse(
         items=[
             MemberResponse(
@@ -185,6 +229,7 @@ async def list_members(
                 invited_email=m.invited_email,
                 status=m.status,
                 version=m.version,
+                assigned_roles=role_summaries[m.id],
             )
             for m in page.items
         ],
@@ -262,6 +307,8 @@ async def change_membership_status(
     except VersionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     except InvalidMembershipTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except LastActiveOrgAdminError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     await session.flush()
     return MemberResponse(
@@ -350,13 +397,44 @@ async def assign_member_role(
     return {"membership_id": str(membership.id), "role_slug": role.slug}
 
 
+@router.get("/orgs/{organization_slug}/members/{membership_id}/roles")
+async def list_member_roles(
+    membership_id: uuid.UUID,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("roles.read"))],
+    session: DbSession,
+) -> list[RoleResponse]:
+    membership = await MembershipRepository(session, authorized.org_context).get(membership_id)
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    assignments = await RoleAssignmentRepository(
+        session, authorized.org_context
+    ).list_for_membership(membership_id)
+    roles = []
+    role_repo = RoleRepository(session, authorized.org_context)
+    for assignment in assignments:
+        role = await role_repo.get(assignment.role_id)
+        if role is not None:
+            roles.append(role)
+    roles.sort(key=lambda role: role.slug)
+    return [
+        RoleResponse(
+            id=str(role.id),
+            name=role.name,
+            slug=role.slug,
+            is_system=role.is_system,
+            permissions=list(role.permissions),
+        )
+        for role in roles
+    ]
+
+
 @router.delete("/orgs/{organization_slug}/members/{membership_id}/roles/{role_slug}")
 async def revoke_member_role(
     membership_id: uuid.UUID,
     role_slug: str,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("roles.manage"))],
     session: DbSession,
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     role = await RoleRepository(session, authorized.org_context).get_by_slug(role_slug)
     if role is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
@@ -366,10 +444,19 @@ async def revoke_member_role(
     assignment = next((a for a in assignments if a.role_id == role.id), None)
     if assignment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found.")
+    if role.slug == "org-admin":
+        try:
+            await ensure_can_remove_active_org_admin(
+                session,
+                authorized.org_context,
+                membership_id=membership_id,
+            )
+        except LastActiveOrgAdminError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     await revoke_role(
         session,
         authorized.org_context,
         assignment=assignment,
         actor_id=f"user:{authorized.membership.user_id}",
     )
-    return {"membership_id": str(membership_id), "role_slug": role_slug, "revoked": "true"}
+    return {"membership_id": str(membership_id), "role_slug": role_slug, "revoked": True}

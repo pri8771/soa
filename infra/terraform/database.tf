@@ -56,9 +56,12 @@ resource "google_sql_database" "app" {
   instance = google_sql_database_instance.primary.name
 }
 
-# The application role. Its password is generated and stored in Secret
-# Manager (secrets.tf) — never written to state as plaintext beyond the
-# random_password resource, and never checked in.
+# Runtime and schema ownership are deliberately separate. Cloud SQL initially
+# gives built-in users its broad cloudsqlsuperuser bootstrap role; migration
+# 0045 explicitly revokes that role and all elevated attributes from soa_app,
+# then grants only DML. The one-shot migrator retains DDL administration.
+# Neither password is checked in (Terraform state must use the protected remote
+# backend documented in the README).
 resource "google_sql_user" "app" {
   name     = "soa_app"
   instance = google_sql_database_instance.primary.name
@@ -66,6 +69,17 @@ resource "google_sql_user" "app" {
 }
 
 resource "random_password" "db_app" {
+  length  = 32
+  special = false
+}
+
+resource "google_sql_user" "migrator" {
+  name     = "soa_migrator"
+  instance = google_sql_database_instance.primary.name
+  password = random_password.db_migrator.result
+}
+
+resource "random_password" "db_migrator" {
   length  = 32
   special = false
 }

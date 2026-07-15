@@ -96,13 +96,21 @@ async def enqueue_event(
     return event
 
 
-async def replay_failed_event(session: AsyncSession, event: OutboxEvent) -> None:
-    """Reset one dead-lettered event and enqueue an audited caller-owned replay."""
+async def replay_failed_event(session: AsyncSession, event: OutboxEvent) -> int:
+    """Reset one dead-lettered event and enqueue a fresh delivery attempt.
+
+    Returns the exhausted attempt count so the API can preserve it in the
+    replay audit record even though the live delivery state is reset.
+    """
     if event.status != OutboxStatus.FAILED:
         raise ValueError("only failed outbox events can be replayed")
     previous_attempts = event.attempts
+    previous_delivery_cursor = event.next_attempt_at.isoformat()
+    replayed_at = utcnow()
     event.status = OutboxStatus.PENDING
-    event.next_attempt_at = utcnow()
+    event.attempts = 0
+    event.published_at = None
+    event.next_attempt_at = replayed_at
     event.last_error = None
     from soa_db.jobs import enqueue_job
 
@@ -111,9 +119,13 @@ async def replay_failed_event(session: AsyncSession, event: OutboxEvent) -> None
         job_type="outbox.publish",
         organization_id=event.organization_id,
         payload={"outbox_event_id": str(event.id)},
-        dedupe_key=f"outbox:{event.id}:replay:{previous_attempts}",
+        # The prior delivery cursor is stable for concurrent requests but
+        # changes after each replay, giving every exhausted generation one
+        # idempotent replay job even though attempt counts reset and repeat.
+        dedupe_key=(f"outbox:{event.id}:replay:{previous_attempts}:{previous_delivery_cursor}"),
         max_attempts=10,
     )
+    return previous_attempts
 
 
 async def claim_pending_events(
@@ -154,13 +166,14 @@ def mark_failed(
     error: str,
     retry_in: timedelta | None = None,
     max_attempts: int = 10,
+    terminal: bool = False,
     now: datetime | None = None,
 ) -> None:
     """Record a failed publication attempt with bounded retries."""
     current = now or utcnow()
     event.attempts += 1
     event.last_error = error[:500]
-    if event.attempts >= max_attempts:
+    if terminal or event.attempts >= max_attempts:
         event.status = OutboxStatus.FAILED
         return
     delay = retry_in if retry_in is not None else timedelta(seconds=min(2**event.attempts, 300))

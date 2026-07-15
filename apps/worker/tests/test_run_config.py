@@ -5,15 +5,33 @@ from pathlib import Path
 
 import pytest
 
+import soa_worker.run_config as run_config_module
 from soa_api.domain.policies import PolicyVersion
 from soa_api.domain.rules import RuleSetVersion
 from soa_api.domain.schemas import SchemaVersion
 from soa_api.domain.streams import StreamVersion
+from soa_config import MemorySecretStore, SecretStoreUnavailableError
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.instructions import InstructionVersion
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRun
+from soa_storage import MemoryObjectStore
+from soa_worker.extraction.provider import ExtractionRequest, ExtractionResult
+from soa_worker.orchestrator import StageExecutionError
+from soa_worker.pipeline import canonical_sales_order_config
+from soa_worker.provider_router import RoutingPolicy
+from soa_worker.providers import (
+    ANY_LANGUAGE,
+    LOCAL_DATA_POLICY,
+    Capability,
+    ProviderInfo,
+    register_provider,
+    unregister_provider,
+)
 from soa_worker.run_config import (
+    ResolvedExecutorFactory,
+    ResolvedProviderCandidate,
+    ResolvedRunConfig,
     RunConfigError,
     execution_fingerprint,
     load_resolved_run_config,
@@ -30,6 +48,22 @@ POLICY = uuid.UUID("66666666-6666-4666-8666-666666666666")
 PROCESS = uuid.UUID("77777777-7777-4777-8777-777777777777")
 CONFIDENCE = uuid.UUID("88888888-8888-4888-8888-888888888888")
 INSTRUCTION = uuid.UUID("99999999-9999-4999-8999-999999999999")
+FALLBACK_PROVIDER = "run-config-local-fallback"
+
+
+@pytest.fixture(autouse=True)
+def fallback_provider() -> None:
+    register_provider(
+        ProviderInfo(
+            name=FALLBACK_PROVIDER,
+            capability=Capability.FIELD_EXTRACTION,
+            languages=(ANY_LANGUAGE,),
+            data_policy=LOCAL_DATA_POLICY,
+        ),
+        lambda: object(),
+    )
+    yield
+    unregister_provider(Capability.FIELD_EXTRACTION, FALLBACK_PROVIDER)
 
 
 @pytest.fixture
@@ -127,6 +161,10 @@ async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseS
             "languages": ["EN", "es"],
             "locale": "en-GB",
             "currency": "GBP",
+            "max_pages": 12,
+            "max_total_pixels": 12_000_000,
+            "max_decompressed_bytes": 24_000_000,
+            "max_conversion_seconds": 17,
         },
     }
     snapshot["fingerprint"] = snapshot_fingerprint(snapshot)
@@ -194,6 +232,17 @@ async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseS
                     definition={
                         "provider_name": "mock",
                         "capabilities": ["ocr", "field_extraction"],
+                        "estimated_cost_cents": 0,
+                        "evaluated_quality_score": 0.95,
+                        "fallback_providers": [
+                            {
+                                "provider_name": FALLBACK_PROVIDER,
+                                "estimated_cost_cents": 1,
+                                "evaluated_quality_score": 0.8,
+                            }
+                        ],
+                        "budget_cents": 3,
+                        "min_quality": 0.85,
                     },
                 ),
                 PolicyVersion(
@@ -235,10 +284,25 @@ async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseS
         )
 
     assert resolved.provider_name == "mock"
+    assert [candidate.provider_name for candidate in resolved.provider_candidates] == [
+        "mock",
+        FALLBACK_PROVIDER,
+    ]
+    assert resolved.routing_policy.allowed_providers == ("mock", FALLBACK_PROVIDER)
+    assert resolved.routing_policy.budget_cents == 3
+    assert resolved.routing_policy.min_quality == 0.85
+    assert resolved.routing_policy.evaluated_quality_scores == {
+        "mock": 0.95,
+        FALLBACK_PROVIDER: 0.8,
+    }
     assert resolved.pipeline.rules_version == "custom-5"
     assert resolved.pipeline.languages == ("en", "es")
     assert resolved.pipeline.normalization.locale == "en-GB"
     assert resolved.pipeline.normalization.currency == "GBP"
+    assert resolved.pipeline.render_limits.max_pages == 12
+    assert resolved.pipeline.render_limits.max_total_pixels == 12_000_000
+    assert resolved.pipeline.render_limits.max_decompressed_bytes == 24_000_000
+    assert resolved.pipeline.render_limits.timeout_seconds == 17
     assert [field.key for field in resolved.pipeline.field_specs] == [
         "po_number",
         "lines",
@@ -250,3 +314,82 @@ async def test_resolves_pinned_schema_rules_languages_and_provider(db: DatabaseS
     assert resolved.pipeline.confidence_policy.field_min_confidence["lines.sku"] == 0.97
     assert resolved.instruction_reference == f"instruction:{INSTRUCTION}:v3"
     assert resolved.instructions is not None
+
+
+async def test_hosted_secret_is_resolved_only_for_extraction(monkeypatch) -> None:
+    class CountingSecretStore(MemorySecretStore):
+        resolve_calls = 0
+        unavailable = False
+
+        async def resolve(self, reference):
+            self.resolve_calls += 1
+            if self.unavailable:
+                raise SecretStoreUnavailableError("simulated credential service outage")
+            return await super().resolve(reference)
+
+    class HostedProvider:
+        @property
+        def name(self) -> str:
+            return "hosted-test"
+
+        async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+            del request
+            return ExtractionResult(provider=self.name, fields=())
+
+    secrets = CountingSecretStore()
+    reference = await secrets.put("orgs/test/providers/hosted-test/v1", "credential")
+    resolved = ResolvedRunConfig(
+        fingerprint="f" * 64,
+        provider_name="hosted-test",
+        provider_candidates=(
+            ResolvedProviderCandidate(
+                provider_name="hosted-test",
+                credential_reference=reference,
+                estimated_cost_cents=1,
+            ),
+        ),
+        routing_policy=RoutingPolicy(
+            allowed_providers=("hosted-test",),
+            preferred_order=("hosted-test",),
+            allow_third_party_processing=True,
+        ),
+        pipeline=canonical_sales_order_config(),
+        instructions=None,
+        instruction_reference=None,
+        credential_reference=reference,
+    )
+
+    async def verify(session, context, run):
+        del session, context, run
+        return {"fingerprint": "f" * 64}
+
+    async def load(session, context, run, *, snapshot):
+        del session, context, run, snapshot
+        return resolved
+
+    monkeypatch.setattr(run_config_module, "verify_run_config", verify)
+    monkeypatch.setattr(run_config_module, "load_resolved_run_config", load)
+    monkeypatch.setattr(
+        run_config_module,
+        "create_provider",
+        lambda capability, name, **runtime: HostedProvider(),
+    )
+
+    run = _run("f" * 64)
+    factory = ResolvedExecutorFactory(MemoryObjectStore(), secrets)
+    await factory(None, OrganizationContext(organization_id=ORG), run, "preprocessing")
+    await factory(None, OrganizationContext(organization_id=ORG), run, "normalizing")
+    assert secrets.resolve_calls == 0
+
+    await factory(None, OrganizationContext(organization_id=ORG), run, "extracting")
+    assert secrets.resolve_calls == 1
+
+    secrets.unavailable = True
+    with pytest.raises(StageExecutionError) as unavailable:
+        await factory(None, OrganizationContext(organization_id=ORG), run, "extracting")
+    assert unavailable.value.retryable is True
+
+    secrets.unavailable = False
+    await secrets.revoke(reference)
+    with pytest.raises(RunConfigError, match="missing or revoked"):
+        await factory(None, OrganizationContext(organization_id=ORG), run, "extracting")

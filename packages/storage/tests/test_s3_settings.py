@@ -1,8 +1,10 @@
 """Production configuration surface of the S3 adapter (STO-006)."""
 
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
-from soa_storage.s3 import S3Settings, encryption_args
+from soa_storage.s3 import S3ObjectStore, S3Settings, encryption_args
 
 
 def make(**overrides: object) -> S3Settings:
@@ -39,3 +41,16 @@ def test_invalid_modes_are_refused_at_construction() -> None:
 def test_path_style_is_configurable() -> None:
     assert make().force_path_style is True  # MinIO default
     assert make(force_path_style=False).force_path_style is False  # AWS virtual-hosted
+
+
+async def test_presigned_put_binds_the_exact_declared_content_length() -> None:
+    store = S3ObjectStore(make())
+    signed = await store.signed_upload_url(
+        "org/doc/original.pdf",
+        expires_in_seconds=60,
+        content_type="application/pdf",
+        size_bytes=42,
+        sha256="a" * 64,
+    )
+    signed_headers = parse_qs(urlparse(signed.url).query)["X-Amz-SignedHeaders"][0].split(";")
+    assert "content-length" in signed_headers

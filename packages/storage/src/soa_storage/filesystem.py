@@ -23,7 +23,7 @@ import os
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from soa_storage.store import (
     ChecksumMismatchError,
@@ -177,9 +177,22 @@ class FilesystemObjectStore:
     # -- signed URLs --------------------------------------------------------
 
     async def signed_upload_url(
-        self, key: str, *, expires_in_seconds: int, content_type: str
+        self,
+        key: str,
+        *,
+        expires_in_seconds: int,
+        content_type: str,
+        size_bytes: int,
+        sha256: str | None = None,
     ) -> SignedUrl:
-        return self._sign(key, method="PUT", expires_in_seconds=expires_in_seconds)
+        return self._sign(
+            key,
+            method="PUT",
+            expires_in_seconds=expires_in_seconds,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+        )
 
     async def signed_download_url(self, key: str, *, expires_in_seconds: int) -> SignedUrl:
         self._read_meta(key)  # raises ObjectNotFoundError if absent
@@ -188,8 +201,10 @@ class FilesystemObjectStore:
     async def abort_multipart(self, key: str, upload_id: str) -> None:
         return None
 
-    def verify_signed_url(self, url: str, *, now: datetime | None = None) -> tuple[str, str]:
-        """Validate a URL this adapter issued; returns ``(key, method)``.
+    def verify_signed_url(
+        self, url: str, *, now: datetime | None = None
+    ) -> tuple[str, str, str | None, int | None, str | None]:
+        """Return ``(key, method, content_type, size_bytes, sha256)``.
         Raises SignedUrlExpiredError past expiry, ValueError on tamper."""
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
@@ -199,21 +214,63 @@ class FilesystemObjectStore:
         expires_raw = params.get("expires", ["0"])[0]
         signature = params.get("signature", [""])[0]
         method = params.get("method", [""])[0]
-        expected = self._signature(key, method, expires_raw)
+        content_type = params.get("content_type", [""])[0] or None
+        size_raw = params.get("size_bytes", [""])[0]
+        try:
+            size_bytes = int(size_raw) if size_raw else None
+        except ValueError:
+            raise ValueError("signed URL contains an invalid byte length") from None
+        sha256 = params.get("sha256", [""])[0] or None
+        expected = self._signature(key, method, expires_raw, content_type, size_bytes, sha256)
         if not hmac.compare_digest(signature, expected):
             raise ValueError("signed URL failed verification")
         current = now or datetime.now(tz=UTC)
         if current.timestamp() > float(expires_raw):
             raise SignedUrlExpiredError(f"signed URL for {key!r} expired")
-        return key, method
+        return key, method, content_type, size_bytes, sha256
 
-    def _sign(self, key: str, *, method: str, expires_in_seconds: int) -> SignedUrl:
+    def _sign(
+        self,
+        key: str,
+        *,
+        method: str,
+        expires_in_seconds: int,
+        content_type: str | None = None,
+        size_bytes: int | None = None,
+        sha256: str | None = None,
+    ) -> SignedUrl:
         expires_at = datetime.now(tz=UTC) + timedelta(seconds=expires_in_seconds)
         expires_raw = str(expires_at.timestamp())
-        signature = self._signature(key, method, expires_raw)
-        url = f"{self._base_url}/{key}?method={method}&expires={expires_raw}&signature={signature}"
-        return SignedUrl(url=url, expires_at=expires_at, method=method)
+        signature = self._signature(key, method, expires_raw, content_type, size_bytes, sha256)
+        query = urlencode(
+            {
+                "method": method,
+                "expires": expires_raw,
+                **({"content_type": content_type} if content_type else {}),
+                **({"size_bytes": size_bytes} if size_bytes is not None else {}),
+                **({"sha256": sha256} if sha256 else {}),
+                "signature": signature,
+            }
+        )
+        url = f"{self._base_url}/{key}?{query}"
+        return SignedUrl(
+            url=url,
+            expires_at=expires_at,
+            method=method,
+            required_headers=({"X-SOA-Content-SHA256": sha256} if sha256 is not None else {}),
+        )
 
-    def _signature(self, key: str, method: str, expires_raw: str) -> str:
-        material = f"{method}\n{key}\n{expires_raw}".encode()
+    def _signature(
+        self,
+        key: str,
+        method: str,
+        expires_raw: str,
+        content_type: str | None,
+        size_bytes: int | None,
+        sha256: str | None,
+    ) -> str:
+        material = (
+            f"{method}\n{key}\n{expires_raw}\n{content_type or ''}\n"
+            f"{size_bytes if size_bytes is not None else ''}\n{sha256 or ''}"
+        ).encode()
         return hmac.new(self._secret, material, hashlib.sha256).hexdigest()

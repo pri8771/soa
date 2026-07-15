@@ -5,6 +5,7 @@ it. Production responses never expose stack traces or internal exception
 text; a correlation ID lets operators find the full detail in logs.
 """
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, status
@@ -16,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from soa_api.settings import ApiSettings
 
 CORRELATION_HEADER = "X-Request-ID"
+logger = logging.getLogger(__name__)
 
 _STATUS_CODES: dict[int, str] = {
     status.HTTP_400_BAD_REQUEST: "bad_request",
@@ -104,6 +106,19 @@ def register_error_handlers(app: FastAPI, settings: ApiSettings) -> None:
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        route = getattr(request.scope.get("route"), "path", "<unmatched>")
+        logger.error(
+            "unhandled API request exception",
+            extra={
+                # Exception handlers can run after the request ContextVar has
+                # unwound, so carry the request-state value explicitly.
+                "correlation_id": _correlation_id(request),
+                "http_method": request.method,
+                # Route templates are bounded and exclude customer path values.
+                "http_route": route,
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         # Staging is production-shaped: internals only leak in dev/test.
         if settings.is_development_like:
             message = f"{type(exc).__name__}: {exc}"

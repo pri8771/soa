@@ -41,12 +41,15 @@ from soa_db.catalog_match_policy import (
     override_to_evaluation_example,
     resolve_match,
 )
-from soa_db.catalog_matching import RecordFacts, facts_of
-from soa_db.catalogs import (
-    CatalogBindingRepository,
-    CatalogRecordRepository,
-    CatalogRepository,
-    resolve_catalog_version,
+from soa_db.catalog_matching import facts_of
+from soa_db.catalog_selections import (
+    CATALOG_FIELD_CONFIG,
+    BoundCatalog,
+    CatalogSelectionSource,
+    CatalogSelectionStatus,
+    reconcile_catalog_selection,
+    record_catalog_selection,
+    resolve_bound_catalog,
 )
 from soa_db.corrections import (
     FieldCorrectionRepository,
@@ -479,6 +482,8 @@ async def review_workspace(
         if run and run.stream_version_id
         else None,
         "config_fingerprint": run.config_fingerprint if run else None,
+        "contract_fingerprint": run.execution_fingerprint if run else None,
+        "runtime_fingerprint": run.runtime_fingerprint if run else None,
     }
     if stream is not None:
         context["stream_slug"] = stream.slug
@@ -627,6 +632,22 @@ async def correct_field(
     await session.flush()
 
     document = await DocumentRepository(session, authorized.org_context).get(task.document_id)
+    selected_value = normalized if normalized is not None else corrected_raw
+    if document is not None and body.field_key in CATALOG_FIELD_CONFIG:
+        await reconcile_catalog_selection(
+            session,
+            authorized.org_context,
+            stream_id=document.stream_id,
+            document_id=document.id,
+            run_id=task.run_id,
+            task_id=task.id,
+            field_key=body.field_key,
+            row_index=body.row_index,
+            value=selected_value,
+            as_of=document.received_at.date(),
+            selected_by=actor,
+            selection_source=CatalogSelectionSource.CORRECTION,
+        )
     revalidation = (
         await revalidate_run(session, authorized.org_context, document=document, run_id=task.run_id)
         if document is not None
@@ -650,62 +671,41 @@ async def correct_field(
 
 # --- Catalog candidate matching in review (CAT-010) ---
 
-#: Canonical fields the catalog matches, and the CAT-009 field type each
-#: resolves under. The server owns this mapping — the client only names
-#: the field it is editing.
-CATALOG_MATCHED_FIELDS: dict[str, str] = {
-    "customer_name": "customer",
-    "lines.sku": "material",
-}
-
-#: Which CAT-001 catalog type serves each match field type.
-_CATALOG_TYPE_FOR_FIELD_TYPE: dict[str, str] = {
-    "customer": "customers",
-    "ship_to": "customers",
-    "material": "products",
-    "uom": "units",
-    "generic": "custom",
-}
-
 
 def _match_field_type(field_key: str) -> str:
-    field_type = CATALOG_MATCHED_FIELDS.get(field_key)
-    if field_type is None:
+    config = CATALOG_FIELD_CONFIG.get(field_key)
+    if config is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"{field_key!r} is not a catalog-matched field; "
-                f"matched fields: {', '.join(sorted(CATALOG_MATCHED_FIELDS))}."
+                f"matched fields: {', '.join(sorted(CATALOG_FIELD_CONFIG))}."
             ),
         )
-    return field_type
+    return config.field_type
 
 
 async def _bound_catalog_records(
     session: DbSession, authorized: AuthorizedContext, document: Document, field_type: str
-) -> tuple[list[RecordFacts] | None, str | None]:
+) -> tuple[BoundCatalog | None, str | None]:
     """The records of the stream's bound catalog serving ``field_type``,
     or ``(None, reason)`` when the stream has nothing usable bound."""
-    catalog_type = _CATALOG_TYPE_FOR_FIELD_TYPE[field_type]
-    bindings = await CatalogBindingRepository(session, authorized.org_context).list_for_stream(
-        document.stream_id
+    catalog_type = next(
+        config.catalog_type
+        for config in CATALOG_FIELD_CONFIG.values()
+        if config.field_type == field_type
     )
-    catalog_repo = CatalogRepository(session, authorized.org_context)
-    binding = None
-    for candidate in bindings:
-        catalog = await catalog_repo.get(candidate.catalog_id)
-        if catalog is not None and catalog.catalog_type == catalog_type:
-            binding = candidate
-            break
-    if binding is None:
+    bound, error = await resolve_bound_catalog(
+        session,
+        authorized.org_context,
+        stream_id=document.stream_id,
+        catalog_type=catalog_type,
+    )
+    if error is not None:
+        return None, error
+    if bound is None:
         return None, f"The document's stream has no {catalog_type} catalog bound."
-    version = await resolve_catalog_version(session, authorized.org_context, binding=binding)
-    if version is None:
-        return None, "The bound catalog has no activated version yet."
-    records = await CatalogRecordRepository(session, authorized.org_context).list_for_version(
-        version.id
-    )
-    return [facts_of(record) for record in records], None
+    return bound, None
 
 
 def _picker_candidates(decision: MatchDecision) -> list[dict[str, Any]]:
@@ -755,14 +755,21 @@ async def catalog_candidates(
     (``available: false``), not treated as an error."""
     task, document = await _task_and_document(session, authorized, task_id)
     field_type = _match_field_type(field_key)
-    records, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
-    if records is None:
+    bound, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    if bound is None:
         return {"available": False, "reason": unavailable, "candidates": []}
-    decision = resolve_match(q, records, field_type=field_type, as_of=document.received_at.date())
+    decision = resolve_match(
+        q,
+        [facts_of(record) for record in bound.records],
+        field_type=field_type,
+        as_of=document.received_at.date(),
+    )
     return {
         "available": True,
         "field_type": field_type,
         "outcome": decision.outcome,
+        "catalog_id": str(bound.catalog.id),
+        "catalog_version_id": str(bound.version.id),
         "machine_selected_source_id": decision.selected_source_id,
         "reasons": list(decision.reasons),
         "candidates": _picker_candidates(decision),
@@ -819,9 +826,10 @@ async def select_catalog_record(
         )
 
     field_type = _match_field_type(body.field_key)
-    records, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
-    if records is None:
+    bound, unavailable = await _bound_catalog_records(session, authorized, document, field_type)
+    if bound is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=unavailable)
+    records = [facts_of(record) for record in bound.records]
 
     decision = resolve_match(
         body.query, records, field_type=field_type, as_of=document.received_at.date()
@@ -829,10 +837,11 @@ async def select_catalog_record(
     presented = decision.exact_candidates or decision.fuzzy_candidates
     top_source_id = decision.selected_source_id or (presented[0].source_id if presented else None)
 
-    chosen: RecordFacts | None = None
+    chosen = None
     if body.selected_source_id is not None:
         chosen = next(
-            (record for record in records if record.source_id == body.selected_source_id), None
+            (record for record in bound.records if record.source_id == body.selected_source_id),
+            None,
         )
         if chosen is None:
             raise HTTPException(
@@ -840,6 +849,14 @@ async def select_catalog_record(
                 detail=(
                     f"{body.selected_source_id!r} is not in the bound catalog version — "
                     "reload the candidates."
+                ),
+            )
+        if not facts_of(chosen).effective_on(document.received_at.date()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{body.selected_source_id!r} is not effective on the document date — "
+                    "choose an effective record."
                 ),
             )
 
@@ -857,6 +874,45 @@ async def select_catalog_record(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
     correction_payload: dict[str, Any] | None = None
+    fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
+        task.run_id
+    )
+    target = next(
+        (f for f in fields if f.field_key == body.field_key and f.row_index == body.row_index),
+        None,
+    )
+    previous = latest_corrections(
+        await FieldCorrectionRepository(session, authorized.org_context).list_for_run(task.run_id)
+    ).get((body.field_key, body.row_index))
+    if target is None and previous is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="That field does not exist on this run.",
+        )
+    previous_raw = (
+        previous.corrected_raw_value if previous else (target.raw_value if target else None)
+    )
+    matched_value: Any | None = (
+        (
+            previous.corrected_normalized_value
+            if previous.corrected_normalized_value is not None
+            else previous.corrected_raw_value
+        )
+        if previous is not None
+        else (
+            target.normalized_value
+            if target is not None and target.normalized_value is not None
+            else (target.raw_value if target is not None else None)
+        )
+    )
+    if chosen is None and body.query.strip() != str(matched_value or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "A no-match confirmation must be based on the field's current effective value; "
+                "reload the field before confirming it."
+            ),
+        )
     if chosen is not None:
         # The corrected value is the catalog's representation of the
         # record for this field: the source id for identifier fields,
@@ -865,26 +921,6 @@ async def select_catalog_record(
             chosen.source_id
             if CANONICAL_NORMALIZER_OVERRIDES.get(body.field_key) == "identifier"
             else chosen.display_name
-        )
-        fields = await ExtractedFieldRepository(session, authorized.org_context).list_for_run(
-            task.run_id
-        )
-        target = next(
-            (f for f in fields if f.field_key == body.field_key and f.row_index == body.row_index),
-            None,
-        )
-        previous = latest_corrections(
-            await FieldCorrectionRepository(session, authorized.org_context).list_for_run(
-                task.run_id
-            )
-        ).get((body.field_key, body.row_index))
-        if target is None and previous is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="That field does not exist on this run.",
-            )
-        previous_raw = (
-            previous.corrected_raw_value if previous else (target.raw_value if target else None)
         )
         normalized, normalization_error = normalize_correction(body.field_key, corrected_raw)
         correction = await record_correction(
@@ -915,6 +951,41 @@ async def select_catalog_record(
             "normalization_error": correction.normalization_error,
             "corrected_by": correction.corrected_by,
         }
+        matched_value = normalized if normalized is not None else corrected_raw
+
+    # A no-match confirmation is still a task edit and must invalidate a
+    # stale client version.  For a chosen record, this same bump accompanies
+    # the correction above.
+    task.updated_at = utcnow()
+    retained_decision = decision.to_record()
+    retained_decision.update(
+        {
+            "catalog_id": str(bound.catalog.id),
+            "catalog_version_id": str(bound.version.id),
+            "selected_record_id": str(chosen.id) if chosen is not None else None,
+        }
+    )
+    selection = await record_catalog_selection(
+        session,
+        authorized.org_context,
+        document_id=document.id,
+        run_id=task.run_id,
+        task_id=task.id,
+        field_key=body.field_key,
+        row_index=body.row_index,
+        status=(
+            CatalogSelectionStatus.SELECTED
+            if chosen is not None
+            else CatalogSelectionStatus.CONFIRMED_NO_MATCH
+        ),
+        selection_source=CatalogSelectionSource.REVIEWER,
+        catalog=bound.catalog,
+        version=bound.version,
+        record=chosen,
+        matched_value=matched_value,
+        selected_by=actor,
+        decision=retained_decision,
+    )
 
     await record_audit_event(
         session,
@@ -928,20 +999,32 @@ async def select_catalog_record(
             "field_key": body.field_key,
             "row_index": body.row_index,
             "selected_source_id": body.selected_source_id,
+            "catalog_id": str(bound.catalog.id),
+            "catalog_version_id": str(bound.version.id),
+            "catalog_record_id": str(chosen.id) if chosen is not None else None,
             "override": is_override,
-            "decision": decision.to_record(),
+            "decision": retained_decision,
             **({"evaluation_example": example} if example is not None else {}),
         },
     )
     await session.flush()
 
-    revalidation = (
-        await revalidate_run(session, authorized.org_context, document=document, run_id=task.run_id)
-        if chosen is not None
-        else None
+    revalidation = await revalidate_run(
+        session, authorized.org_context, document=document, run_id=task.run_id
     )
     return {
         "correction": correction_payload,
+        "selection": {
+            "id": str(selection.id),
+            "status": selection.status,
+            "catalog_id": str(selection.catalog_id),
+            "catalog_version_id": str(selection.catalog_version_id),
+            "catalog_record_id": (
+                str(selection.catalog_record_id) if selection.catalog_record_id else None
+            ),
+            "source_id": selection.source_id,
+            "display_name": selection.display_name,
+        },
         "task_version": task.version,
         "override": is_override,
         "revalidation": revalidation,

@@ -79,8 +79,9 @@ class StageExecutionError(Exception):
     """A stage failed. ``retryable`` drives the orchestrator's retry
     classification; the message must be display-safe."""
 
-    def __init__(self, safe_message: str, *, retryable: bool) -> None:
+    def __init__(self, safe_message: str, *, retryable: bool, cost_cents: int = 0) -> None:
         self.retryable = retryable
+        self.cost_cents = cost_cents
         super().__init__(safe_message)
 
 
@@ -93,7 +94,7 @@ ConfigVerifier = Callable[
     Awaitable[Mapping[str, Any]],
 ]
 ExecutorResolver = Callable[
-    [AsyncSession, OrganizationContext, ProcessingRun],
+    [AsyncSession, OrganizationContext, ProcessingRun, str],
     Awaitable[Mapping[str, StageExecutor]],
 ]
 
@@ -220,7 +221,9 @@ class Orchestrator:
                 executors = self._executors
                 if self._executor_resolver is not None:
                     try:
-                        executors = dict(await self._executor_resolver(session, context, run))
+                        executors = dict(
+                            await self._executor_resolver(session, context, run, stage)
+                        )
                     except ValueError as error:
                         raise StageExecutionError(str(error), retryable=False) from error
                 executor = executors.get(stage)
@@ -328,9 +331,11 @@ class Orchestrator:
         await fail_stage(
             session,
             stage_run=stage_run,
+            run=run,
             safe_error=str(error),
             failure_class=failure_class,
             latency_ms=latency_ms,
+            cost_cents=error.cost_cents,
         )
         if error.retryable and stage_run.attempt < self._max_stage_attempts:
             backoff = retry_backoff(stage_run.attempt).total_seconds()

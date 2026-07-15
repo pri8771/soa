@@ -1,10 +1,10 @@
-# Running SOA locally (no Docker required)
+# Running SOA locally (Docker optional)
 
 This is the fastest way to run the whole product on one machine and process a
 purchase order end to end — upload → extract → review → approve — using the
-built-in deterministic mock extractor. **No Docker, MinIO, LLM, or OCR
-required.** You need only Python 3.11, Node 22, pnpm, [uv](https://docs.astral.sh/uv/),
-and a local PostgreSQL.
+built-in deterministic mock extractor. **No Docker, MinIO, hosted model, or
+OCR engine is required.** You need Python 3.11, Node 22, pnpm,
+[uv](https://docs.astral.sh/uv/), and PostgreSQL.
 
 ## One-time setup
 
@@ -12,13 +12,23 @@ and a local PostgreSQL.
 make bootstrap          # install toolchains + copy .env
 ```
 
-**PostgreSQL.** Either use Docker (`make local-up` starts Postgres + MinIO), or
-run a native Postgres and create the app's role + database:
+**PostgreSQL.** Either use Docker (`make local-up` starts PostgreSQL, MinIO, and
+Mailpit), or run native PostgreSQL. The owner/migrator role applies DDL; API and
+worker use the separate non-superuser `soa_app` runtime role so local RLS and
+privilege behavior match production:
 
 ```bash
 psql -h 127.0.0.1 -p 5432 -d postgres -c "CREATE ROLE soa_dev LOGIN SUPERUSER PASSWORD 'soa_dev_password';"
 psql -h 127.0.0.1 -p 5432 -d postgres -c "CREATE DATABASE soa OWNER soa_dev;"
+psql -h 127.0.0.1 -p 5432 -d soa -c "CREATE ROLE soa_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'soa_app_password';"
+psql -h 127.0.0.1 -p 5432 -d soa -c "GRANT CONNECT ON DATABASE soa TO soa_app;"
 ```
+
+Those commands are one-time setup and will report that an object exists if
+repeated. The committed Compose bootstrap creates `soa_app` automatically.
+Never copy the development superuser pattern to a deployed environment: the
+reference deployment has a dedicated DDL migrator and strips elevated
+`cloudsqlsuperuser` membership from the runtime account in migration `0045`.
 
 Then build the schema and seed a ready-to-use demo tenant:
 
@@ -27,11 +37,16 @@ make migrate            # create tables
 make seed               # Northstar org + published process + active "uploads" stream
 ```
 
+`make migrate` reads `SOA_DATABASE_URL` (the owner/migrator URL). API, worker,
+and the development seed read their `SOA_API_DATABASE_URL` /
+`SOA_WORKER_DATABASE_URL` runtime URLs from `.env`.
+
 ## Run the stack (three terminals)
 
-The API and worker use **filesystem** object storage (local disk, shared
-between them) so you don't need MinIO. The env vars below select it and allow
-the browser origin.
+The API and worker use the same **filesystem** object store by default, so you
+do not need MinIO. `make dev` loads `.env`, applies those development defaults,
+starts all three services, and stops the group if a child exits. The three
+terminal form below is useful for debugging one service.
 
 **Terminal 1 — API:**
 ```bash
@@ -74,9 +89,26 @@ there is no login step.
 - The filesystem backend is **development-only**; settings validation refuses
   it in production (which uses S3/GCS).
 
+## Optional local services
+
+The default Compose profile starts PostgreSQL, MinIO, and Mailpit. Opt-in
+profiles add slower or more resource-intensive dependencies:
+
+```bash
+docker compose -f infrastructure/local/docker-compose.yml --profile scanner up -d --wait
+docker compose -f infrastructure/local/docker-compose.yml --profile telemetry up -d --wait
+```
+
+ClamAV is mandatory outside development/test. The local no-op scanner exists
+only to keep this fast path small; it must never be treated as malware-scan
+evidence.
+
 ## Optional: real extraction instead of the mock
 
-The pipeline defaults to the deterministic mock provider. To use a real model,
-run a local LLM (Ollama) or set a BYO key — see [`docs/LLM_PROVIDERS.md`](LLM_PROVIDERS.md).
-Wiring the provider router into the worker's pipeline (so per-stream provider
-policy is honored) is a follow-on; today the worker always uses the mock.
+The seeded stream pins the deterministic mock provider. To use a real model,
+run a local LLM (for example Ollama) or configure a hosted BYO credential, then
+publish a stream/provider-policy version that names that registered provider.
+The worker authenticates and executes the exact policy and credential pinned to
+the run; setting an environment variable registers an adapter but does not
+silently override a published stream. See
+[`LLM_PROVIDERS.md`](LLM_PROVIDERS.md).

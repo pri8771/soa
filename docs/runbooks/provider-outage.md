@@ -7,9 +7,10 @@ stalling the core processing pipeline.
 
 ## Detection
 
-- Provider error+timeout ratio elevated (the AIO-013 router's failover
-  telemetry; this signal is `pending:AIO-013` until per-stream routing
-  is wired).
+- All attempted configured providers are degraded/unreachable with no recent
+  success in the tenant-scoped `provider_runtime_metrics` facts. Check
+  consecutive failures, last attempt time, and fallback count in the provider
+  admin API.
 - Documents pile up in the processing/OCR stages; the backlog alert may
   fire alongside this one.
 
@@ -18,12 +19,16 @@ stalling the core processing pipeline.
 - Identify whether one provider or all are affected. The provider router
   (AIO-013) fails over between configured providers automatically; if a
   healthy provider exists, confirm traffic shifted to it.
-- If all configured providers are down, pause intake for affected
-  streams if possible so documents queue rather than fail terminally —
-  processing runs are resumable (PRC-003), so a paused pipeline recovers
+- If all configured providers are down, stop or scale down the affected worker
+  path through the deployment change procedure and, if necessary, disable the
+  corresponding ingress upstream. There is no generic per-stream pause button
+  to assume here. Leave durable jobs intact so bounded retry/replay can recover
   without data loss.
-- Local adapters (native PDF text AIO-002, Tesseract OCR AIO-004) do not
-  depend on a hosted provider; streams that can use them keep running.
+- Native PDF text and Tesseract recognition do not depend on a hosted
+  extraction provider, but they are not substitutes for structured
+  extraction. A full stream keeps running only when its published policy also
+  contains a healthy local/mock extraction candidate; otherwise recognized
+  inputs remain durably queued for recovery/replay.
 
 ## Recovery
 
@@ -46,6 +51,7 @@ stalling the core processing pipeline.
 ## Follow-up
 
 - Record the outage window and whether failover worked as designed.
-- If a single provider is a recurring single point of failure, prioritise
-  a second production adapter (blocked on OPEN-003/004 — owner provider
-  decisions).
+- If a single provider is a recurring single point of failure, evaluate a
+  second allowed candidate against the same corpus and contract. Publish it as
+  a bounded fallback only when quality, region, retention, cost, and outage
+  behavior pass their gates.

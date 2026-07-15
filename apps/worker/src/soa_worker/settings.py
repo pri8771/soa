@@ -37,6 +37,9 @@ class WorkerSettings(BaseServiceSettings):
 
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
+    max_concurrency: int = Field(default=1, ge=1, le=32)
+    queue_observation_interval_seconds: float = Field(default=15.0, gt=0)
+    lock_recovery_interval_seconds: float = Field(default=15.0, gt=0)
     #: Container liveness (REL-001). When set, the heartbeat loop touches
     #: this file every beat; ``python -m soa_worker.healthcheck`` fails if
     #: it is missing or older than heartbeat_interval times the staleness
@@ -46,11 +49,13 @@ class WorkerSettings(BaseServiceSettings):
 
     # Deprecated development fallback retained for environment compatibility.
     # Runtime extraction is selected from each run's pinned provider policy.
-    extraction_provider: str = "mock"
     export_destination_allowlist: tuple[str, ...] = ()
     #: HTTPS endpoint that receives transactional domain events. The event UUID
     #: is sent as Idempotency-Key so receivers can absorb retry duplicates.
     outbox_publish_url: str | None = None
+    #: HMAC key used to authenticate domain-event bodies to the receiver.
+    #: The receiver verifies ``X-SOA-Signature`` over timestamp + exact body.
+    outbox_signing_secret: SecretStr | None = None
     #: Optional local OpenAI-compatible extraction endpoint (AIO-007).
     #: Unset (the default) means the profile never registers. Point this
     #: at Ollama/vLLM/llama.cpp; see docs/LLM_PROVIDERS.md.
@@ -63,11 +68,21 @@ class WorkerSettings(BaseServiceSettings):
     #: overridable for pinning or a proxy.
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-sonnet-4-5"
+    anthropic_pricing_reference: str = Field(
+        default="soa-rate-card-v1:anthropic:claude-sonnet-4-5", min_length=1, max_length=200
+    )
+    anthropic_input_cents_per_million: int = Field(default=300, ge=0)
+    anthropic_output_cents_per_million: int = Field(default=1500, ge=0)
 
     #: Optional BYO hosted Gemini key (AIO-009 — native generateContent
     #: adapter). Fail-closed like the others: unset means no such provider.
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-2.0-flash"
+    gemini_pricing_reference: str = Field(
+        default="soa-rate-card-v1:google:gemini-2.0-flash", min_length=1, max_length=200
+    )
+    gemini_input_cents_per_million: int = Field(default=10, ge=0)
+    gemini_output_cents_per_million: int = Field(default=40, ge=0)
 
     #: Optional BYO hosted OpenAI-compatible key (OpenAI, or Gemini's
     #: OpenAI-compatible endpoint). Requires both a key and an endpoint;
@@ -78,6 +93,11 @@ class WorkerSettings(BaseServiceSettings):
     hosted_openai_endpoint: str | None = None
     hosted_openai_model: str = "gpt-4o"
     hosted_openai_provider_name: str = "hosted-openai-compatible"
+    hosted_openai_pricing_reference: str = Field(
+        default="soa-rate-card-v1:openai-compatible:gpt-4o", min_length=1, max_length=200
+    )
+    hosted_openai_input_cents_per_million: int = Field(default=250, ge=0)
+    hosted_openai_output_cents_per_million: int = Field(default=1000, ge=0)
     #: The processing region the hosted OpenAI-compatible provider runs
     #: in — declared honestly so tenant data policy is enforced against
     #: the truth (a lowercase region slug, e.g. "us", "eu").
@@ -85,6 +105,11 @@ class WorkerSettings(BaseServiceSettings):
 
     @model_validator(mode="after")
     def _validate_runtime_dependencies(self) -> Self:
+        if any(
+            not host.strip() or "*" in host or "://" in host or "/" in host
+            for host in self.export_destination_allowlist
+        ):
+            raise ValueError("export_destination_allowlist must contain exact hostnames only")
         if self.is_production:
             problems: list[str] = []
             if self.storage_backend == "filesystem":
@@ -100,6 +125,11 @@ class WorkerSettings(BaseServiceSettings):
                 problems.append("production requires an export_destination_allowlist")
             if not self.outbox_publish_url or not self.outbox_publish_url.startswith("https://"):
                 problems.append("production requires an HTTPS outbox_publish_url")
+            if (
+                self.outbox_signing_secret is None
+                or len(self.outbox_signing_secret.get_secret_value()) < 32
+            ):
+                problems.append("production requires an outbox_signing_secret of 32+ characters")
             if problems:
                 raise ValueError("; ".join(problems))
         return self

@@ -20,6 +20,11 @@ export const securityHeaders = {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data: https:",
     "connect-src 'self' https: http://localhost:8000 http://127.0.0.1:8000",
+    // Firebase Auth initializes a hidden helper iframe on authDomain. A
+    // custom Firebase Hosting authDomain is same-origin; these two bounded
+    // fallbacks cover the standard Firebase domains without allowing
+    // arbitrary framing.
+    "frame-src 'self' https://*.firebaseapp.com https://*.web.app",
     "font-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -30,6 +35,11 @@ export const securityHeaders = {
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  // Firebase popup auth needs the opener relationship long enough to
+  // complete its handshake; this still isolates unrelated top-level sites.
+  "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+  "Cross-Origin-Resource-Policy": "same-origin",
 };
 
 export default defineConfig({
@@ -39,6 +49,13 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
+          // The Firebase SDK is needed only by the selected Firebase auth
+          // mode. Keep its dynamically imported graph out of the initial
+          // provider-neutral bundle so OIDC and public pages do not pay the
+          // download/parse cost.
+          if (id.includes("/node_modules/firebase/") || id.includes("/node_modules/@firebase/")) {
+            return "vendor-firebase";
+          }
           if (id.includes("@tanstack")) return "vendor-tanstack";
           if (
             id.includes("/node_modules/react/") ||

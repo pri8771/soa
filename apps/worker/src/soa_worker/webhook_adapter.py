@@ -7,10 +7,15 @@ receiver can prove signature verification end to end before any real
 payload flows.
 """
 
-import json
-
 import httpx
 
+from soa_integrations import (
+    ConnectionTestRequest,
+    DestinationRefusedError,
+    capabilities_for,
+    validate_destination,
+)
+from soa_integrations import test_connection as run_connection_test
 from soa_worker.erp_adapter import (
     AdapterCapabilities,
     AdapterDeliveryRequest,
@@ -19,40 +24,39 @@ from soa_worker.erp_adapter import (
     ConnectionTestResult,
     register_adapter,
 )
-from soa_worker.webhook import DestinationRefusedError, deliver_webhook, validate_destination
+from soa_worker.webhook import deliver_webhook
 
 
 class WebhookAdapter:
     slug = "webhook"
 
     def capabilities(self) -> AdapterCapabilities:
+        shared = capabilities_for(self.slug)
         return AdapterCapabilities(
-            supports_connection_test=True,
-            supports_health_check=True,
-            idempotency_mechanism="X-SOA-Idempotency-Key header (business key)",
+            supports_connection_test=shared.supports_connection_test,
+            supports_health_check=shared.supports_health_check,
+            idempotency_mechanism=shared.idempotency_mechanism,
             formats=("json",),
+            production_ready=shared.production_ready,
         )
 
     async def test_connection(
         self, client: httpx.AsyncClient, request: AdapterDeliveryRequest
     ) -> ConnectionTestResult:
         """A signed PING — destination policy enforced, never an order."""
-        ping = AdapterDeliveryRequest(
-            url=request.url,
-            body=json.dumps({"type": "soa.connection_test"}).encode("utf-8"),
-            secret=request.secret,
-            business_key=f"connection-test:{request.business_key}",
-            attempt_number=1,
-            timestamp=request.timestamp,
-            allowlist=request.allowlist,
-            resolve=request.resolve,
+        result = await run_connection_test(
+            client,
+            self.slug,
+            ConnectionTestRequest(
+                url=request.url,
+                secret=request.secret,
+                business_key=request.business_key,
+                timestamp=request.timestamp,
+                allowlist=request.allowlist,
+                resolve=request.resolve,
+            ),
         )
-        result = await self.deliver(client, ping)
-        if result.outcome == "delivered":
-            return ConnectionTestResult(ok=True, detail="receiver accepted a signed test event")
-        return ConnectionTestResult(
-            ok=False, detail=result.safe_error or "receiver did not accept the test event"
-        )
+        return ConnectionTestResult(ok=result.ok, detail=result.detail)
 
     async def deliver(
         self, client: httpx.AsyncClient, request: AdapterDeliveryRequest
@@ -95,6 +99,8 @@ class WebhookAdapter:
         test = await self.test_connection(client, request)
         if test.ok:
             return AdapterHealth(status="ok", detail=test.detail)
+        if "reached" in test.detail:
+            return AdapterHealth(status="unreachable", detail=test.detail)
         return AdapterHealth(status="degraded", detail=test.detail)
 
 

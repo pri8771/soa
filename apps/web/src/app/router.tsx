@@ -7,9 +7,9 @@ import {
 } from "@tanstack/react-router";
 import { lazy, Suspense, type ComponentType } from "react";
 
+import { RequireAuthentication } from "../auth/AuthContext";
 import { AppLayout } from "../screens/AppLayout";
 import { NotFound } from "../screens/NotFound";
-import { makePlaceholderScreen } from "../screens/Placeholder";
 
 function lazyScreen(loader: () => Promise<{ default: ComponentType }>) {
   const Screen = lazy(loader);
@@ -23,12 +23,25 @@ function lazyScreen(loader: () => Promise<{ default: ComponentType }>) {
 }
 
 const Home = lazyScreen(() => import("../screens/Home").then(({ Home }) => ({ default: Home })));
+const Login = lazyScreen(() =>
+  import("../screens/Login").then(({ Login }) => ({ default: Login })),
+);
 const Workbench = lazyScreen(() =>
   import("../screens/Workbench").then(({ Workbench }) => ({ default: Workbench })),
 );
 const SelectOrganization = lazyScreen(() =>
   import("../screens/SelectOrganization").then(({ SelectOrganization }) => ({
     default: SelectOrganization,
+  })),
+);
+const CreateOrganization = lazyScreen(() =>
+  import("../screens/CreateOrganization").then(({ CreateOrganization }) => ({
+    default: CreateOrganization,
+  })),
+);
+const AcceptInvitation = lazyScreen(() =>
+  import("../screens/AcceptInvitation").then(({ AcceptInvitation }) => ({
+    default: AcceptInvitation,
   })),
 );
 const JobsQueue = lazyScreen(() =>
@@ -118,6 +131,9 @@ const QualityDashboard = lazyScreen(() =>
 const Simulation = lazyScreen(() =>
   import("../screens/Simulation").then(({ Simulation }) => ({ default: Simulation })),
 );
+const Settings = lazyScreen(() =>
+  import("../screens/Settings").then(({ Settings }) => ({ default: Settings })),
+);
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -130,33 +146,61 @@ const indexRoute = createRoute({
   component: Home,
 });
 
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login",
+  component: Login,
+});
+
 const workbenchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workbench",
-  component: Workbench,
+  component: () => (
+    <RequireAuthentication>
+      <Workbench />
+    </RequireAuthentication>
+  ),
 });
 
 const selectOrganizationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/select-organization",
-  component: SelectOrganization,
+  component: () => (
+    <RequireAuthentication>
+      <SelectOrganization />
+    </RequireAuthentication>
+  ),
+});
+
+const createOrganizationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/create-organization",
+  component: () => (
+    <RequireAuthentication>
+      <CreateOrganization />
+    </RequireAuthentication>
+  ),
+});
+
+const acceptInvitationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/accept-invitation",
+  component: () => (
+    <RequireAuthentication>
+      <AcceptInvitation />
+    </RequireAuthentication>
+  ),
 });
 
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/$organizationSlug",
-  component: AppLayout,
+  component: () => (
+    <RequireAuthentication>
+      <AppLayout />
+    </RequireAuthentication>
+  ),
 });
-
-// Area screens: placeholders until their owning epics land (see Placeholder).
-// The generic keeps each path a literal type so router links stay type-safe.
-function areaRoute<const P extends string>(path: P, title: string, epic: string) {
-  return createRoute({
-    getParentRoute: () => appRoute,
-    path,
-    component: makePlaceholderScreen(title, epic),
-  });
-}
 
 const jobsRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -308,10 +352,19 @@ const auditRoute = createRoute({
   component: AuditTrail,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "settings",
+  component: Settings,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  loginRoute,
   workbenchRoute,
   selectOrganizationRoute,
+  createOrganizationRoute,
+  acceptInvitationRoute,
   appRoute.addChildren([
     operationsRoute,
     gettingStartedRoute,
@@ -338,7 +391,7 @@ const routeTree = rootRoute.addChildren([
     qualityRoute,
     costsRoute,
     auditRoute,
-    areaRoute("settings", "Settings", "TEN/SEC"),
+    settingsRoute,
   ]),
 ]);
 

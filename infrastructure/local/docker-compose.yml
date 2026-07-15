@@ -23,6 +23,7 @@ services:
       - "${SOA_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U soa_dev -d soa"]
       interval: 3s

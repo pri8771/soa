@@ -30,6 +30,7 @@ _SENSITIVE_KEY_PATTERN = re.compile(
 )
 
 _correlation_id: ContextVar[str | None] = ContextVar("soa_correlation_id", default=None)
+_CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,64}\Z")
 
 # Attributes present on every LogRecord; anything else was passed via extra=.
 _STANDARD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None)).keys()) | {
@@ -54,7 +55,14 @@ def set_correlation_id(correlation_id: str | None) -> None:
 @contextmanager
 def correlation_context(correlation_id: str | None = None) -> Iterator[str]:
     """Bind a correlation ID for the duration of a request or job."""
-    resolved = correlation_id or new_correlation_id()
+    # The header is untrusted and is echoed to logs, traces, responses, and
+    # durable job rows. Restrict it to a small opaque token; values that could
+    # smuggle customer text, credentials, or control characters are replaced.
+    resolved = (
+        correlation_id
+        if correlation_id is not None and _CORRELATION_ID_PATTERN.fullmatch(correlation_id)
+        else new_correlation_id()
+    )
     token = _correlation_id.set(resolved)
     try:
         yield resolved
@@ -103,9 +111,12 @@ class JsonFormatter(logging.Formatter):
         if extras:
             payload.update(redact_mapping(extras))
         if record.exc_info and record.exc_info[0] is not None:
+            # Exception messages are an untrusted boundary: provider SDKs,
+            # parsers, and database drivers may quote credentials or customer
+            # document values. Aggregate by type and correlation ID; inspect
+            # the safe domain/audit record for operator-facing detail.
             payload["exception"] = {
                 "type": record.exc_info[0].__name__,
-                "message": str(record.exc_info[1]),
             }
         return json.dumps(payload, default=str)
 

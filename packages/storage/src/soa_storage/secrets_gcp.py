@@ -29,6 +29,7 @@ Semantics mapped onto Secret Manager:
 """
 
 import hashlib
+import logging
 from typing import Any
 
 from soa_config import (
@@ -38,11 +39,13 @@ from soa_config import (
     SecretReference,
     SecretStore,
     SecretStoreError,
+    SecretStoreUnavailableError,
 )
 
 __all__ = ["GcpSecretManagerStore", "build_secret_store"]
 
 _PROVIDER = "gcp-secret-manager"
+logger = logging.getLogger(__name__)
 
 
 def _secret_id(name: str) -> str:
@@ -107,9 +110,28 @@ class GcpSecretManagerStore:
             raise SecretStoreError(
                 f"secret {name!r} already exists — rotation uses a new name"
             ) from None
-        await client.add_secret_version(
-            request={"parent": secret.name, "payload": {"data": value.encode("utf-8")}}
-        )
+        except (gcp_exceptions.GoogleAPICallError, TimeoutError) as error:
+            raise SecretStoreUnavailableError(
+                "GCP Secret Manager is temporarily unavailable"
+            ) from error
+        try:
+            await client.add_secret_version(
+                request={"parent": secret.name, "payload": {"data": value.encode("utf-8")}}
+            )
+        except (gcp_exceptions.GoogleAPICallError, TimeoutError) as error:
+            # create + add-version is not atomic. Remove the new container on
+            # failure so a retry does not hit AlreadyExists and strand a
+            # partially created tenant secret.
+            try:
+                await client.delete_secret(request={"name": secret.name})
+            except (gcp_exceptions.GoogleAPICallError, TimeoutError):
+                logger.exception(
+                    "could not compensate failed GCP secret version creation",
+                    extra={"secret_id": _secret_id(name)},
+                )
+            raise SecretStoreUnavailableError(
+                "GCP Secret Manager is temporarily unavailable"
+            ) from error
         return reference
 
     async def resolve(self, reference: SecretReference) -> str:
@@ -126,6 +148,10 @@ class GcpSecretManagerStore:
             # A disabled/destroyed latest version — treat as not found; a
             # revoked secret must never resolve.
             raise SecretNotFoundError(f"no live secret behind {reference}") from None
+        except (gcp_exceptions.GoogleAPICallError, TimeoutError) as error:
+            raise SecretStoreUnavailableError(
+                "GCP Secret Manager is temporarily unavailable"
+            ) from error
         return str(response.payload.data.decode("utf-8"))
 
     async def revoke(self, reference: SecretReference) -> None:
@@ -137,6 +163,10 @@ class GcpSecretManagerStore:
             await client.delete_secret(request={"name": self._secret_path(reference.name)})
         except gcp_exceptions.NotFound:
             return  # idempotent: already gone
+        except (gcp_exceptions.GoogleAPICallError, TimeoutError) as error:
+            raise SecretStoreUnavailableError(
+                "GCP Secret Manager is temporarily unavailable"
+            ) from error
 
 
 def build_secret_store(

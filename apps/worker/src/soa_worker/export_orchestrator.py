@@ -1,38 +1,39 @@
-"""Export execution (EXP-008, worker side).
+"""Durable export delivery with short database transactions.
 
-Runs one export job end to end: load the APPROVED canonical payload
-(the immutable CAN-003 row — nothing is ever re-extracted or re-mapped
-from raw data), execute the PINNED mapping version, store the export
-artifact, deliver the signed webhook, record the attempt, and move the
-job and the document.
+One export intent pins an approved canonical payload, mapping version,
+integration, and business idempotency key. Database work is split into a
+prepare claim, immutable artifact registration, and result finalization; cloud
+secret resolution, object storage, DNS/TLS, and receiver latency happen with
+no SQL transaction or pool connection held.
 
-Exactly-once business intent: a job that already settled
-(succeeded/cancelled/failed_terminal) is a no-op — no new attempt, no
-new request. Retries and operator replays re-enter through the state
-machine and always carry the same business key and the same payload.
-
-The webhook body IS the stored JSON export artifact byte for byte, so
-what an operator downloads is exactly what the receiver was sent.
+The artifact body uses the export job's durable creation time, not an attempt
+timestamp. Retries therefore send byte-identical content even on another day.
+The webhook signature still uses the caller-supplied attempt timestamp.
 """
 
 import uuid
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
+from typing import Any
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import soa_worker.erp_rest_adapters
 import soa_worker.quickbooks_adapter
 import soa_worker.webhook_adapter
-from soa_canonical.export_encoding import ExportMetadata
+from soa_canonical.export_encoding import ExportMetadata, encode_json_export
 from soa_canonical.mapping_engine import (
     MappingDefinitionError,
     MappingExecutionError,
     execute_mapping,
 )
-from soa_config import SecretNotFoundError, SecretStore
+from soa_config import SecretNotFoundError, SecretReference, SecretStore
+from soa_db import DatabaseSessions
+from soa_db.artifacts import Artifact, ArtifactKind, create_artifact
 from soa_db.canonical_payloads import CanonicalPayloadRepository
 from soa_db.documents import Document, DocumentRepository, DocumentState, transition_document
 from soa_db.exports import (
@@ -43,23 +44,23 @@ from soa_db.exports import (
     transition_export_job,
 )
 from soa_db.integrations import (
+    IntegrationCredentialRepository,
     IntegrationRepository,
+    IntegrationStatus,
     MappingProfileVersionRepository,
-    credential_secret_for_delivery,
 )
 from soa_db.repository import OrganizationContext
-from soa_storage import ObjectStore
+from soa_db.tenant_guard import bind_tenant
+from soa_storage import ObjectStore, sha256_hex
+from soa_storage.keys import artifact_key
 from soa_worker.erp_adapter import (
     AdapterDeliveryRequest,
     UnknownAdapterError,
     resolve_adapter,
 )
-from soa_worker.export_artifacts import store_export_artifact
+from soa_worker.export_artifacts import ExportArtifactMismatchError
 
-# Importing the adapter modules above registers their destination adapters
-# (webhook, quickbooks_online, netsuite, microsoft_dynamics365, sap_s4hana).
-# They are referenced here so the side-effect imports are unambiguously
-# "used" — avoiding both F401 and RUF100 across ruff versions.
+# Importing the modules registers every shipped destination adapter.
 _REGISTERED_ADAPTER_MODULES = (
     soa_worker.erp_rest_adapters,
     soa_worker.quickbooks_adapter,
@@ -81,6 +82,25 @@ class ExportExecutionResult:
     job_state: str
     attempt_number: int | None = None
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedExport:
+    job_id: uuid.UUID
+    document_id: uuid.UUID
+    run_id: uuid.UUID
+    business_key: str
+    expected_attempt_number: int
+    job_created_at: datetime
+    integration_slug: str
+    integration_type: str
+    endpoint_url: str
+    credential_reference: SecretReference
+    mapping_version_number: int
+    mapping_definition: dict[str, Any]
+    target_schema: dict[str, Any]
+    schema_version: str
+    canonical_payload: dict[str, Any]
 
 
 async def _fail_terminal(
@@ -108,11 +128,273 @@ async def _fail_terminal(
             reason=reason[:500],
             actor_id=ACTOR,
         )
-    return ExportExecutionResult(outcome="terminal_error", job_state=job.state, detail=reason)
+    return ExportExecutionResult("terminal_error", job.state, detail=reason)
+
+
+async def _prepare_export(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    export_job_id: uuid.UUID,
+) -> _PreparedExport | ExportExecutionResult:
+    job = await ExportJobRepository(session, context).get(export_job_id, for_update=True)
+    if job is None:
+        raise ValueError(f"export job {export_job_id} does not exist in this organization")
+    if job.state in _SETTLED:
+        return ExportExecutionResult("skipped", job.state)
+
+    document = await DocumentRepository(session, context).get(job.document_id)
+    integration = await IntegrationRepository(session, context).get(job.integration_id)
+    mapping = await MappingProfileVersionRepository(session, context).get(job.mapping_version_id)
+    payload = await CanonicalPayloadRepository(session, context).get(job.canonical_payload_id)
+
+    if job.state != ExportJobState.IN_PROGRESS.value:
+        await transition_export_job(
+            session,
+            context,
+            job=job,
+            to_state=ExportJobState.IN_PROGRESS,
+            actor_id=ACTOR,
+        )
+    if document is not None and document.state == DocumentState.APPROVED.value:
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.EXPORTING,
+            actor_id=ACTOR,
+        )
+
+    if integration is None or mapping is None or payload is None:
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason="export prerequisites are gone (integration, mapping, or payload)",
+        )
+    if integration.status != IntegrationStatus.ACTIVE:
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason=f"integration is {integration.status}; only active integrations may deliver",
+        )
+    if not integration.endpoint_url or integration.credential_id is None:
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason="integration has no endpoint or no live credential",
+        )
+    credential = await IntegrationCredentialRepository(session, context).get(
+        integration.credential_id
+    )
+    if credential is None or credential.revoked_at is not None:
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason="integration has no endpoint or no live credential",
+        )
+    try:
+        credential_reference = SecretReference.parse(credential.secret_reference)
+    except ValueError:
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason="integration credential reference is invalid",
+        )
+
+    return _PreparedExport(
+        job_id=job.id,
+        document_id=job.document_id,
+        run_id=job.run_id,
+        business_key=job.business_key,
+        expected_attempt_number=job.attempt_count + 1,
+        job_created_at=job.created_at,
+        integration_slug=integration.slug,
+        integration_type=integration.integration_type,
+        endpoint_url=integration.endpoint_url,
+        credential_reference=credential_reference,
+        mapping_version_number=mapping.version_number,
+        mapping_definition=deepcopy(mapping.definition),
+        target_schema=deepcopy(mapping.target_schema),
+        schema_version=payload.schema_version,
+        canonical_payload=deepcopy(payload.payload),
+    )
+
+
+async def _persist_terminal(
+    db: DatabaseSessions,
+    context: OrganizationContext,
+    *,
+    export_job_id: uuid.UUID,
+    reason: str,
+) -> ExportExecutionResult:
+    async with db.session_scope() as session:
+        await bind_tenant(session, context.organization_id)
+        job = await ExportJobRepository(session, context).get(export_job_id, for_update=True)
+        if job is None:
+            raise ValueError("export job disappeared while recording a failure")
+        if job.state == ExportJobState.SUCCEEDED.value:
+            return ExportExecutionResult("skipped", job.state)
+        if job.state == ExportJobState.FAILED_TERMINAL.value:
+            return ExportExecutionResult("terminal_error", job.state, detail=job.last_error)
+        document = await DocumentRepository(session, context).get(job.document_id)
+        return await _fail_terminal(
+            session,
+            context,
+            job=job,
+            document=document,
+            reason=reason[:500],
+        )
+
+
+async def _persist_export_artifact(
+    db: DatabaseSessions,
+    context: OrganizationContext,
+    prepared: _PreparedExport,
+    *,
+    body: bytes,
+) -> tuple[str, str]:
+    """Register one stable object coordinate before storage I/O.
+
+    If storage fails after this short commit, retry reconstructs the same body
+    from immutable pins, finds the same row, and repairs the same object key.
+    """
+
+    digest = sha256_hex(body)
+    stage = f"export:{prepared.job_id}:json"
+    async with db.session_scope() as session:
+        await bind_tenant(session, context.organization_id)
+        existing = (
+            (
+                await session.execute(
+                    select(Artifact).where(
+                        Artifact.organization_id == context.organization_id,
+                        Artifact.document_id == prepared.document_id,
+                        Artifact.kind == ArtifactKind.EXPORT_PAYLOAD.value,
+                        Artifact.produced_by_stage == stage,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            if existing.sha256 != digest or existing.size_bytes != len(body):
+                raise ExportArtifactMismatchError(prepared.job_id, "json")
+            return existing.object_key, digest
+        key = artifact_key(
+            context.organization_id,
+            prepared.document_id,
+            kind="export_payload",
+            filename=f"{prepared.business_key.replace(':', '-')}.json",
+        )
+        await create_artifact(
+            session,
+            context,
+            document_id=prepared.document_id,
+            kind=ArtifactKind.EXPORT_PAYLOAD,
+            object_key=key,
+            sha256=digest,
+            size_bytes=len(body),
+            content_type="application/json",
+            produced_by_run_id=prepared.run_id,
+            produced_by_stage=stage,
+            actor_id=ACTOR,
+        )
+        return key, digest
+
+
+async def _finalize_delivery(
+    db: DatabaseSessions,
+    context: OrganizationContext,
+    prepared: _PreparedExport,
+    *,
+    outcome: str,
+    response_status: int | None,
+    safe_error: str | None,
+    request_sha256: str,
+) -> ExportExecutionResult:
+    async with db.session_scope() as session:
+        await bind_tenant(session, context.organization_id)
+        job = await ExportJobRepository(session, context).get(prepared.job_id, for_update=True)
+        if job is None:
+            raise ValueError("export job disappeared during delivery")
+        if job.state in _SETTLED:
+            return ExportExecutionResult("skipped", job.state)
+        if (
+            job.state != ExportJobState.IN_PROGRESS.value
+            or job.attempt_count + 1 != prepared.expected_attempt_number
+        ):
+            raise ValueError("export delivery claim is stale")
+        document = await DocumentRepository(session, context).get(job.document_id)
+        attempt = await record_delivery_attempt(
+            session,
+            context,
+            job=job,
+            outcome=outcome,
+            response_status=response_status,
+            safe_error=safe_error,
+            request_sha256=request_sha256,
+        )
+        if outcome == "delivered":
+            await transition_export_job(
+                session,
+                context,
+                job=job,
+                to_state=ExportJobState.SUCCEEDED,
+                actor_id=ACTOR,
+            )
+            if document is not None and document.state == DocumentState.EXPORTING.value:
+                await transition_document(
+                    session,
+                    context,
+                    document=document,
+                    to_state=DocumentState.COMPLETED,
+                    reason="export delivered",
+                    actor_id=ACTOR,
+                )
+        elif outcome == "retryable_error":
+            await transition_export_job(
+                session,
+                context,
+                job=job,
+                to_state=ExportJobState.FAILED_RETRYABLE,
+                actor_id=ACTOR,
+                reason=safe_error,
+            )
+        else:
+            failed = await _fail_terminal(
+                session,
+                context,
+                job=job,
+                document=document,
+                reason=safe_error or "receiver rejected the delivery",
+            )
+            return ExportExecutionResult(
+                failed.outcome,
+                failed.job_state,
+                attempt_number=attempt.attempt_number,
+                detail=failed.detail,
+            )
+        return ExportExecutionResult(
+            outcome,
+            job.state,
+            attempt_number=attempt.attempt_number,
+            detail=safe_error,
+        )
 
 
 async def execute_export(
-    session: AsyncSession,
+    db: DatabaseSessions,
     store: ObjectStore,
     context: OrganizationContext,
     *,
@@ -123,156 +405,100 @@ async def execute_export(
     secret_store: SecretStore,
     resolve: Callable[[str], list[str]] | None = None,
 ) -> ExportExecutionResult:
-    """One delivery pass over an export job. ``timestamp`` is the unix
-    time the caller stamps on the signature (injected for determinism)."""
-    job = await ExportJobRepository(session, context).get(export_job_id)
-    if job is None:
-        raise ValueError(f"export job {export_job_id} does not exist in this organization")
-    if job.state in _SETTLED:
-        # Exactly-once: settled intent is never re-delivered implicitly.
-        return ExportExecutionResult(outcome="skipped", job_state=job.state)
+    """Execute one delivery pass without holding SQL across external I/O."""
 
-    document = await DocumentRepository(session, context).get(job.document_id)
-    integration = await IntegrationRepository(session, context).get(job.integration_id)
-    mapping = await MappingProfileVersionRepository(session, context).get(job.mapping_version_id)
-    payload_row = await CanonicalPayloadRepository(session, context).get(job.canonical_payload_id)
+    async with db.session_scope() as session:
+        await bind_tenant(session, context.organization_id)
+        prepared = await _prepare_export(session, context, export_job_id=export_job_id)
+    if isinstance(prepared, ExportExecutionResult):
+        return prepared
 
-    await transition_export_job(
-        session, context, job=job, to_state=ExportJobState.IN_PROGRESS, actor_id=ACTOR
-    )
-    if document is not None and document.state == DocumentState.APPROVED.value:
-        await transition_document(
-            session,
-            context,
-            document=document,
-            to_state=DocumentState.EXPORTING,
-            reason=None,
-            actor_id=ACTOR,
-        )
-
-    if integration is None or mapping is None or payload_row is None:
-        return await _fail_terminal(
-            session,
-            context,
-            job=job,
-            document=document,
-            reason="export prerequisites are gone (integration, mapping, or payload)",
-        )
     try:
-        secret = await credential_secret_for_delivery(
-            session, context, integration=integration, secret_store=secret_store
-        )
-    except SecretNotFoundError as error:
-        # The row references a value the store no longer has — an
-        # inconsistency an operator must fix by re-setting the
-        # credential; retrying cannot repair it.
-        return await _fail_terminal(
-            session, context, job=job, document=document, reason=str(error)[:500]
-        )
-    if not integration.endpoint_url or secret is None:
-        return await _fail_terminal(
-            session,
+        secret = await secret_store.resolve(prepared.credential_reference)
+    except SecretNotFoundError:
+        return await _persist_terminal(
+            db,
             context,
-            job=job,
-            document=document,
-            reason="integration has no endpoint or no live credential",
+            export_job_id=prepared.job_id,
+            reason="integration credential is missing or revoked; it must be re-set",
         )
 
-    # Map the STORED approved payload under the PINNED mapping version.
     try:
         mapped = execute_mapping(
-            mapping.definition, payload_row.payload, target_schema=mapping.target_schema or None
+            prepared.mapping_definition,
+            prepared.canonical_payload,
+            target_schema=prepared.target_schema or None,
         )
     except (MappingDefinitionError, MappingExecutionError) as error:
-        return await _fail_terminal(
-            session, context, job=job, document=document, reason=str(error)[:500]
+        return await _persist_terminal(
+            db,
+            context,
+            export_job_id=prepared.job_id,
+            reason=str(error)[:500],
+        )
+
+    try:
+        adapter = resolve_adapter(prepared.integration_type)
+    except UnknownAdapterError as error:
+        return await _persist_terminal(
+            db,
+            context,
+            export_job_id=prepared.job_id,
+            reason=str(error)[:500],
         )
 
     metadata = ExportMetadata(
-        schema_version=payload_row.schema_version,
-        mapping_version_number=mapping.version_number,
-        integration_slug=integration.slug,
-        business_key=job.business_key,
-        document_id=str(job.document_id),
-        run_id=str(job.run_id),
-        exported_at=datetime.fromtimestamp(timestamp, tz=UTC).isoformat(),
+        schema_version=prepared.schema_version,
+        mapping_version_number=prepared.mapping_version_number,
+        integration_slug=prepared.integration_slug,
+        business_key=prepared.business_key,
+        document_id=str(prepared.document_id),
+        run_id=str(prepared.run_id),
+        exported_at=prepared.job_created_at.isoformat(),
     )
-    stored = await store_export_artifact(
-        session,
-        store,
-        context,
-        job=job,
-        export_format="json",
-        payload=mapped.payload,
-        metadata=metadata,
-    )
-    body = await store.get(stored.artifact.object_key)
-
-    # Delivery goes through the ADAPTER CONTRACT (EXP-010): resolve by
-    # integration type — orchestration never special-cases a destination.
+    body = encode_json_export(mapped.payload, metadata)
     try:
-        adapter = resolve_adapter(integration.integration_type)
-    except UnknownAdapterError as unknown:
-        return await _fail_terminal(
-            session, context, job=job, document=document, reason=str(unknown)[:500]
+        object_key, digest = await _persist_export_artifact(
+            db,
+            context,
+            prepared,
+            body=body,
         )
-    webhook = await adapter.deliver(
+    except ExportArtifactMismatchError as error:
+        return await _persist_terminal(
+            db,
+            context,
+            export_job_id=prepared.job_id,
+            reason=str(error)[:500],
+        )
+    stored = await store.put(
+        object_key,
+        body,
+        content_type="application/json",
+        sha256=digest,
+    )
+    if stored.sha256 != digest or stored.size != len(body):
+        raise RuntimeError("object storage did not preserve the export artifact")
+
+    delivery = await adapter.deliver(
         client,
         AdapterDeliveryRequest(
-            url=integration.endpoint_url,
+            url=prepared.endpoint_url,
             body=body,
             secret=secret,
-            business_key=job.business_key,
-            attempt_number=job.attempt_count + 1,
+            business_key=prepared.business_key,
+            attempt_number=prepared.expected_attempt_number,
             timestamp=timestamp,
             allowlist=allowlist,
             resolve=resolve,
         ),
     )
-    attempt = await record_delivery_attempt(
-        session,
+    return await _finalize_delivery(
+        db,
         context,
-        job=job,
-        outcome=webhook.outcome,
-        response_status=webhook.response_status,
-        safe_error=webhook.safe_error,
-        request_sha256=stored.artifact.sha256,
-    )
-
-    if webhook.outcome == "delivered":
-        await transition_export_job(
-            session, context, job=job, to_state=ExportJobState.SUCCEEDED, actor_id=ACTOR
-        )
-        if document is not None and document.state == DocumentState.EXPORTING.value:
-            await transition_document(
-                session,
-                context,
-                document=document,
-                to_state=DocumentState.COMPLETED,
-                reason="export delivered",
-                actor_id=ACTOR,
-            )
-    elif webhook.outcome == "retryable_error":
-        await transition_export_job(
-            session,
-            context,
-            job=job,
-            to_state=ExportJobState.FAILED_RETRYABLE,
-            actor_id=ACTOR,
-            reason=webhook.safe_error,
-        )
-    else:
-        return await _fail_terminal(
-            session,
-            context,
-            job=job,
-            document=document,
-            reason=webhook.safe_error or "receiver rejected the delivery",
-        )
-
-    return ExportExecutionResult(
-        outcome=webhook.outcome,
-        job_state=job.state,
-        attempt_number=attempt.attempt_number,
-        detail=webhook.safe_error,
+        prepared,
+        outcome=delivery.outcome,
+        response_status=delivery.response_status,
+        safe_error=delivery.safe_error,
+        request_sha256=digest,
     )

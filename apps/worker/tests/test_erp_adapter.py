@@ -129,6 +129,13 @@ class TestWebhookAdapterContract(ErpAdapterContract):
         async with client_for(lambda _r: httpx.Response(500)) as client:
             degraded = await adapter.health(client, request())
         assert degraded.status == "degraded"
+
+        def no_route(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route")
+
+        async with client_for(no_route) as client:
+            network_failure = await adapter.health(client, request())
+        assert network_failure.status == "unreachable"
         bad = AdapterDeliveryRequest(
             url="http://erp.northstar.example/orders",  # not https
             body=b"{}",

@@ -23,6 +23,7 @@ import {
   updateStreamVersion,
   type ResolvePreview,
 } from "../api/client";
+import { InstructionEditor } from "../components/instructions/InstructionEditor";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -46,6 +47,8 @@ export function StreamConfigure() {
   const session = useShellSession();
   const slug = session.organization.slug;
   const canManage = session.permissions.has("streams.manage");
+  const canReadInstructions = session.permissions.has("instructions.read");
+  const canManageInstructions = session.permissions.has("instructions.manage");
   const { streamSlug } = useParams({ strict: false }) as { streamSlug: string };
   const queryClient = useQueryClient();
 
@@ -132,6 +135,9 @@ export function StreamConfigure() {
   }
 
   const streamName = detail.data?.stream.name ?? streamSlug;
+  const instructionStreamVersion = draft ?? published;
+  const schemaVersionValue = resolve.data?.resolved.values["schema_version_id"]?.value;
+  const schemaVersionId = typeof schemaVersionValue === "string" ? schemaVersionValue : null;
 
   return (
     <AppShell
@@ -302,6 +308,28 @@ export function StreamConfigure() {
             </p>
           )}
         </section>
+        {canReadInstructions && instructionStreamVersion && schemaVersionId ? (
+          <>
+            {dirty ? (
+              <Banner tone="warning" title="Save stream configuration first">
+                Extraction instructions stay read-only while stream overrides are unsaved. This
+                prevents an instruction draft from being linked to a schema selection that is not
+                yet part of the stream version.
+              </Banner>
+            ) : null}
+            <InstructionEditor
+              organizationSlug={slug}
+              streamVersionId={instructionStreamVersion.id}
+              schemaVersionId={schemaVersionId}
+              canManage={canManageInstructions && !dirty}
+            />
+          </>
+        ) : canReadInstructions ? (
+          <Banner tone="info" title="Extraction instructions unavailable">
+            A stream version and resolved schema version are required before instructions can be
+            versioned for this stream.
+          </Banner>
+        ) : null}
       </div>
     </AppShell>
   );

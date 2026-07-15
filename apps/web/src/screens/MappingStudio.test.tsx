@@ -129,4 +129,59 @@ describe("Mapping studio (EXP-004)", () => {
     const row1 = screen.getByRole("listitem", { name: "Mapping row 1" });
     expect(within(row1).getByLabelText("Target field")).toHaveAttribute("readonly");
   });
+
+  it("rotates a credential through a write-only password field", async () => {
+    const user = userEvent.setup();
+    let body: unknown = null;
+    server.use(
+      http.put("/api/orgs/northstar/integrations/erp/credential", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({
+          credential_configured: true,
+          kind: "bearer_token",
+          rotated: true,
+        });
+      }),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByRole("button", { name: "Rotate credential" }));
+    const dialog = await screen.findByRole("dialog");
+    const secret = within(dialog).getByLabelText("Secret value");
+    expect(secret).toHaveAttribute("type", "password");
+    await user.type(secret, "new-secret-value");
+    await user.click(within(dialog).getByRole("button", { name: "Rotate credential" }));
+
+    await waitFor(() => expect(body).toEqual({ kind: "bearer_token", secret: "new-secret-value" }));
+    expect(screen.queryByDisplayValue("new-secret-value")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Rotate credential" }));
+    expect(within(await screen.findByRole("dialog")).getByLabelText("Secret value")).toHaveValue(
+      "",
+    );
+  });
+
+  it("tests the real destination separately and pauses with optimistic concurrency", async () => {
+    const user = userEvent.setup();
+    let tested = 0;
+    let ifMatch: string | null = null;
+    server.use(
+      http.post("/api/orgs/northstar/integrations/erp/connection-test", () => {
+        tested += 1;
+        return HttpResponse.json({ ok: true, detail: "receiver accepted a signed test event" });
+      }),
+      http.post("/api/orgs/northstar/integrations/erp/deactivate", ({ request }) => {
+        ifMatch = request.headers.get("If-Match");
+        return HttpResponse.json({ ...DEFAULT_INTEGRATION, status: "paused", version: 3 });
+      }),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText("receiver accepted a signed test event")).toBeInTheDocument();
+    expect(tested).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Pause delivery" }));
+    expect(
+      await screen.findByText("Integration paused; new delivery attempts are blocked."),
+    ).toBeInTheDocument();
+    expect(ifMatch).toBe(String(DEFAULT_INTEGRATION.version));
+  });
 });

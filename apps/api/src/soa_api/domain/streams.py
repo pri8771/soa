@@ -39,6 +39,55 @@ class StreamStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class StreamOverrideError(ValueError):
+    """A stream override would weaken or corrupt the executable contract."""
+
+
+_PROCESS_PIN_KEYS = frozenset(
+    {
+        "schema_version_id",
+        "rule_set_version_id",
+        "provider_policy_version_id",
+        "confidence_policy_version_id",
+        "input_contract",
+        "evaluation_gate_required",
+    }
+)
+_POSITIVE_INTEGER_OVERRIDES = frozenset(
+    {
+        "max_upload_bytes",
+        "max_pages",
+        "max_total_pixels",
+        "max_decompressed_bytes",
+        "max_conversion_seconds",
+    }
+)
+
+
+def validate_stream_overrides(overrides: dict[str, Any]) -> None:
+    protected = sorted(_PROCESS_PIN_KEYS.intersection(overrides))
+    if protected:
+        raise StreamOverrideError(
+            "stream overrides cannot replace process-pinned runtime fields: " + ", ".join(protected)
+        )
+    for key in _POSITIVE_INTEGER_OVERRIDES.intersection(overrides):
+        value = overrides[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise StreamOverrideError(f"stream override {key!r} must be a positive integer")
+    if "confidence_floor" in overrides:
+        value = overrides["confidence_floor"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise StreamOverrideError("stream override 'confidence_floor' must be between 0 and 1")
+    if "languages" in overrides:
+        languages = overrides["languages"]
+        if not (
+            isinstance(languages, list)
+            and languages
+            and all(isinstance(language, str) and language.strip() for language in languages)
+        ):
+            raise StreamOverrideError("stream override 'languages' must be a non-empty string list")
+
+
 class Stream(UuidPrimaryKeyMixin, OrganizationScopedMixin, TimestampMixin, VersionedMixin, Base):
     __tablename__ = "streams"
 
@@ -118,6 +167,7 @@ class StreamVersionRepository(ScopedRepository[StreamVersion]):
 def resolve_snapshot(process_version: ProcessVersion, overrides: dict[str, Any]) -> dict[str, Any]:
     """Merge process defaults with explicit stream overrides (top-level keys;
     the provenance-aware deep resolver is CFG-006)."""
+    validate_stream_overrides(overrides)
     snapshot = {
         "process_version_id": str(process_version.id),
         "process_version_number": process_version.version_number,
@@ -163,13 +213,15 @@ async def create_stream_draft(
     change_summary: str | None = None,
     actor_id: str,
 ) -> StreamVersion:
+    effective_overrides = dict(overrides or {})
+    validate_stream_overrides(effective_overrides)
     versions = await StreamVersionRepository(session, context).list_for_stream(stream.id)
     next_number = (versions[-1].version_number + 1) if versions else 1
     draft = StreamVersionRepository(session, context).add(
         StreamVersion(
             stream_id=stream.id,
             version_number=next_number,
-            overrides=dict(overrides or {}),
+            overrides=effective_overrides,
             change_summary=change_summary,
         )
     )

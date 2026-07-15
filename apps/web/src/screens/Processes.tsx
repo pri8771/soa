@@ -1,10 +1,11 @@
 /**
  * Process browser (CFG-009, UI_UX_BLUEPRINT §6.2).
  *
- * Lists the organization's processes with status, active version, stream
- * and draft counts. Owner and health are placeholder columns until their
- * owning epics land (health arrives with ANA). The status filter lives in
- * the URL so filtered views are shareable and survive refresh.
+ * Lists the organization's processes with the fields exposed by the process
+ * read model: status, active version, stream count, and draft count. The
+ * status filter lives in the URL so filtered views are shareable and survive
+ * refresh. Owner and process-level health are deliberately omitted because
+ * the API does not expose either value.
  */
 
 import { Badge, Banner, Button, Select } from "@soa/design-system";
@@ -48,15 +49,11 @@ const COLUMNS: ColumnDef<ProcessSummary>[] = [
     header: "Drafts",
     cell: ({ row }) => (row.original.draft_count > 0 ? row.original.draft_count : "—"),
   },
-  // Placeholder columns: populated by later epics (owner: TEN follow-up,
-  // health: ANA). Rendered honestly as unavailable, never as fake data.
-  { header: "Owner", cell: () => "—" },
   {
     id: "links",
     header: "Configure",
     cell: ({ row }) => <ConfigureLinks processSlug={row.original.slug} />,
   },
-  { header: "Health", cell: () => <Badge tone="neutral">not tracked yet</Badge> },
 ];
 
 function ConfigureLinks({ processSlug }: { processSlug: string }) {

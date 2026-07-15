@@ -12,7 +12,7 @@
 import { Badge, Banner, Button, Skeleton } from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -37,6 +37,7 @@ import { ConflictResolver, type ConflictEntry } from "../components/review/Confl
 import { HeaderFieldEditor, type SaveState } from "../components/review/HeaderFieldEditor";
 import { SplitLayout } from "../components/review/SplitLayout";
 import { LineItemGrid, type GridRow } from "../components/review/LineItemGrid";
+import { ReviewComments } from "../components/review/ReviewComments";
 import { DocumentViewer, type EvidenceHighlight } from "../components/viewer/DocumentViewer";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -62,6 +63,24 @@ const CATALOG_FIELD_LABELS: Record<string, string> = {
   customer_name: "customer",
   "lines.sku": "SKU",
 };
+
+const REVIEW_SHORTCUTS = [
+  ["J / K", "Next / previous review reason"],
+  ["E", "Focus the active field’s source evidence"],
+  ["M", "Focus catalog match candidates for the active field"],
+  ["C", "Add a discussion comment"],
+  ["A", "Open the approval summary when eligible"],
+  ["R", "Open rejection, or escalation when rejection is unavailable"],
+  ["?", "Show or hide this keyboard guide"],
+] as const;
+
+function isTypingContext(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]') !== null
+  );
+}
 
 /** Effective grid rows: extraction cells overlaid by the latest
  * corrections, plus correction-only (added) rows; fully cleared rows are
@@ -150,6 +169,13 @@ export function ReviewStudio() {
   //: correction revalidates, then the fresh evaluation's flag.
   const [revalidatedBlocking, setRevalidatedBlocking] = useState<boolean | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
+  //: Counts work as soon as it enters the serialized queue, rather than
+  //: only once React Query starts the network mutation. This closes the
+  //: edit-blur -> approve race for both single edits and row batches.
+  const [pendingWrites, setPendingWrites] = useState(0);
+  const [shortcutMessage, setShortcutMessage] = useState<string | null>(null);
+  const [showKeyboardGuide, setShowKeyboardGuide] = useState(false);
+  const shortcutReasonIndex = useRef(-1);
 
   //: Grid state: locally added (still empty) rows and the undo stack —
   //: each entry restores a batch of previous cell values as NEW
@@ -229,12 +255,17 @@ export function ReviewStudio() {
     // A conflicted field saves only through the resolver's explicit
     // choice — autosaves (blur/Enter) must not race the decision.
     if (conflictKeysRef.current.has(stateKey(fieldKey, rowIndex))) return queue.current;
-    queue.current = queue.current.then(() =>
-      save.mutateAsync({ fieldKey, rowIndex, value }).then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
+    setPendingWrites((count) => count + 1);
+    queue.current = queue.current.then(async () => {
+      try {
+        await save.mutateAsync({ fieldKey, rowIndex, value });
+      } catch {
+        // The mutation owns the visible field-level error. Keep the queue
+        // fulfilled so a corrected/retried value can run behind it.
+      } finally {
+        setPendingWrites((count) => Math.max(0, count - 1));
+      }
+    });
     return queue.current;
   };
 
@@ -286,12 +317,16 @@ export function ReviewStudio() {
     if (activeFieldKey === null) return;
     const fieldKey = activeFieldKey;
     const rowIndex = activeRowIndex;
-    queue.current = queue.current.then(() =>
-      pickCatalog.mutateAsync({ fieldKey, rowIndex, candidate, reason }).then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
+    setPendingWrites((count) => count + 1);
+    queue.current = queue.current.then(async () => {
+      try {
+        await pickCatalog.mutateAsync({ fieldKey, rowIndex, candidate, reason });
+      } catch {
+        // CatalogCandidatePicker owns the visible failure state.
+      } finally {
+        setPendingWrites((count) => Math.max(0, count - 1));
+      }
+    });
   };
 
   const saveBatch = (
@@ -366,6 +401,149 @@ export function ReviewStudio() {
     const field = headerFields.find((entry) => entry.field_key === activeFieldKey);
     return field && field.evidence.length > 0 ? evidenceId(field.field_key, 0) : null;
   }, [activeFieldKey, headerFields]);
+
+  // Required Review Studio shortcuts are global within this screen, but
+  // never consume keystrokes from an input, textarea, select, or editable
+  // surface. Every shortcut moves focus or opens a real on-screen control.
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        isTypingContext(event.target)
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+
+      if (key === "j" || key === "k") {
+        event.preventDefault();
+        const reasons = (workspace.data?.task.reasons ?? []).filter(
+          (reason) => reason.field_key !== null,
+        );
+        if (reasons.length === 0) {
+          setShortcutMessage("There are no field-level review reasons to navigate.");
+          return;
+        }
+        const delta = key === "j" ? 1 : -1;
+        const current = shortcutReasonIndex.current;
+        const next =
+          current < 0
+            ? delta > 0
+              ? 0
+              : reasons.length - 1
+            : (current + delta + reasons.length) % reasons.length;
+        shortcutReasonIndex.current = next;
+        const reason = reasons[next];
+        if (!reason?.field_key) return;
+        focusField(reason.field_key, reason.row_index);
+        setShortcutMessage(`Review reason ${next + 1} of ${reasons.length}: ${reason.message}`);
+        window.setTimeout(() => {
+          const row = reason.row_index === null ? "header" : String(reason.row_index);
+          const field = Array.from(
+            document.querySelectorAll<HTMLElement>("[data-review-field-key]"),
+          ).find(
+            (candidate) =>
+              candidate.dataset.reviewFieldKey === reason.field_key &&
+              candidate.dataset.reviewRowIndex === row,
+          );
+          field?.focus();
+        }, 0);
+        return;
+      }
+
+      if (key === "e") {
+        event.preventDefault();
+        if (activeEvidenceId === null) {
+          setShortcutMessage("The active field has no source evidence to focus.");
+          return;
+        }
+        const source = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-evidence-id]"),
+        ).find((candidate) => candidate.dataset.evidenceId === activeEvidenceId);
+        if (source) {
+          source.focus();
+          source.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+          setShortcutMessage("Source evidence focused.");
+        } else {
+          setShortcutMessage(
+            "Source evidence is still loading. Press E again when the page appears.",
+          );
+        }
+        return;
+      }
+
+      if (key === "m") {
+        event.preventDefault();
+        if (activeFieldKey === null || !(activeFieldKey in CATALOG_FIELD_LABELS)) {
+          setShortcutMessage("Catalog matching is not available for the active field.");
+          return;
+        }
+        const search = document.querySelector<HTMLInputElement>("[data-catalog-picker] input");
+        if (search) {
+          search.focus();
+          search.scrollIntoView?.({ block: "nearest" });
+          setShortcutMessage("Catalog match search focused.");
+        }
+        return;
+      }
+
+      if (key === "c") {
+        event.preventDefault();
+        const comment = document.querySelector<HTMLTextAreaElement>("[data-review-comment-input]");
+        comment?.focus();
+        comment?.scrollIntoView?.({ block: "nearest" });
+        setShortcutMessage("Discussion comment editor focused.");
+        return;
+      }
+
+      if (key === "a") {
+        event.preventDefault();
+        const approve = document.querySelector<HTMLButtonElement>('[data-review-action="approve"]');
+        if (approve && !approve.disabled) {
+          approve.click();
+          approve.focus();
+          setShortcutMessage("Approval summary opened. Review it before confirming.");
+        } else {
+          setShortcutMessage("Approval is not available. The reason is shown with the action.");
+        }
+        return;
+      }
+
+      if (key === "r") {
+        event.preventDefault();
+        const reject = document.querySelector<HTMLButtonElement>('[data-review-action="reject"]');
+        const escalate = document.querySelector<HTMLButtonElement>(
+          '[data-review-action="escalate"]',
+        );
+        const action = reject && !reject.disabled ? reject : escalate;
+        if (action && !action.disabled) {
+          action.click();
+          action.focus();
+          setShortcutMessage(
+            action === reject ? "Rejection form opened." : "Escalation form opened.",
+          );
+        }
+        return;
+      }
+
+      if (event.key === "?") {
+        event.preventDefault();
+        setShowKeyboardGuide((visible) => !visible);
+        return;
+      }
+
+      if (key === "escape" && showKeyboardGuide) {
+        event.preventDefault();
+        setShowKeyboardGuide(false);
+      }
+    };
+
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [activeEvidenceId, activeFieldKey, showKeyboardGuide, workspace.data?.task.reasons]);
 
   if (workspace.status === "pending") {
     return (
@@ -455,6 +633,15 @@ export function ReviewStudio() {
         ? ` — assigned to ${data.task.assigned_to}`
         : "") +
     ` (version ${data.task.version})`;
+  const failedSaveCount = Object.values(saveStates).filter(
+    (state) => state.status === "error",
+  ).length;
+  const approvalBlockedReason =
+    pendingWrites > 0
+      ? `Wait for ${pendingWrites} queued or saving change(s) before approving.`
+      : failedSaveCount > 0
+        ? `${failedSaveCount} change(s) failed to save. Retry them successfully before approving.`
+        : null;
 
   return (
     <AppShell
@@ -466,6 +653,64 @@ export function ReviewStudio() {
       ]}
     >
       <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--soa-space-2)" }}>
+          <Button
+            size="sm"
+            variant="subtle"
+            onPress={() => setShowKeyboardGuide((shown) => !shown)}
+          >
+            Keyboard shortcuts (?)
+          </Button>
+          <span role="status" aria-live="polite" style={{ font: "var(--soa-font-caption)" }}>
+            {shortcutMessage}
+          </span>
+        </div>
+        {showKeyboardGuide ? (
+          <section
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="review-shortcuts-heading"
+            style={{
+              border: "1px solid var(--soa-border)",
+              borderRadius: "var(--soa-radius-panel)",
+              padding: "var(--soa-space-3)",
+              display: "grid",
+              gap: "var(--soa-space-2)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+              <h2
+                id="review-shortcuts-heading"
+                style={{ font: "var(--soa-font-heading-sm)", margin: 0 }}
+              >
+                Review keyboard shortcuts
+              </h2>
+              <Button size="sm" variant="subtle" onPress={() => setShowKeyboardGuide(false)}>
+                Close guide
+              </Button>
+            </div>
+            <p style={{ margin: 0, color: "var(--soa-text-muted)" }}>
+              Shortcuts pause while you type in a field, search, comment, or reason box.
+            </p>
+            <dl
+              style={{
+                display: "grid",
+                gridTemplateColumns: "max-content 1fr",
+                gap: "0.375rem 1rem",
+                margin: 0,
+              }}
+            >
+              {REVIEW_SHORTCUTS.map(([keys, description]) => (
+                <div key={keys} style={{ display: "contents" }}>
+                  <dt>
+                    <kbd>{keys}</kbd>
+                  </dt>
+                  <dd style={{ margin: 0 }}>{description}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ) : null}
         {conflict ? (
           <ConflictResolver
             message={conflict}
@@ -686,6 +931,8 @@ export function ReviewStudio() {
           },
         )}
 
+        <ReviewComments organizationSlug={slug} taskId={taskId} />
+
         <ApprovalPanel
           editable={editable}
           readOnlyReason={readOnlyReason}
@@ -701,8 +948,17 @@ export function ReviewStudio() {
           }
           settledOutcome={data.task.state === "completed" ? data.task.outcome : null}
           busy={approve.isPending || reject.isPending || escalate.isPending}
+          approvalBlockedReason={approvalBlockedReason}
           statusMessage={completionMessage}
-          onApprove={(overrideReason) => approve.mutate(overrideReason)}
+          onApprove={(overrideReason) => {
+            // Defense in depth for non-pointer activation and future panel
+            // refactors: the disabled UI is not the only approval guard.
+            if (approvalBlockedReason !== null) {
+              setCompletionMessage(`Approval blocked: ${approvalBlockedReason}`);
+              return;
+            }
+            approve.mutate(overrideReason);
+          }}
           onReject={(reason) => reject.mutate(reason)}
           onEscalate={(reason) => escalate.mutate(reason)}
         />

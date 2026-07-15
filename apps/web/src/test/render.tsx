@@ -3,9 +3,13 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 
 import { createAppRouter } from "../app/router";
+import { AuthProvider } from "../auth/AuthContext";
 
 /** Render the real app router at a path with a fresh query client. */
-export async function renderApp(initialPath: string) {
+export async function renderApp(
+  initialPath: string,
+  options: { authStatus?: "test" | "anonymous" | "expired" | "configuration-error" } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -13,7 +17,9 @@ export async function renderApp(initialPath: string) {
   await router.load();
   const utils = render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthProvider testStatus={options.authStatus ?? "test"}>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>,
   );
   return { router, queryClient, ...utils };

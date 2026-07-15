@@ -36,12 +36,15 @@ depend on.
 ## Repository conventions (enforced in CI)
 
 - Migrations are sequential and numbered (`migrations/versions/NNNN_*.py`,
-  currently through `0037`). Each new migration bumps the head assertion
+  currently through `0053`). Each new migration bumps the head assertion
   in `packages/db/tests/test_migrations.py`.
-- Every migration is **reversible**: CI runs `upgrade head → downgrade
-  base → upgrade head`, so a `downgrade` that drops what `upgrade` added
-  is mandatory. An irreversible step (a destructive contract) is a
-  deliberate, reviewed exception documented in the migration.
+- Schema-shape migrations are **reversible**: CI runs `upgrade head →
+  downgrade base → upgrade head`, so their downgrade removes what upgrade
+  added. Security/access migrations may deliberately keep a tightening or
+  compatible grant in place during downgrade: migration `0045`, for example,
+  never restores `cloudsqlsuperuser` to the runtime identity or revokes DML
+  access needed by the rolled-back application. Every such no-op downgrade is
+  an explicit, reviewed exception documented in the migration.
 - New tenant-scoped tables enable and FORCE row-level security with a
   `tenant_isolation` policy in the same migration and add the table name
   to `soa_db.tenant_guard.RLS_PROTECTED_TABLES` — the coverage test fails
@@ -49,6 +52,11 @@ depend on.
   migration.
 - Schema DDL and data backfills are separate migrations/jobs: DDL is fast
   and transactional; backfills are online and batched.
+- The deployed migrator and runtime use different database identities. The
+  migrator owns DDL; `soa_app` owns no application table, cannot bypass RLS,
+  cannot create roles/databases, and receives only schema usage plus table DML
+  and sequence access. The PostgreSQL CI job simulates Cloud SQL's automatic
+  role grant and proves migration `0045` removes it.
 
 ## Artifact rollback
 
@@ -77,6 +85,10 @@ never auto-downgrades a live database.
   (AIO-017) guard a provider change before it reaches production. See
   [`runbooks/bad-release.md`](runbooks/bad-release.md) for the response
   procedure.
+
+Changing a provider credential, endpoint, or candidate chain still requires a
+new published configuration and, where quality behavior changes, a matching
+server-executed evaluation. A connection test alone is not a promotion gate.
 
 ## Related
 

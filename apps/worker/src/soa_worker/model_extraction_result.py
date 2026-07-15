@@ -35,6 +35,7 @@ from soa_worker.extraction.provider import (
     ExtractionResult,
 )
 from soa_worker.model_request_builder import BuiltModelRequest
+from soa_worker.model_usage import ProviderCallUsage, ProviderUsage
 
 __all__ = ["ModelOutputInvalidError", "parse_model_extraction"]
 
@@ -46,12 +47,37 @@ class ModelOutputInvalidError(ExtractionProviderError):
     send back to the model and to log; ``cost_cents`` is what the failed
     call cost (failed calls still burn tokens)."""
 
-    def __init__(self, reason: str, *, cost_cents: int = 0) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        cost_cents: int = 0,
+        usage: ProviderUsage | None = None,
+        pricing_reference: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self.reason = reason
         self.cost_cents = cost_cents
+        self.usage = usage
+        self.pricing_reference = pricing_reference
+        self.call_usage = (
+            ProviderCallUsage(
+                provider=provider,
+                model=model,
+                usage=usage,
+                estimated_cost_cents=cost_cents,
+                pricing_reference=pricing_reference,
+                outcome="invalid_output",
+            )
+            if provider is not None
+            else None
+        )
         super().__init__(
             f"the model returned output that does not match the expected shape ({reason})",
             retryable=True,
+            usage_records=((self.call_usage,) if self.call_usage is not None else ()),
+            usage_records_complete=True,
         )
 
 
@@ -63,6 +89,8 @@ def parse_model_extraction(
     provider: str,
     model: str,
     cost_cents: int = 0,
+    usage: ProviderUsage | None = None,
+    pricing_reference: str | None = None,
     lead_warnings: tuple[str, ...] = (),
 ) -> ExtractionResult:
     """Turn one model response (``content``, the raw JSON text) into an
@@ -73,15 +101,32 @@ def parse_model_extraction(
         parsed = json.loads(content)
     except ValueError:
         raise ModelOutputInvalidError(
-            "the response was not valid JSON", cost_cents=cost_cents
+            "the response was not valid JSON",
+            cost_cents=cost_cents,
+            usage=usage,
+            pricing_reference=pricing_reference,
+            provider=provider,
+            model=model,
         ) from None
     if not isinstance(parsed, dict) or "fields" not in parsed:
         raise ModelOutputInvalidError(
-            'the JSON object is missing the "fields" key', cost_cents=cost_cents
+            'the JSON object is missing the "fields" key',
+            cost_cents=cost_cents,
+            usage=usage,
+            pricing_reference=pricing_reference,
+            provider=provider,
+            model=model,
         )
     entries = parsed["fields"]
     if not isinstance(entries, list):
-        raise ModelOutputInvalidError('"fields" must be a JSON array', cost_cents=cost_cents)
+        raise ModelOutputInvalidError(
+            '"fields" must be a JSON array',
+            cost_cents=cost_cents,
+            usage=usage,
+            pricing_reference=pricing_reference,
+            provider=provider,
+            model=model,
+        )
 
     requested = {spec.key for spec in request.fields}
     pages = {page.page_number: page for page in request.pages}
@@ -136,6 +181,18 @@ def parse_model_extraction(
         fields=tuple(results),
         model=model,
         cost_cents=cost_cents,
+        usage=usage,
+        pricing_reference=pricing_reference,
         warnings=tuple(warnings),
         instruction_reference=built.instruction_reference,
+        usage_records=(
+            ProviderCallUsage(
+                provider=provider,
+                model=model,
+                usage=usage,
+                estimated_cost_cents=cost_cents,
+                pricing_reference=pricing_reference,
+                outcome="succeeded",
+            ),
+        ),
     )

@@ -21,6 +21,17 @@ from soa_canonical.models import CanonicalOrder, LineItem, Money, ProvenanceEntr
 
 
 @dataclass(frozen=True)
+class CatalogReference:
+    """ERP-neutral master-data identity selected for a source value."""
+
+    catalog_id: str
+    catalog_version_id: str
+    catalog_record_id: str
+    source_id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
 class SourceValue:
     """One selected value with its provenance: where it came from and,
     when a reviewer authored it, who."""
@@ -30,6 +41,7 @@ class SourceValue:
     page_number: int | None = None
     quote: str | None = None
     actor: str | None = None
+    catalog: CatalogReference | None = None
 
 
 class CanonicalMappingError(Exception):
@@ -115,7 +127,10 @@ def map_sales_order(
     po_number = header_text("po_number", "identifiers.po_number", required=True)
     order_date = header_text("order_date", "dates.order_date", required=True)
     currency = header_text("currency", "terms.currency", required=True)
+    customer_source = header.get("customer_name")
     customer_name = header_text("customer_name", "parties.buyer.name", required=False)
+    if customer_source is not None and customer_source.catalog is not None:
+        customer_name = customer_source.catalog.display_name
     requested_delivery = header_text(
         "requested_delivery_date", "dates.requested_delivery_date", required=False
     )
@@ -129,6 +144,7 @@ def map_sales_order(
         note_provenance("totals.grand_total", total_source)
 
     line_items: list[LineItem] = []
+    catalog_line_extensions: list[dict[str, Any]] = []
     for position, row in enumerate(lines):
         path = f"line_items[{position}]"
         quantity_source = row.get("lines.quantity")
@@ -150,6 +166,8 @@ def map_sales_order(
         note_provenance(f"{path}.line_total", total_cell)
         sku_source = row.get("lines.sku")
         sku = _text(sku_source.value) if sku_source else None
+        if sku_source is not None and sku_source.catalog is not None:
+            sku = sku_source.catalog.source_id
         if sku is not None:
             item["sku"] = sku
             note_provenance(f"{path}.sku", sku_source)
@@ -164,6 +182,16 @@ def map_sales_order(
             if unit_price is not None:
                 item["unit_price"] = unit_price
                 note_provenance(f"{path}.unit_price", price_source)
+        if sku_source is not None and sku_source.catalog is not None:
+            catalog_line_extensions.append(
+                {
+                    "line_number": position + 1,
+                    "catalog_id": sku_source.catalog.catalog_id,
+                    "catalog_version_id": sku_source.catalog.catalog_version_id,
+                    "catalog_record_id": sku_source.catalog.catalog_record_id,
+                    "source_id": sku_source.catalog.source_id,
+                }
+            )
         line_items.append(item)
     if not lines:
         errors.append("line_items: the order has no line items")
@@ -187,7 +215,25 @@ def map_sales_order(
     if requested_delivery is not None:
         order["dates"]["requested_delivery_date"] = requested_delivery
     if customer_name is not None:
-        order["parties"] = {"buyer": {"name": customer_name}}
+        buyer: dict[str, Any] = {"name": customer_name}
+        if customer_source is not None and customer_source.catalog is not None:
+            buyer["identifiers"] = [
+                {"scheme": "customer-account", "value": customer_source.catalog.source_id}
+            ]
+            note_provenance("parties.buyer.identifiers[0].value", customer_source)
+        order["parties"] = {"buyer": buyer}  # type: ignore[typeddict-item]
+    catalog_extension: dict[str, Any] = {}
+    if customer_source is not None and customer_source.catalog is not None:
+        catalog_extension["customer"] = {
+            "catalog_id": customer_source.catalog.catalog_id,
+            "catalog_version_id": customer_source.catalog.catalog_version_id,
+            "catalog_record_id": customer_source.catalog.catalog_record_id,
+            "source_id": customer_source.catalog.source_id,
+        }
+    if catalog_line_extensions:
+        catalog_extension["line_items"] = catalog_line_extensions
+    if catalog_extension:
+        order["extensions"] = {"x_soa_catalog": catalog_extension}
     if document_sha256 is not None:
         order["source"]["document_sha256"] = document_sha256
     if received_at is not None:

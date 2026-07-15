@@ -57,6 +57,8 @@ class RenderedPage:
 class RenderLimits:
     max_pages: int = 50
     max_pixels_per_page: int = 25_000_000
+    max_total_pixels: int = 100_000_000
+    max_decompressed_bytes: int = 262_144_000
     dpi: int = 200
     timeout_seconds: float = 60.0
     cpu_seconds: int = 30
@@ -96,6 +98,8 @@ async def render_document(
             str(output_dir),
             str(effective.max_pages),
             str(effective.max_pixels_per_page),
+            str(effective.max_total_pixels),
+            str(effective.max_decompressed_bytes),
             str(effective.dpi),
             str(effective.cpu_seconds),
             str(effective.memory_bytes),

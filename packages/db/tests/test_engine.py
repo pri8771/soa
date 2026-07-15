@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import ForeignKey, String, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_db import Base, DatabaseSessions, create_database_engine, register_rollback_action
 
 
 class Parent(Base):
@@ -46,6 +46,29 @@ async def test_session_scope_rolls_back_on_error(sessions: DatabaseSessions) -> 
         found = (await session.execute(select(Parent).where(Parent.name == "rolled-back"))).all()
     assert found == []
     await sessions.dispose()
+
+
+async def test_session_scope_compensates_external_writes_only_on_rollback(
+    sessions: DatabaseSessions,
+) -> None:
+    calls: list[str] = []
+    async with sessions.session_scope() as session:
+        register_rollback_action(session, lambda: _record(calls, "committed"))
+        session.add(Parent(name="kept"))
+    assert calls == []
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with sessions.session_scope() as session:
+            register_rollback_action(session, lambda: _record(calls, "first"))
+            register_rollback_action(session, lambda: _record(calls, "second"))
+            session.add(Parent(name="discarded"))
+            raise RuntimeError("boom")
+    assert calls == ["second", "first"]
+    await sessions.dispose()
+
+
+async def _record(calls: list[str], value: str) -> None:
+    calls.append(value)
 
 
 async def test_ping_healthy(sessions: DatabaseSessions) -> None:

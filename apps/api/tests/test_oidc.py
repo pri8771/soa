@@ -67,6 +67,44 @@ async def test_valid_token_produces_principal() -> None:
     assert principal.email == "person@example.com"
 
 
+async def test_readiness_requires_at_least_one_usable_key() -> None:
+    assert await validator_with({"keys": [JWK_A]}).ready() is True
+    assert await validator_with({"keys": []}).ready() is False
+
+
+async def test_readiness_reuses_a_fresh_jwks_cache() -> None:
+    validator = validator_with({"keys": [JWK_A]})
+
+    assert await validator.ready() is True
+    assert await validator.ready() is True
+    assert validator.fetch_calls["count"] == 1  # type: ignore[attr-defined]
+
+
+async def test_validation_refreshes_expired_cache_before_trusting_a_known_kid() -> None:
+    clock = {"now": 0.0}
+    pages = [{"keys": [JWK_A]}, {"keys": [JWK_B]}]
+    calls = 0
+
+    async def fetcher() -> dict[str, Any]:
+        nonlocal calls
+        page = pages[min(calls, len(pages) - 1)]
+        calls += 1
+        return page
+
+    validator = OidcTokenValidator(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        jwks_fetcher=fetcher,
+        cache_ttl_seconds=10,
+        monotonic=lambda: clock["now"],
+    )
+    assert (await validator.validate(sign(KEY_A, "key-a"))).issuer == ISSUER
+    clock["now"] = 11
+    with pytest.raises(AuthenticationError, match="unknown key"):
+        await validator.validate(sign(KEY_A, "key-a"))
+    assert calls == 2
+
+
 async def test_expired_token_is_rejected() -> None:
     validator = validator_with({"keys": [JWK_A]})
     token = sign(KEY_A, "key-a", expires_in=-3600)
@@ -104,12 +142,24 @@ async def test_rotated_key_is_picked_up_via_refresh() -> None:
     assert validator.fetch_calls["count"] == 2  # type: ignore[attr-defined]
 
 
+async def test_unknown_key_refresh_is_globally_rate_limited() -> None:
+    validator = validator_with({"keys": [JWK_A]}, {"keys": [JWK_A]})
+    assert (await validator.validate(sign(KEY_A, "key-a"))).issuer == ISSUER
+
+    with pytest.raises(AuthenticationError, match="unknown key"):
+        await validator.validate(sign(KEY_B, "key-b"))
+    with pytest.raises(AuthenticationError, match="unknown key"):
+        await validator.validate(sign(KEY_B, "another-unknown-kid"))
+
+    assert validator.fetch_calls["count"] == 2  # type: ignore[attr-defined]
+
+
 async def test_symmetric_algorithm_confusion_is_rejected() -> None:
     validator = validator_with({"keys": [JWK_A]})
     now = int(time.time())
     forged = jwt.encode(
         {"sub": "x", "iss": ISSUER, "aud": AUDIENCE, "iat": now, "exp": now + 300},
-        "shared-secret",
+        "shared-secret-used-only-for-algorithm-confusion-test-0123456789",
         algorithm="HS256",
         headers={"kid": "key-a"},
     )

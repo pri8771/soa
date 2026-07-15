@@ -142,7 +142,7 @@ async def replay_organization_job(
     deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> JobResponse:
     # Abuse control (SEC-003): per-principal cap on replays.
-    deps.rate_limiter.enforce(
+    await deps.rate_limiter.enforce(
         "replays",
         f"user:{authorized.membership.user_id}",
         deps.settings.rate_limit_replays_per_minute,

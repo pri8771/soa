@@ -36,19 +36,24 @@ def test_span_is_exported_with_attributes_and_correlation() -> None:
     assert span.attributes["soa.correlation_id"] == "corr-tel-1"
 
 
-def test_business_exception_propagates_and_is_recorded() -> None:
+def test_business_exception_propagates_with_safe_type_only() -> None:
     exporter = InMemorySpanExporter()
     telemetry = make_telemetry(exporter)
     try:
         with telemetry.span("failing-work"):
-            raise ValueError("business failure")
+            raise ValueError("CANARY customer document and credential")
     except ValueError:
         pass
     else:
         raise AssertionError("business exception must propagate")
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
-    assert spans[0].events, "exception event should be recorded on the span"
+    span = spans[0]
+    assert span.status.status_code.name == "ERROR"
+    assert span.attributes is not None
+    assert span.attributes["error.type"] == "ValueError"
+    assert span.events == (), "untrusted exception messages and stacks must not be exported"
+    assert "CANARY" not in span.to_json()
 
 
 class ExplodingExporter(SpanExporter):
@@ -95,3 +100,23 @@ def test_counter_records_via_metric_reader() -> None:
         for point in metric.data.data_points
     ]
     assert points and points[0].value == 3
+
+
+def test_shutdown_is_idempotent_and_exporter_failure_does_not_block_cleanup() -> None:
+    calls: list[str] = []
+
+    def broken() -> None:
+        calls.append("broken")
+        raise RuntimeError("collector unavailable")
+
+    def healthy() -> None:
+        calls.append("healthy")
+
+    telemetry = Telemetry(
+        tracer=None,
+        meter=None,
+        shutdown_callbacks=(broken, healthy),
+    )
+    telemetry.shutdown()
+    telemetry.shutdown()
+    assert calls == ["broken", "healthy"]

@@ -7,6 +7,7 @@ from sqlalchemy import String, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_db.jobs import Job
 from soa_db.mixins import UuidPrimaryKeyMixin
 from soa_db.outbox import (
     OutboxEvent,
@@ -15,6 +16,7 @@ from soa_db.outbox import (
     enqueue_event,
     mark_failed,
     mark_published,
+    replay_failed_event,
 )
 from soa_db.types import utcnow
 
@@ -122,4 +124,47 @@ async def test_failed_publication_retries_with_backoff_then_dead_letters(
         for _ in range(9):
             mark_failed(event, error="still down", max_attempts=10)
         assert event.status == OutboxStatus.FAILED, "attempts exhausted -> dead letter"
+    await sessions.dispose()
+
+
+async def test_terminal_publication_failure_dead_letters_immediately(
+    sessions: DatabaseSessions,
+) -> None:
+    async with sessions.session_scope() as session:
+        event = await enqueue_event(session, event_type="a", payload={})
+        mark_failed(event, error="receiver rejected request", terminal=True)
+        assert event.status == OutboxStatus.FAILED
+        assert event.attempts == 1
+    await sessions.dispose()
+
+
+async def test_replay_resets_delivery_state_and_grants_a_fresh_attempt_budget(
+    sessions: DatabaseSessions,
+) -> None:
+    async with sessions.session_scope() as session:
+        event = await enqueue_event(
+            session,
+            event_type="account.created",
+            payload={},
+            organization_id=uuid.uuid4(),
+        )
+        mark_failed(event, error="delivery failed", max_attempts=1)
+        event.published_at = utcnow()  # stale/corrupt delivery state must not survive replay
+        event.next_attempt_at = utcnow() + timedelta(days=1)
+
+        previous_attempts = await replay_failed_event(session, event)
+        assert previous_attempts == 1
+        assert event.status == OutboxStatus.PENDING
+        assert event.attempts == 0
+        assert event.published_at is None
+        assert event.last_error is None
+        assert event.next_attempt_at <= utcnow()
+
+        # Exhaust and replay again to prove replay generations do not collide
+        # merely because the reset attempt count reaches the same value.
+        mark_failed(event, error="delivery failed again", max_attempts=1)
+        assert await replay_failed_event(session, event) == 1
+        jobs = (await session.execute(select(Job))).scalars().all()
+        assert len(jobs) == 3  # initial publication plus two distinct replays
+
     await sessions.dispose()

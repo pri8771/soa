@@ -12,8 +12,9 @@ describe("Processes browser (CFG-009)", () => {
     expect(screen.getByText("v3")).toBeInTheDocument();
     expect(screen.getByText("Order confirmations")).toBeInTheDocument();
     expect(screen.getByText("never published")).toBeInTheDocument();
-    // Placeholder columns are honest, not fake.
-    expect(screen.getAllByText("not tracked yet").length).toBe(2);
+    // Empty, API-unsupported owner/health columns are not rendered as noise.
+    expect(screen.queryByRole("columnheader", { name: "Owner" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Health" })).not.toBeInTheDocument();
   });
 
   it("keeps the status filter in the URL and filters rows", async () => {

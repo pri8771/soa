@@ -3,6 +3,7 @@ EXP-010 contract suite over each, bearer auth, per-vendor read-only
 connection test, safe error redaction, and the registry lockstep."""
 
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -31,6 +32,8 @@ DELIVERY_URLS = {
 
 
 def request_for(slug: str) -> AdapterDeliveryRequest:
+    host = urlparse(DELIVERY_URLS[slug]).hostname
+    assert host is not None
     return AdapterDeliveryRequest(
         url=DELIVERY_URLS[slug],
         body=b'{"SalesOrder":"1"}',
@@ -38,8 +41,8 @@ def request_for(slug: str) -> AdapterDeliveryRequest:
         business_key="export:i:d:r",
         attempt_number=1,
         timestamp=1_800_000_000,
-        allowlist=[],
-        resolve=None,
+        allowlist=[host],
+        resolve=lambda _host: ["93.184.216.34"],
     )
 
 
@@ -61,20 +64,24 @@ class ErpAdapterContract:
     def test_capabilities_are_declared(self, slug: str) -> None:
         capabilities = ADAPTERS[slug]().capabilities()
         assert capabilities.formats
-        assert capabilities.idempotency_mechanism.strip()
+        assert capabilities.production_ready is False
+        assert "not implemented" in capabilities.idempotency_mechanism.lower()
 
     @pytest.mark.parametrize("slug", list(ADAPTERS))
-    @pytest.mark.parametrize(
-        ("status", "expected"),
-        [(200, "delivered"), (204, "delivered"), (503, "retryable_error"), (400, "terminal_error")],
-    )
-    async def test_delivery_outcomes_are_classified(
-        self, slug: str, status: int, expected: str
-    ) -> None:
-        adapter = ADAPTERS[slug]()
-        async with client_for(lambda _r: httpx.Response(status)) as client:
-            result = await adapter.deliver(client, request_for(slug))
-        assert result.outcome == expected
+    async def test_delivery_fails_closed_without_network(self, slug: str) -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(201)
+
+        async with client_for(handler) as client:
+            result = await ADAPTERS[slug]().deliver(client, request_for(slug))
+        assert result.outcome == "terminal_error"
+        assert result.response_status is None
+        assert result.safe_error is not None and "idempotent upsert" in result.safe_error
+        assert calls == 0
 
 
 class TestBearerRestContract(ErpAdapterContract):
@@ -83,50 +90,41 @@ class TestBearerRestContract(ErpAdapterContract):
 
 class TestAuthAndDelivery:
     @pytest.mark.parametrize("slug", list(ADAPTERS))
-    async def test_delivery_sends_bearer_auth_and_the_body(self, slug: str) -> None:
+    async def test_connection_probe_sends_bearer_auth_without_a_body(self, slug: str) -> None:
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request)
-            return httpx.Response(201)
+            return httpx.Response(200)
 
         async with client_for(handler) as client:
-            result = await ADAPTERS[slug]().deliver(client, request_for(slug))
-        assert result.outcome == "delivered"
+            result = await ADAPTERS[slug]().test_connection(client, request_for(slug))
+        assert result.ok is True
         (sent,) = seen
+        assert sent.method == "GET"
         assert sent.headers["Authorization"] == f"Bearer {TOKEN}"
-        assert sent.content == b'{"SalesOrder":"1"}'
+        assert sent.content == b""
         assert TOKEN not in str(sent.url)
 
     @pytest.mark.parametrize("slug", list(ADAPTERS))
-    async def test_rate_limit_retryable_auth_terminal(self, slug: str) -> None:
-        adapter = ADAPTERS[slug]()
-        async with client_for(lambda _r: httpx.Response(429)) as client:
-            assert (await adapter.deliver(client, request_for(slug))).outcome == "retryable_error"
-        async with client_for(lambda _r: httpx.Response(401)) as client:
-            assert (await adapter.deliver(client, request_for(slug))).outcome == "terminal_error"
+    async def test_policy_refusal_blocks_probe_and_health(self, slug: str) -> None:
+        calls = 0
 
-    @pytest.mark.parametrize("slug", list(ADAPTERS))
-    async def test_terminal_error_never_leaks_the_body(self, slug: str) -> None:
-        def handler(_r: httpx.Request) -> httpx.Response:
-            return httpx.Response(400, text="Confidential CUSTOMER-SECRET echoed back")
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200)
 
+        original = request_for(slug)
+        refused = AdapterDeliveryRequest(**{**original.__dict__, "allowlist": ["other.example"]})
         async with client_for(handler) as client:
-            result = await ADAPTERS[slug]().deliver(client, request_for(slug))
-        assert result.outcome == "terminal_error"
-        assert result.safe_error is not None
-        assert "CUSTOMER-SECRET" not in result.safe_error
-        assert "Confidential" not in result.safe_error
-
-    @pytest.mark.parametrize("slug", list(ADAPTERS))
-    async def test_network_error_is_retryable(self, slug: str) -> None:
-        def handler(_r: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("no route")
-
-        async with client_for(handler) as client:
-            result = await ADAPTERS[slug]().deliver(client, request_for(slug))
-        assert result.outcome == "retryable_error"
-        assert result.response_status is None
+            refused_delivery = await ADAPTERS[slug]().deliver(client, refused)
+            assert refused_delivery.outcome == "terminal_error"
+            assert refused_delivery.safe_error is not None
+            assert "allowlisted" in refused_delivery.safe_error
+            assert (await ADAPTERS[slug]().test_connection(client, refused)).ok is False
+            assert (await ADAPTERS[slug]().health(client, refused)).status == "unreachable"
+        assert calls == 0
 
 
 class TestConnectionTest:

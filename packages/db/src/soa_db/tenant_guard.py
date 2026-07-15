@@ -25,6 +25,9 @@ USER_GUC = "soa.user_id"
 # - users/organizations: identity/tenant ROOTS resolved at the auth boundary.
 # - outbox_events, jobs: drained by the cross-tenant worker, which binds no
 #   tenant GUC; organization_id there is payload, enforced at enqueue time.
+# - rate_limit_buckets/rate_limit_counters: global pre-auth abuse controls;
+#   they store only keyed identity digests and identity-free aggregates. A
+#   tenant may not be known yet, so tenant RLS would break atomic enforcement.
 # - audit_events: written from both tenant and system contexts (including
 #   before a tenant is bound, e.g. org creation); tenant-facing audit reads
 #   (future audit.read API) must scope through ScopedRepository queries.
@@ -66,9 +69,15 @@ RLS_PROTECTED_TABLES = (
     "catalog_versions",  # 0033
     "catalog_records",  # 0033
     "catalog_bindings",  # 0033
+    "catalog_field_selections",  # 0043
     "usage_ledger_entries",  # 0034
     "feature_flags",  # 0035
     "deletion_tombstones",  # 0037
+    "deletion_requests",  # 0051
+    "legal_holds",  # 0051
+    "provider_runtime_metrics",  # 0048
+    "provider_credentials",  # 0049
+    "external_cleanup_intents",  # 0053
 )
 
 

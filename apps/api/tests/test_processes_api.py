@@ -262,6 +262,14 @@ def test_streams_over_http_pin_the_active_process_version(client: TestClient) ->
     )
     assert draft.status_code == 201
 
+    protected = client.post(
+        "/orgs/northstar/streams/email/versions",
+        json={"overrides": {"provider_policy_version_id": str(uuid.uuid4())}},
+        headers=ADMIN,
+    )
+    assert protected.status_code == 422
+    assert "cannot replace process-pinned" in protected.json()["error"]["message"]
+
     # Publishing a stream before the process has a published version is a
     # clear conflict, not a mystery 500.
     blocked = client.post(

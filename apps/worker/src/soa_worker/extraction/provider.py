@@ -20,6 +20,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from soa_worker.model_usage import ProviderCallUsage, ProviderUsage
+
 
 @dataclass(frozen=True)
 class PageInput:
@@ -130,6 +132,15 @@ class ExtractionResult:
     #: Exact instruction version (AIO-010 ``reference``) the call used;
     #: None for providers that take no instructions (the mock).
     instruction_reference: str | None = None
+    #: Provider-reported token facts. Optional keeps non-model and legacy
+    #: providers backwards compatible; hosted adapters always populate it.
+    usage: ProviderUsage | None = None
+    #: Versioned deployment rate card used for ``cost_cents``. None means
+    #: the provider has no token price (mock/local zero-cost profiles).
+    pricing_reference: str | None = None
+    #: Exact call-level facts. Model repair and routed fallback append one
+    #: record per call so the ledger never attributes a composite to a winner.
+    usage_records: tuple[ProviderCallUsage, ...] = ()
 
 
 class ExtractionProviderError(Exception):
@@ -137,8 +148,17 @@ class ExtractionProviderError(Exception):
     classification; the message must be display-safe (no vendor payloads,
     no document content)."""
 
-    def __init__(self, safe_message: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        safe_message: str,
+        *,
+        retryable: bool,
+        usage_records: tuple[ProviderCallUsage, ...] = (),
+        usage_records_complete: bool = False,
+    ) -> None:
         self.retryable = retryable
+        self.usage_records = usage_records
+        self.usage_records_complete = usage_records_complete
         super().__init__(safe_message)
 
 
@@ -167,6 +187,27 @@ def validate_result_against_request(
     wants to distrust an adapter at runtime. Returns human-readable
     violations (empty = conformant)."""
     violations: list[str] = []
+    if result.cost_cents < 0:
+        violations.append("provider result reported a negative cost")
+    if result.usage_records:
+        recorded_cost = sum(item.estimated_cost_cents for item in result.usage_records)
+        if recorded_cost != result.cost_cents:
+            violations.append("provider call costs do not equal the extraction result total")
+        winning_usage = [
+            item.usage
+            for item in result.usage_records
+            if item.provider == result.provider and item.usage is not None
+        ]
+        if winning_usage:
+            combined = ProviderUsage(
+                input_tokens=sum(item.input_tokens for item in winning_usage),
+                output_tokens=sum(item.output_tokens for item in winning_usage),
+                total_tokens=sum(item.total_tokens for item in winning_usage),
+            )
+            if result.usage != combined:
+                violations.append(
+                    "winning provider call tokens do not equal the extraction result usage"
+                )
     keys = requested_keys(request)
     pages = {page.page_number: page for page in request.pages}
     for extracted in result.fields:

@@ -185,6 +185,8 @@ export function HeaderFieldEditor({
 
               <input
                 id={inputId}
+                data-review-field-key={field.field_key}
+                data-review-row-index="header"
                 ref={(element) => {
                   if (element) inputs.current.set(field.field_key, element);
                   else inputs.current.delete(field.field_key);

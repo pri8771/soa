@@ -32,6 +32,7 @@ class AdapterCapabilities:
     #: idempotency header, an external-id field on the payload).
     idempotency_mechanism: str
     formats: tuple[str, ...]
+    production_ready: bool = True
 
 
 @dataclass(frozen=True)

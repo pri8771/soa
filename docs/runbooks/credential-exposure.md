@@ -14,17 +14,26 @@ report, log leak)
 
 - **Revoke first, investigate second.** Rotate or revoke the exposed
   secret immediately:
-  - service API keys are hashed and revocable (TEN-009);
-  - platform/integration secrets are stored as *references* (SEC-005), so
-    rotate the value in the secret manager — the database holds no secret
-    value to scrub.
+  - service API keys are hashed and revocable (TEN-009); rotate or revoke them
+    from **Settings → Service credentials** using the current record version,
+    then copy the replacement value from its one-time response;
+  - integration rotation writes a new immutable reference and schedules
+    durable revocation of the retired value;
+  - provider rotation writes a new immutable reference, but policy-pinned old
+    values are retained for reproducibility. An exposed pinned provider key
+    therefore requires the audited force-revoke path (reason plus exact
+    confirmation) and immediate publication of a replacement policy; affected
+    historical/in-flight pins deliberately fail closed;
+  - deployment/platform secrets rotate through the deployment's managed-secret
+    procedure. The database holds no raw provider or integration value to
+    scrub.
 - Invalidate any sessions/tokens derived from the secret.
 
 ## Recovery
 
-- Issue a replacement credential and update the consumer (the integration
-  or connector). Because storage is reference-based, no code or data
-  migration is needed — only the backing secret changes.
+- Issue a replacement credential through the owning API/deployment workflow
+  and update or publish the consumer configuration that pins its new immutable
+  reference. Do not mutate a supposedly immutable backing version in place.
 - Scan history for other copies of the same secret; rotate anything that
   shared it.
 

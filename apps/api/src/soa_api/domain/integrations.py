@@ -8,6 +8,7 @@ from soa_db.integrations import (
     IntegrationCredentialRepository,
     IntegrationRepository,
     IntegrationStatus,
+    InvalidIntegrationTransitionError,
     MappingProfileVersion,
     MappingProfileVersionRepository,
     UnknownIntegrationTypeError,
@@ -16,6 +17,7 @@ from soa_db.integrations import (
     credential_secret_for_delivery,
     publish_mapping_draft,
     store_integration_credential,
+    transition_integration,
 )
 
 __all__ = [
@@ -25,6 +27,7 @@ __all__ = [
     "IntegrationCredentialRepository",
     "IntegrationRepository",
     "IntegrationStatus",
+    "InvalidIntegrationTransitionError",
     "MappingProfileVersion",
     "MappingProfileVersionRepository",
     "UnknownIntegrationTypeError",
@@ -33,4 +36,5 @@ __all__ = [
     "credential_secret_for_delivery",
     "publish_mapping_draft",
     "store_integration_credential",
+    "transition_integration",
 ]

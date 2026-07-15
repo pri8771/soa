@@ -111,6 +111,7 @@ class NativeTextPage:
 class NativeTextResult:
     provider: str
     pages: tuple[NativeTextPage, ...]
+    model: str | None = None
     warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:

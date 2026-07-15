@@ -109,6 +109,19 @@ class TestPrivacyAndPolicy:
         assert "local-fast" not in decision.explanation[0]
         assert "language 'fr'" in decision.explanation[0]
 
+    def test_pinned_chain_excludes_unconfigured_eligible_adapters(self) -> None:
+        policy = RoutingPolicy(
+            allow_third_party_processing=True,
+            allow_content_retention=True,
+            allow_training_on_content=True,
+            allowed_providers=("local-fast", "hosted-us"),
+            preferred_order=("hosted-us", "local-fast"),
+        )
+        decision = route(CAP, policy=policy, signals=SIGNALS)
+        assert decision.provider.name == "hosted-us"
+        assert decision.fallbacks == ("local-fast",)
+        assert any("pinned provider chain" in line for line in decision.explanation)
+
 
 class TestBudget:
     def test_over_budget_candidates_are_skipped_with_the_reason(self) -> None:
@@ -170,6 +183,7 @@ class TestQualityHealthAndPreference:
             allow_third_party_processing=True,
             allow_content_retention=True,
             allow_training_on_content=True,
+            evaluated_quality_scores=SIGNALS.quality,
             min_quality=0.75,
         )
         decision = route(CAP, policy=policy, signals=SIGNALS)
@@ -177,6 +191,15 @@ class TestQualityHealthAndPreference:
         assert any(
             "eliminated local-fast" in line and "below" in line for line in decision.explanation
         )
+
+    def test_a_quality_floor_fails_closed_for_unknown_scores(self) -> None:
+        with pytest.raises(NoRouteError) as caught:
+            route(
+                CAP,
+                policy=RoutingPolicy(min_quality=0.8),
+                signals=OperationalSignals(),
+            )
+        assert any("evaluated quality is not pinned" in line for line in caught.value.explanation)
 
     def test_unreachable_providers_are_eliminated(self) -> None:
         signals = OperationalSignals(

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from soa_api.auth.principal import AuthMethod, Principal
 from soa_api.domain.identity import (
     InvalidMembershipTransitionError,
     Membership,
@@ -12,6 +13,8 @@ from soa_api.domain.identity import (
     User,
     UserRepository,
 )
+from soa_api.domain.tenancy import Organization, OrganizationRepository
+from soa_api.services.tenancy_service import NoInvitationError, accept_invitation
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.repository import OrganizationContext
 
@@ -121,6 +124,68 @@ async def test_invitation_acceptance_binds_user(sessions: DatabaseSessions) -> N
     assert accepted is not None
     assert accepted.grants_access
     assert accepted.accepted_at is not None
+    await sessions.dispose()
+
+
+async def test_invitation_requires_an_explicitly_verified_email_claim(
+    sessions: DatabaseSessions,
+) -> None:
+    async with sessions.session_scope() as session:
+        organization = OrganizationRepository(session).add(
+            Organization(name="Northstar", slug="northstar")
+        )
+        await session.flush()
+        MembershipRepository(session, OrganizationContext(organization_id=organization.id)).add(
+            Membership(invited_email="riley@northstar.example")
+        )
+
+    principal = Principal(
+        subject="riley",
+        issuer="https://id.example.com/",
+        auth_method=AuthMethod.OIDC,
+        email="riley@northstar.example",
+        email_verified=None,
+    )
+    async with sessions.session_scope() as session:
+        with pytest.raises(NoInvitationError):
+            await accept_invitation(session, principal, organization_slug="northstar")
+
+    await sessions.dispose()
+
+
+async def test_invitation_uses_the_current_verified_email_for_an_existing_identity(
+    sessions: DatabaseSessions,
+) -> None:
+    principal = Principal(
+        subject="riley",
+        issuer="https://id.example.com/",
+        auth_method=AuthMethod.OIDC,
+        email="New.Address@Northstar.Example",
+        email_verified=True,
+    )
+    async with sessions.session_scope() as session:
+        organization = OrganizationRepository(session).add(
+            Organization(name="Northstar", slug="northstar")
+        )
+        UserRepository(session).add(
+            User(identity_key=principal.identity_key, email="old.address@northstar.example")
+        )
+        await session.flush()
+        MembershipRepository(session, OrganizationContext(organization_id=organization.id)).add(
+            Membership(invited_email="new.address@northstar.example")
+        )
+
+    async with sessions.session_scope() as session:
+        membership = await accept_invitation(
+            session,
+            principal,
+            organization_slug="northstar",
+        )
+        assert membership.status == MembershipStatus.ACTIVE
+        user = await UserRepository(session).get_by_identity_key(principal.identity_key)
+        assert user is not None
+        assert user.email == "new.address@northstar.example"
+
     await sessions.dispose()
 
 

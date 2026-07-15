@@ -65,6 +65,31 @@ async def test_dpi_is_bounded_by_the_pixel_budget() -> None:
     assert page.width_px * page.height_px <= 100_000, "the raster shrank to fit the budget"
 
 
+async def test_aggregate_pixel_and_decompressed_budgets_are_enforced() -> None:
+    with pytest.raises(RenderError) as pixel_error:
+        await render_document(
+            make_png(64, 32),
+            content_type="image/png",
+            limits=RenderLimits(
+                max_pixels_per_page=10_000,
+                max_total_pixels=1_000,
+            ),
+        )
+    assert pixel_error.value.failure is RenderFailure.LIMIT_EXCEEDED
+
+    with pytest.raises(RenderError) as byte_error:
+        await render_document(
+            make_png(64, 32),
+            content_type="image/png",
+            limits=RenderLimits(
+                max_pixels_per_page=10_000,
+                max_total_pixels=10_000,
+                max_decompressed_bytes=1_000,
+            ),
+        )
+    assert byte_error.value.failure is RenderFailure.LIMIT_EXCEEDED
+
+
 async def test_image_and_multiframe_rendering() -> None:
     pages = await render_document(make_png(64, 32), content_type="image/png")
     assert [(p.page_number, p.width_px, p.height_px) for p in pages] == [(1, 64, 32)]

@@ -2,9 +2,11 @@
 # scanned digest for each runtime artifact: migrator, API, worker, and web.
 # It runs migrations as a one-shot job, deploys the worker pool and API,
 # gates on reconciliation/readiness, smoke-tests, and records all promoted
-# digests. A failed API readiness or smoke step leaves the previous API
-# revision serving; operator rollback still uses the previously recorded
-# release manifest.
+# digests. Public promotion is ordered API then web: the web candidate is
+# staged on a Firebase preview channel, the exact API revision is shifted and
+# verified through the canonical URL, and only then is the staged web version
+# cloned atomically to the live channel. Failure handlers restore the exact
+# prior API traffic split, Firebase live version, and worker image.
 #
 # This is authored ahead of the GCP project; the owner wires the secrets
 # below (Workload Identity Federation is preferred over a key file). It is
@@ -51,6 +53,14 @@ jobs:
       GCP_PROJECT: ${{ vars.GCP_PROJECT }}
       GCP_REGION: ${{ vars.GCP_REGION }}
       AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }} # e.g. REGION-docker.pkg.dev/PROJECT/soa
+      # The same environment-scoped API base embedded into the web artifact.
+      # It exercises the customer-facing/custom-domain route after traffic
+      # moves and is required so a Cloud Run-only check cannot mask a broken
+      # custom domain.
+      API_SMOKE_BASE_URL: ${{ vars.WEB_API_BASE_URL }}
+      # Optional custom web domain. The default Firebase site URL is always
+      # checked when this is unset.
+      WEB_SMOKE_BASE_URL: ${{ vars.WEB_SMOKE_BASE_URL }}
       RELEASE_RUN_ID: ${{ inputs.release_run_id }}
       SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
@@ -131,20 +141,158 @@ jobs:
             --command="alembic" --args="upgrade,head" \
             --vpc-connector="soa-${{ inputs.environment }}-vpcconn" \
             --service-account="soa-${{ inputs.environment }}-migrator@${GCP_PROJECT}.iam.gserviceaccount.com" \
-            --set-secrets="SOA_DATABASE_URL=soa-${{ inputs.environment }}-database-url:latest" \
+            --set-secrets="SOA_DATABASE_URL=soa-${{ inputs.environment }}-migrator-database-url:latest" \
             --quiet
           gcloud run jobs execute soa-${{ inputs.environment }}-migrate \
             --region="${GCP_REGION}" --wait
 
-      - name: Deploy worker pool
+      - name: Deploy API (no traffic yet)
+        id: deploy_api
+        shell: bash
         run: |
+          set -euo pipefail
+          service="soa-${{ inputs.environment }}-api"
+
+          # Capture the concrete serving revisions, never the mutable
+          # "latest" alias. A failed or partially completed rollout can then
+          # restore an existing canary split exactly as it was.
+          before=$(gcloud run services describe "$service" \
+            --region="${GCP_REGION}" --format=json)
+          previous_traffic=$(jq -er '
+            [(.status.traffic // [])[]
+              | select((.percent // 0) > 0)
+              | select(.revisionName != null)
+              | "\(.revisionName)=\(.percent)"]
+            | if length == 0 then error("service has no serving revision") else join(",") end
+          ' <<<"$before")
+          previous_percent=$(jq -er '
+            [(.status.traffic // [])[] | (.percent // 0)] | add
+          ' <<<"$before")
+          test "$previous_percent" = "100"
+          echo "previous_traffic=${previous_traffic}" >> "$GITHUB_OUTPUT"
+
+          candidate_tag="candidate-${SOURCE_SHA:0:12}"
+          gcloud run deploy soa-${{ inputs.environment }}-api \
+            --image="${{ steps.images.outputs.api }}" \
+            --region="${GCP_REGION}" \
+            --no-traffic --tag="$candidate_tag" --quiet
+          after=$(gcloud run services describe "$service" \
+            --region="${GCP_REGION}" --format=json)
+          candidate=$(jq -er --arg tag "$candidate_tag" '
+            .status.traffic[] | select(.tag == $tag) | .url
+          ' <<<"$after")
+          candidate_revision=$(jq -er --arg tag "$candidate_tag" '
+            .status.traffic[] | select(.tag == $tag) | .revisionName
+          ' <<<"$after")
+          echo "candidate_url=${candidate}" >> "$GITHUB_OUTPUT"
+          echo "candidate_revision=${candidate_revision}" >> "$GITHUB_OUTPUT"
+
+      # Readiness gate: the candidate revision must report healthy BEFORE
+      # it receives traffic. If this fails the job stops and the live
+      # revision keeps 100% of traffic.
+      - name: Readiness gate
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 2 --max-time 35 \
+              "${{ steps.deploy_api.outputs.candidate_url }}/health/ready"; then
+              echo "candidate is ready"; exit 0
+            fi
+            echo "not ready yet (attempt $attempt)"; sleep 5
+          done
+          echo "candidate never became ready — aborting rollout"; exit 1
+
+      # The scanned web image doubles as the immutable static-asset artifact.
+      # Extract exactly those bytes and stage them on an expiring preview
+      # channel; do not rebuild mutable source here and do not touch live yet.
+      - name: Stage and smoke-test web candidate
+        id: web_candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${{ steps.images.outputs.web }}"
+          container=$(docker create "${{ steps.images.outputs.web }}")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          rm -rf apps/web/dist
+          mkdir -p apps/web/dist
+          docker cp "${container}:/usr/share/nginx/html/." apps/web/dist/
+          test -s apps/web/dist/index.html
+          grep -Fq '<div id="root"></div>' apps/web/dist/index.html
+          index_sha256=$(sha256sum apps/web/dist/index.html | cut -d' ' -f1)
+          test -n "$API_SMOKE_BASE_URL"
+          [[ "$API_SMOKE_BASE_URL" =~ ^https:// ]]
+          # Vite embeds the environment-scoped API origin at image build time.
+          # Refuse to promote a manifest built for a different environment.
+          grep -R -Fq -- "$API_SMOKE_BASE_URL" apps/web/dist/assets
+
+          site="$GCP_PROJECT"
+          channel="candidate-${SOURCE_SHA:0:12}"
+
+          # Record the version currently attached to the live channel. On an
+          # initial deployment the channel may have no release; rollback then
+          # restores that prior disabled state.
+          npx --yes firebase-tools@15.23.0 hosting:channel:list \
+            --site "$site" \
+            --project "$GCP_PROJECT" \
+            --non-interactive --json > /tmp/firebase-channels.json
+          previous_version_name=$(jq -r '
+            (.result.channels // [])
+            | map(select(.name | endswith("/channels/live")))
+            | .[0].release.version.name // ""
+          ' /tmp/firebase-channels.json)
+          if [ -n "$previous_version_name" ]; then
+            previous_version="${previous_version_name##*/}"
+            echo "had_live_release=true" >> "$GITHUB_OUTPUT"
+            echo "previous_version=${previous_version}" >> "$GITHUB_OUTPUT"
+          else
+            echo "had_live_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          npx --yes firebase-tools@15.23.0 hosting:channel:deploy "$channel" \
+            --expires 1d \
+            --no-authorized-domains \
+            --project "$GCP_PROJECT" \
+            --non-interactive --json > /tmp/firebase-candidate.json
+          preview_url=$(jq -er '
+            .result | to_entries | map(.value.url) | map(select(length > 0)) | .[0]
+          ' /tmp/firebase-candidate.json)
+          candidate_version=$(jq -er '
+            .result | to_entries | map(.value.version) | map(select(length > 0)) | .[0]
+          ' /tmp/firebase-candidate.json)
+          for attempt in $(seq 1 12); do
+            if curl -fsSL --connect-timeout 2 --max-time 15 \
+              "${preview_url}/?release=${SOURCE_SHA}" \
+              -o /tmp/firebase-preview-index.html \
+              && test "$(sha256sum /tmp/firebase-preview-index.html | cut -d' ' -f1)" \
+                = "$index_sha256"; then
+              break
+            fi
+            if [ "$attempt" = "12" ]; then
+              echo "Firebase preview did not converge" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "site=${site}" >> "$GITHUB_OUTPUT"
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+          echo "preview_url=${preview_url}" >> "$GITHUB_OUTPUT"
+          echo "candidate_version=${candidate_version}" >> "$GITHUB_OUTPUT"
+          echo "index_sha256=${index_sha256}" >> "$GITHUB_OUTPUT"
+
+      # Mutate the continuously consuming worker only after both public
+      # candidates have passed their no-traffic/preview checks. Capture the old
+      # image first so any later failure can restore the prior worker release.
+      - name: Deploy and verify worker pool
+        id: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_image=$(gcloud run worker-pools describe soa-${{ inputs.environment }}-worker \
+            --region="${GCP_REGION}" --format='value(template.containers[0].image)')
+          test -n "$previous_image"
+          echo "previous_image=${previous_image}" >> "$GITHUB_OUTPUT"
           gcloud run worker-pools deploy soa-${{ inputs.environment }}-worker \
             --image="${{ steps.images.outputs.worker }}" \
             --region="${GCP_REGION}" --quiet
-
-      - name: Verify worker-pool reconciliation
-        id: worker
-        run: |
           reconciling=$(gcloud run worker-pools describe soa-${{ inputs.environment }}-worker \
             --region="${GCP_REGION}" --format='value(reconciling)')
           if [ "$reconciling" = "True" ]; then
@@ -156,60 +304,159 @@ jobs:
           test -n "$revision"
           echo "revision=${revision}" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy API (no traffic yet)
-        id: deploy_api
-        run: |
-          gcloud run deploy soa-${{ inputs.environment }}-api \
-            --image="${{ steps.images.outputs.api }}" \
-            --region="${GCP_REGION}" \
-            --no-traffic --tag=candidate --quiet
-          candidate=$(gcloud run services describe soa-${{ inputs.environment }}-api \
-            --region="${GCP_REGION}" \
-            --format='value(status.traffic[?tag=candidate].url)')
-          echo "candidate_url=${candidate}" >> "$GITHUB_OUTPUT"
-
-      # Readiness gate: the candidate revision must report healthy BEFORE
-      # it receives traffic. If this fails the job stops and the live
-      # revision keeps 100% of traffic.
-      - name: Readiness gate
-        run: |
-          for attempt in $(seq 1 30); do
-            if curl -fsS "${{ steps.deploy_api.outputs.candidate_url }}/health/ready"; then
-              echo "candidate is ready"; exit 0
-            fi
-            echo "not ready yet (attempt $attempt)"; sleep 5
-          done
-          echo "candidate never became ready — aborting rollout"; exit 1
-
       - name: Smoke test the candidate
         run: |
-          curl -fsS "${{ steps.deploy_api.outputs.candidate_url }}/health/live"
-          # Add deeper smoke checks (auth, a read endpoint) as they gain
-          # unauthenticated-safe health surfaces.
+          curl -fsS --connect-timeout 2 --max-time 10 \
+            "${{ steps.deploy_api.outputs.candidate_url }}/health/live"
 
-      # The scanned web image doubles as the immutable static-asset artifact.
-      # Extract exactly those bytes and publish them to the Firebase Hosting
-      # site in the target GCP project; do not rebuild mutable source here.
-      - name: Deploy web to Firebase Hosting
+      - name: Shift 100% traffic to the exact API candidate
+        id: promote_api
         shell: bash
         run: |
           set -euo pipefail
-          docker pull "${{ steps.images.outputs.web }}"
-          container=$(docker create "${{ steps.images.outputs.web }}")
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          rm -rf apps/web/dist
-          mkdir -p apps/web/dist
-          docker cp "${container}:/usr/share/nginx/html/." apps/web/dist/
-          test -s apps/web/dist/index.html
-          npx --yes firebase-tools@15.23.0 deploy \
-            --only hosting \
-            --project "$GCP_PROJECT" \
-            --non-interactive
-
-      - name: Shift 100% traffic to the new revision
-        run: |
+          # Write the marker first: if gcloud changes traffic and then loses
+          # the response, the failure handler must still restore the old split.
+          echo "attempted=true" >> "$GITHUB_OUTPUT"
           gcloud run services update-traffic soa-${{ inputs.environment }}-api \
-            --region="${GCP_REGION}" --to-latest --quiet
+            --region="${GCP_REGION}" \
+            --to-revisions="${{ steps.deploy_api.outputs.candidate_revision }}=100" \
+            --quiet
+          serving=$(gcloud run services describe soa-${{ inputs.environment }}-api \
+            --region="${GCP_REGION}" --format=json)
+          jq -e --arg revision "${{ steps.deploy_api.outputs.candidate_revision }}" '
+            any(.status.traffic[];
+              .revisionName == $revision and (.percent // 0) == 100)
+          ' <<<"$serving" >/dev/null
+          echo "shifted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post-shift canonical API and authentication smoke
+        id: api_smoke
+        shell: bash
+        env:
+          # Optional short-lived identity for a real authenticated /me read.
+          # When absent, the smoke still proves the production auth boundary
+          # rejects an anonymous request with the structured 401 envelope.
+          API_SMOKE_BEARER_TOKEN: ${{ secrets.API_SMOKE_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          smoke_base="$API_SMOKE_BASE_URL"
+          smoke_base="${smoke_base%/}"
+          [[ "$smoke_base" =~ ^https:// ]]
+          for attempt in $(seq 1 12); do
+            if curl -fsS --connect-timeout 2 --max-time 35 \
+              "${smoke_base}/health/ready" > /tmp/api-ready.json; then
+              break
+            fi
+            if [ "$attempt" = "12" ]; then
+              echo "canonical API route did not converge" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          if [ -n "$API_SMOKE_BEARER_TOKEN" ]; then
+            status=$(curl -sS --connect-timeout 2 --max-time 35 \
+              -H "Authorization: Bearer ${API_SMOKE_BEARER_TOKEN}" \
+              -o /tmp/api-auth-smoke.json -w '%{http_code}' \
+              "${smoke_base}/me")
+            test "$status" = "200"
+            jq -e '.user_id and (.memberships | type == "array")' \
+              /tmp/api-auth-smoke.json >/dev/null
+            echo "authenticated_read=true" >> "$GITHUB_OUTPUT"
+          else
+            status=$(curl -sS --connect-timeout 2 --max-time 10 \
+              -o /tmp/api-auth-smoke.json -w '%{http_code}' \
+              "${smoke_base}/me")
+            test "$status" = "401"
+            jq -e '.error.code == "unauthorized"' /tmp/api-auth-smoke.json >/dev/null
+            echo "authenticated_read=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::API_SMOKE_BEARER_TOKEN is unset; verified auth rejection, not an authenticated read."
+          fi
+
+      # Cloning the already-smoked preview version is an atomic Firebase
+      # release operation. Live web never points at a version that has not
+      # already passed static and hosted-preview checks.
+      - name: Promote staged web version to Firebase live
+        id: promote_web
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "attempted=true" >> "$GITHUB_OUTPUT"
+          npx --yes firebase-tools@15.23.0 hosting:clone \
+            "${{ steps.web_candidate.outputs.site }}:${{ steps.web_candidate.outputs.channel }}" \
+            "${{ steps.web_candidate.outputs.site }}:live" \
+            --project "$GCP_PROJECT" --non-interactive
+          npx --yes firebase-tools@15.23.0 hosting:channel:list \
+            --site "${{ steps.web_candidate.outputs.site }}" \
+            --project "$GCP_PROJECT" \
+            --non-interactive --json > /tmp/firebase-promoted-channels.json
+          live_version_name=$(jq -er '
+            (.result.channels // [])
+            | map(select(.name | endswith("/channels/live")))
+            | .[0].release.version.name
+          ' /tmp/firebase-promoted-channels.json)
+          test "${live_version_name##*/}" = \
+            "${{ steps.web_candidate.outputs.candidate_version }}"
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post-promotion web smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          web_base="${WEB_SMOKE_BASE_URL:-https://${{ steps.web_candidate.outputs.site }}.web.app}"
+          web_base="${web_base%/}"
+          [[ "$web_base" =~ ^https:// ]]
+          for attempt in $(seq 1 12); do
+            if curl -fsSL --connect-timeout 2 --max-time 15 \
+              "${web_base}/?release=${SOURCE_SHA}" -o /tmp/firebase-live-index.html \
+              && test "$(sha256sum /tmp/firebase-live-index.html | cut -d' ' -f1)" \
+                = "${{ steps.web_candidate.outputs.index_sha256 }}" \
+              && curl -fsSIL --connect-timeout 2 --max-time 15 \
+                "${web_base}/?release=${SOURCE_SHA}" > /tmp/firebase-live-headers.txt \
+              && grep -qi '^content-security-policy:' /tmp/firebase-live-headers.txt; then
+              break
+            fi
+            if [ "$attempt" = "12" ]; then
+              echo "Firebase live route did not converge" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Restore prior Firebase live release after a failed rollout
+        if: failure() && steps.promote_web.outputs.attempted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          site="${{ steps.web_candidate.outputs.site }}"
+          if [ "${{ steps.web_candidate.outputs.had_live_release }}" = "true" ]; then
+            npx --yes firebase-tools@15.23.0 hosting:clone \
+              "${site}@${{ steps.web_candidate.outputs.previous_version }}" \
+              "${site}:live" \
+              --project "$GCP_PROJECT" --non-interactive
+          else
+            # First-deploy rollback: restore the pre-release disabled state.
+            npx --yes firebase-tools@15.23.0 hosting:disable \
+              --site "$site" --force \
+              --project "$GCP_PROJECT" --non-interactive
+          fi
+
+      - name: Restore prior API traffic after a failed rollout
+        if: failure() && steps.promote_api.outputs.attempted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic soa-${{ inputs.environment }}-api \
+            --region="${GCP_REGION}" \
+            --to-revisions="${{ steps.deploy_api.outputs.previous_traffic }}" \
+            --quiet
+
+      - name: Restore prior worker after a failed rollout
+        if: failure() && steps.worker.outputs.previous_image != ''
+        run: |
+          gcloud run worker-pools deploy soa-${{ inputs.environment }}-worker \
+            --image="${{ steps.worker.outputs.previous_image }}" \
+            --region="${GCP_REGION}" --quiet
 
       - name: Record deployment evidence
         if: always()
@@ -222,6 +469,10 @@ jobs:
             echo "- web image: ${{ steps.images.outputs.web }}"
             echo "- source: ${SOURCE_SHA} (${{ steps.release.outputs.branch }})"
             echo "- release run: ${RELEASE_RUN_ID}"
+            echo "- candidate API revision: ${{ steps.deploy_api.outputs.candidate_revision }}"
+            echo "- previous API traffic: ${{ steps.deploy_api.outputs.previous_traffic }}"
             echo "- worker revision: ${{ steps.worker.outputs.revision }}"
+            echo "- Firebase preview: ${{ steps.web_candidate.outputs.preview_url }}"
+            echo "- authenticated API read smoke: ${{ steps.api_smoke.outputs.authenticated_read }}"
             echo "- outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

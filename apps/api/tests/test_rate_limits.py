@@ -20,47 +20,47 @@ ADMIN = {"X-Dev-User": "user:admin"}
 
 
 class TestLimiter:
-    def test_the_window_slides_and_denials_carry_backoff(self) -> None:
+    async def test_the_window_slides_and_denials_carry_backoff(self) -> None:
         limiter = SlidingWindowRateLimiter()
-        assert limiter.check("op", "a", 2, now=0.0).allowed
-        assert limiter.check("op", "a", 2, now=1.0).allowed
-        denied = limiter.check("op", "a", 2, now=2.0)
+        assert (await limiter.check("op", "a", 2, now=0.0)).allowed
+        assert (await limiter.check("op", "a", 2, now=1.0)).allowed
+        denied = await limiter.check("op", "a", 2, now=2.0)
         assert not denied.allowed
         assert denied.retry_after_seconds >= 1
         assert denied.headers()["Retry-After"] == str(denied.retry_after_seconds)
         # The window drains: the first event ages out after 60s.
-        assert limiter.check("op", "a", 2, now=61.0).allowed
+        assert (await limiter.check("op", "a", 2, now=61.0)).allowed
 
-    def test_denied_requests_are_not_charged(self) -> None:
+    async def test_denied_requests_are_not_charged(self) -> None:
         limiter = SlidingWindowRateLimiter()
-        limiter.check("op", "a", 1, now=0.0)
+        await limiter.check("op", "a", 1, now=0.0)
         for offset in (1.0, 2.0, 3.0):
-            assert not limiter.check("op", "a", 1, now=offset).allowed
+            assert not (await limiter.check("op", "a", 1, now=offset)).allowed
         # Backing off past the window recovers exactly — denials did not
         # extend the punishment.
-        assert limiter.check("op", "a", 1, now=60.5).allowed
+        assert (await limiter.check("op", "a", 1, now=60.5)).allowed
 
-    def test_operations_and_identities_are_isolated(self) -> None:
+    async def test_operations_and_identities_are_isolated(self) -> None:
         limiter = SlidingWindowRateLimiter()
-        assert limiter.check("uploads", "a", 1, now=0.0).allowed
-        assert not limiter.check("uploads", "a", 1, now=0.1).allowed
-        assert limiter.check("uploads", "b", 1, now=0.2).allowed  # other identity
-        assert limiter.check("replays", "a", 1, now=0.3).allowed  # other operation
+        assert (await limiter.check("uploads", "a", 1, now=0.0)).allowed
+        assert not (await limiter.check("uploads", "a", 1, now=0.1)).allowed
+        assert (await limiter.check("uploads", "b", 1, now=0.2)).allowed  # other identity
+        assert (await limiter.check("replays", "a", 1, now=0.3)).allowed  # other operation
 
-    def test_enforce_raises_429_with_headers(self) -> None:
+    async def test_enforce_raises_429_with_headers(self) -> None:
         limiter = SlidingWindowRateLimiter()
-        limiter.enforce("op", "a", 1, now=0.0)
+        await limiter.enforce("op", "a", 1, now=0.0)
         with pytest.raises(HTTPException) as excinfo:
-            limiter.enforce("op", "a", 1, now=1.0)
+            await limiter.enforce("op", "a", 1, now=1.0)
         assert excinfo.value.status_code == 429
         assert excinfo.value.headers is not None
         assert "Retry-After" in excinfo.value.headers
 
-    def test_counters_are_observable_and_identity_free(self) -> None:
+    async def test_counters_are_observable_and_identity_free(self) -> None:
         limiter = SlidingWindowRateLimiter()
-        limiter.check("op", "secret-identity", 1, now=0.0)
-        limiter.check("op", "secret-identity", 1, now=0.1)
-        snapshot = limiter.snapshot()
+        await limiter.check("op", "secret-identity", 1, now=0.0)
+        await limiter.check("op", "secret-identity", 1, now=0.1)
+        snapshot = await limiter.snapshot()
         assert snapshot == {"op": {"allowed": 1, "denied": 1}}
         assert "secret-identity" not in str(snapshot)
 

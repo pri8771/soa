@@ -24,10 +24,10 @@ runbook is missing.
 | [`object-recovery`](object-recovery.md) | Missing/mismatched stored object | on reconcile |
 | [`security-communication`](security-communication.md) | Coordinating an incident's comms | supporting |
 
-Several runbooks reference capabilities that are still owner-blocked or
-unbuilt (production backups REL-003, hosted providers OPEN-003/004);
-those steps say so plainly rather than promising a button that does not
-exist yet.
+Several runbooks depend on live deployment evidence. Backup/PITR settings and
+hosted adapters exist in code/IaC, but restore rehearsal, provider contracts,
+real credentials, and alert wiring are not thereby complete. Those steps state
+their live prerequisites rather than promising a button that does not exist.
 
 Concrete escalation contacts and pager rotations live in the deployment
 (REL-002), not in this repository; the runbooks name **roles**

@@ -7,9 +7,10 @@ Machine clients ingest documents with a service credential (TEN-009):
     multipart/form-data: file=<binary>, client_reference=<optional>
 
 The key's organization decides the tenant — there is no organization in
-the URL, so a key can never reach another tenant's streams by name.
-The ``documents.upload`` scope is required; unknown or missing scopes
-fail closed. Requests run the full shared intake pipeline (limits,
+the URL, so a key can never reach another tenant's streams by name. Within
+that tenant, the resolved stream must also appear in the key's explicit
+allowlist. The ``documents.upload`` scope is required; unknown or missing
+scopes fail closed. Requests run the full shared intake pipeline (limits,
 signature inspection, malware scan, duplicate policy, atomic
 registration), so the API door applies exactly the same rules as the
 interactive one.
@@ -18,10 +19,9 @@ Idempotency: a repeated ``client_reference`` returns HTTP 200 with the
 ORIGINAL document — the safe duplicate response — instead of creating a
 second delivery or erroring.
 
-Rate control: a per-credential sliding-window limit
-(``api_ingest_rate_per_minute``) answers 429 with Retry-After. The
-window lives in process memory — honest for a single API instance;
-multi-instance deployments need a shared store (REL epic).
+Rate control uses the shared database-backed sliding-window limiter outside
+development. Multipart bytes are read incrementally and bounded below the
+reference Cloud Run request ceiling before a full in-memory value is built.
 """
 
 from typing import Annotated, Any
@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from soa_api.auth.errors import AuthenticationError
+from soa_api.auth.principal import Principal
 from soa_api.dependencies import (
     DbSession,
     Dependencies,
@@ -42,18 +43,28 @@ from soa_api.domain.credentials import (
     authenticate_api_key,
     credential_organization_id,
     require_scope,
+    require_stream_access,
 )
 from soa_api.domain.streams import StreamRepository, StreamStatus
 from soa_api.domain.uploads import SUPPORTED_UPLOAD_TYPES
 from soa_api.services.file_limits import FileLimits, LimitViolation, check_size, resolve_limits
-from soa_api.services.ingestion import IntakeDeclaration, finalize_document_intake
+from soa_api.services.ingestion import (
+    IntakeDeclaration,
+    evaluate_intake_safety,
+    finalize_document_intake,
+)
 from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
+from soa_db import commit_unit_of_work
 from soa_db.audit import ActorType
 from soa_db.documents import DocumentRepository, SourceChannel
+from soa_db.external_cleanup import (
+    ExternalResourceType,
+    register_external_resource_rollback,
+)
 from soa_db.repository import OrganizationContext
 from soa_db.tenant_guard import bind_tenant
 from soa_db.types import uuid7
-from soa_storage import sha256_hex
+from soa_storage import ObjectNotFoundError, sha256_hex
 from soa_storage.keys import artifact_key
 
 router = APIRouter(tags=["public-api"])
@@ -71,7 +82,27 @@ class IngestResponse(BaseModel):
     idempotent_replay: bool = False
 
 
-async def _authenticate(request: Request, session: DbSession) -> tuple[OrganizationContext, str]:
+async def _read_bounded_upload(file: UploadFile, limits: FileLimits) -> bytes:
+    """Read at most ``max_size_bytes + 1`` bytes, then fail immediately.
+
+    ``UploadFile.read()`` without a size copies the whole spooled upload into
+    memory before policy can run. This loop makes the configured limit an
+    allocation bound as well as a post-hoc validation rule.
+    """
+    data = bytearray()
+    while True:
+        remaining_to_verdict = limits.max_size_bytes + 1 - len(data)
+        chunk = await file.read(min(1024 * 1024, max(remaining_to_verdict, 1)))
+        if not chunk:
+            break
+        data.extend(chunk)
+        check_size(len(data), limits)
+    return bytes(data)
+
+
+async def _authenticate(
+    request: Request, session: DbSession
+) -> tuple[OrganizationContext, str, Principal]:
     raw_key = request.headers.get(API_KEY_HEADER)
     if not raw_key:
         raise HTTPException(
@@ -89,7 +120,7 @@ async def _authenticate(request: Request, session: DbSession) -> tuple[Organizat
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from None
     context = OrganizationContext(organization_id=organization_id)
     await bind_tenant(session, organization_id)
-    return context, f"api_key:{principal.subject}"
+    return context, f"api_key:{principal.subject}", principal
 
 
 @router.post("/v1/streams/{stream_slug}/documents", status_code=status.HTTP_201_CREATED)
@@ -103,14 +134,33 @@ async def ingest_document(
     deps: Annotated[Dependencies, Depends(get_dependencies)],
     client_reference: Annotated[str | None, Form(max_length=200)] = None,
 ) -> Any:
-    context, actor_id = await _authenticate(request, session)
+    # Invalid/random API keys must not get an unbounded indexed DB lookup.
+    # The second limiter below is still per authenticated credential; this
+    # pre-auth budget is deliberately keyed to the network peer and runs
+    # before key parsing or lookup.
+    await deps.rate_limiter.enforce(
+        "api_ingest_auth",
+        request.client.host if request.client else "unknown",
+        deps.settings.rate_limit_public_auth_per_minute,
+    )
+    context, actor_id, principal = await _authenticate(request, session)
 
     # Abuse control (SEC-003): per-credential cap via the shared limiter.
-    deps.rate_limiter.enforce("api_ingest", actor_id, deps.settings.api_ingest_rate_per_minute)
+    await deps.rate_limiter.enforce(
+        "api_ingest", actor_id, deps.settings.api_ingest_rate_per_minute
+    )
 
     stream = await StreamRepository(session, context).get_by_slug(stream_slug)
     if stream is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+    try:
+        require_stream_access(principal, stream.id)
+    except ScopeError:
+        # Match a missing stream so a credential cannot enumerate streams it
+        # was not granted, even within its own organization.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found."
+        ) from None
     if stream.status == StreamStatus.ARCHIVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -135,7 +185,6 @@ async def ingest_document(
 
             return JSONResponse(status_code=status.HTTP_200_OK, content=response.model_dump())
 
-    data = await file.read()
     content_type = file.content_type or "application/octet-stream"
     filename = file.filename or "document"
     if content_type not in SUPPORTED_UPLOAD_TYPES:
@@ -154,10 +203,21 @@ async def ingest_document(
         )
     except RuntimePinError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
-    stream_config = pins.config
+    # Copy every value needed after the read transaction closes. SQLAlchemy
+    # objects remain usable because request sessions do not expire on commit,
+    # but relying only on primitives prevents an accidental lazy query from
+    # reopening a transaction around external I/O.
+    organization_id = context.organization_id
+    stream_id = stream.id
+    stream_version_id = stream.active_version_id
+    stream_config = dict(pins.config)
+    config_fingerprint = pins.config_fingerprint
     limits = resolve_limits(
         FileLimits(
-            max_size_bytes=deps.settings.max_upload_bytes,
+            max_size_bytes=min(
+                deps.settings.max_upload_bytes,
+                deps.settings.public_ingest_max_file_bytes,
+            ),
             max_pages=deps.settings.max_pages_per_document,
             max_total_pixels=deps.settings.max_total_pixels,
             max_decompressed_bytes=deps.settings.max_decompressed_bytes,
@@ -165,8 +225,13 @@ async def ingest_document(
         ),
         stream_config,
     )
+
+    # Authentication, stream authorization, idempotency, and runtime-pin
+    # reads are complete. Release the connection before request streaming,
+    # malware scanning, or object-storage network I/O begins.
+    await commit_unit_of_work(session)
     try:
-        check_size(len(data), limits)
+        data = await _read_bounded_upload(file, limits)
     except LimitViolation as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
@@ -175,30 +240,48 @@ async def ingest_document(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="empty file")
 
     document_id = uuid7()
-    key = artifact_key(context.organization_id, document_id, kind="original", filename=filename)
+    key = artifact_key(organization_id, document_id, kind="original", filename=filename)
     digest = sha256_hex(data)
+    declaration = IntakeDeclaration(
+        stream_id=stream_id,
+        stream_config=stream_config,
+        source_channel=SourceChannel.API,
+        filename=filename,
+        content_type=content_type,
+        sha256=digest,
+        size_bytes=len(data),
+        object_key=key,
+        client_reference=client_reference,
+        source_metadata={"api_client": actor_id},
+        document_id=document_id,
+        stream_version_id=stream_version_id,
+        config_fingerprint=config_fingerprint,
+    )
+    safety = await evaluate_intake_safety(declaration, data, scanner)
+
+    async def cleanup_stored_object() -> None:
+        try:
+            await store.delete(key)
+        except ObjectNotFoundError:
+            pass
+
+    register_external_resource_rollback(
+        session,
+        organization_id=organization_id,
+        resource_type=ExternalResourceType.OBJECT,
+        resource_locator=key,
+        cleanup=cleanup_stored_object,
+    )
     await store.put(key, data, content_type=content_type, sha256=digest)
 
+    # SET LOCAL tenant context ended with the read transaction above. Rebind
+    # immediately before the short, database-only registration unit of work.
+    await bind_tenant(session, organization_id)
     document = await finalize_document_intake(
         session,
         context,
-        declaration=IntakeDeclaration(
-            stream_id=stream.id,
-            stream_config=stream_config,
-            source_channel=SourceChannel.API,
-            filename=filename,
-            content_type=content_type,
-            sha256=digest,
-            size_bytes=len(data),
-            object_key=key,
-            client_reference=client_reference,
-            source_metadata={"api_client": actor_id},
-            document_id=document_id,
-            stream_version_id=stream.active_version_id,
-            config_fingerprint=pins.config_fingerprint,
-        ),
-        data=data,
-        scanner=scanner,
+        declaration=declaration,
+        safety=safety,
         actor_id=actor_id,
         actor_type=ActorType.SERVICE,
     )

@@ -8,9 +8,10 @@
 
 import { Banner, Button, Skeleton } from "@soa/design-system";
 import { useQuery } from "@tanstack/react-query";
-import { Link, Outlet, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 
-import { fetchMe } from "../api/client";
+import { ApiError, fetchMe } from "../api/client";
+import { PermissionDenied } from "../auth/PermissionDenied";
 import { DevConsole } from "../components/dev/DevConsole";
 import { ShellSessionProvider, type ShellSession } from "../shell/ShellContext";
 
@@ -22,9 +23,45 @@ function CenteredState({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Required read/action permission for every route reachable under the app shell. */
+function requiredPermissionForPath(pathname: string, organizationSlug: string): string {
+  const prefix = `/app/${organizationSlug}/`;
+  const relativePath = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : "";
+  const [area, action] = relativePath.split("/");
+  switch (area) {
+    case "documents":
+      return action === "upload" ? "documents.upload" : "documents.read";
+    case "review":
+      return "documents.review";
+    case "processes":
+      return "processes.read";
+    case "streams":
+    case "providers":
+      return "streams.read";
+    case "catalogs":
+      return "catalogs.read";
+    case "integrations":
+      return "integrations.read";
+    case "jobs":
+      return "jobs.read";
+    case "analytics":
+      return "analytics.read";
+    case "audit":
+      return "audit.read";
+    case "settings":
+      return "organization.manage";
+    case "overview":
+    case "getting-started":
+    case "support":
+    default:
+      return "organization.read";
+  }
+}
+
 export function AppLayout() {
   const { organizationSlug } = useParams({ strict: false }) as { organizationSlug: string };
-  const { data, status, refetch } = useQuery({
+  const location = useLocation();
+  const { data, error, status, refetch } = useQuery({
     queryKey: ["me"],
     queryFn: fetchMe,
     staleTime: 30_000,
@@ -42,18 +79,26 @@ export function AppLayout() {
   }
 
   if (status === "error") {
+    const denied = error instanceof ApiError && error.status === 403;
     return (
       <CenteredState>
         <Banner
           tone="critical"
-          title="Couldn’t load your session"
+          title={denied ? "Permission denied" : "Couldn’t load your session"}
           action={
             <Button size="sm" onPress={() => void refetch()}>
               Try again
             </Button>
           }
         >
-          The identity service did not respond. Nothing has been changed.
+          {denied
+            ? "Your identity is valid, but it is not allowed to load organization memberships."
+            : "The identity service did not respond. Nothing has been changed."}
+          {error instanceof ApiError && error.correlationId ? (
+            <p style={{ marginBottom: 0 }}>
+              Support reference: <code>{error.correlationId}</code>
+            </p>
+          ) : null}
         </Banner>
       </CenteredState>
     );
@@ -104,13 +149,15 @@ export function AppLayout() {
       .filter((m) => m.status === "active" && m.organization_status === "active")
       .map((m) => ({ slug: m.organization_slug, name: m.organization_name })),
   };
+  const requiredPermission = requiredPermissionForPath(location.pathname, organizationSlug);
+  const denied = !session.permissions.has(requiredPermission);
 
   // Key by organization so a switch unmounts the previous tenant's subtree
   // immediately — no stale prior-tenant data can flash.
   return (
     <ShellSessionProvider key={membership.organization_id} session={session}>
-      <Outlet />
-      {import.meta.env.MODE === "development" && (
+      {denied ? <PermissionDenied requiredPermission={requiredPermission} /> : <Outlet />}
+      {import.meta.env.MODE === "development" && session.permissions.has("jobs.read") && (
         <DevConsole organizationSlug={membership.organization_slug} />
       )}
     </ShellSessionProvider>

@@ -20,6 +20,7 @@ function renderPanel(overrides: Partial<ApprovalPanelProps> = {}) {
       destination="Uploads"
       settledOutcome={null}
       busy={false}
+      approvalBlockedReason={null}
       statusMessage={null}
       onApprove={onApprove}
       onReject={onReject}
@@ -91,6 +92,12 @@ describe("Approval panel (REV-013)", () => {
     renderPanel({ canApprove: false });
     expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
     expect(screen.getByText(/documents.approve permission/)).toBeInTheDocument();
+  });
+
+  it("shows WHY approval is disabled while a correction is unresolved", () => {
+    renderPanel({ approvalBlockedReason: "A field change failed to save. Retry it first." });
+    expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
+    expect(screen.getByText(/failed to save/)).toBeInTheDocument();
   });
 
   it("blockers without the override permission disable confirm with the reason", async () => {

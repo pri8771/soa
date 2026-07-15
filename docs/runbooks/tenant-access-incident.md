@@ -8,11 +8,15 @@ credential stuffing or enumeration.
 
 ## Detection
 
-- A burst of auth failures or repeated cross-tenant `404`s from one
-  identity/IP. Cross-tenant access returns `404` by design (existence
-  never leaks), so a cluster of them is a probe, not a bug.
-- The audit trail (DB-005) carries every auth and authorization event;
-  query it via the audit API (ANA-007).
+- A burst of authentication failures or repeated cross-tenant `404`s from one
+  identity/IP in IdP, ingress, or structured request logs. Cross-tenant access
+  returns `404` by design (existence never leaks), so a cluster is a probe, not
+  proof of a missing resource.
+- The application audit API exposes recorded security/administrative events,
+  but the application does not persist every authentication or authorization
+  denial as an audit row. Preserve and correlate IdP/ingress/request logs with
+  the rate-limit and application audit facts; the complete live anomaly rule
+  and log retention are deployment controls.
 
 ## Containment
 
@@ -28,14 +32,15 @@ credential stuffing or enumeration.
 ## Recovery
 
 - Rotate any exposed credential (see
-  [`credential-exposure`](credential-exposure.md)); confirm RLS denied
-  the probes (they should show as 404/denied in the audit trail, never
-  successful cross-tenant reads).
+  [`credential-exposure`](credential-exposure.md)); confirm resource requests
+  were denied in the correlated request/ingress evidence and use database/RLS
+  evidence plus tenant data inspection to rule out successful cross-tenant
+  reads.
 
 ## Verification
 
-- The denial spike subsides; the audit trail shows no successful
-  cross-tenant access; the offending credential/identity is disabled.
+- The denial spike subsides; investigation finds no successful cross-tenant
+  read; the offending credential/identity is disabled.
 
 ## Communication
 

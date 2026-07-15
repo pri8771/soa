@@ -26,7 +26,7 @@ For each flow: keyboard only (no mouse), then with a screen reader
 - [ ] Per-file progress and failures are announced
 - [ ] Partial failure is not summarized as success
 
-### 4. Review Studio (once REV lands)
+### 4. Review Studio
 - [ ] Full keyboard map (J/K, Tab, E, M, A, R, [, ], ?) works without a mouse
 - [ ] Selecting a field announces its evidence region description
 - [ ] Autosave state changes (saved/saving/conflict) are announced

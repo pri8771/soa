@@ -92,7 +92,6 @@ async def mark_duplicate(
         summary={
             "duplicate_of": str(original.id),
             "policy": policy.value,
-            "content_sha256": document.content_sha256,
         },
     )
 

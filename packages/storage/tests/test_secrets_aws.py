@@ -16,6 +16,7 @@ from soa_config import (
     SecretNotFoundError,
     SecretReference,
     SecretStoreError,
+    SecretStoreUnavailableError,
 )
 from soa_storage.secrets_aws import AwsSecretsManagerStore, build_secret_store
 
@@ -71,6 +72,19 @@ class FakeSession:
         return FakeSecretsManagerClient(self._state)
 
 
+class UnavailableSecretsManagerClient(FakeSecretsManagerClient):
+    async def get_secret_value(self, *, SecretId: str) -> dict[str, Any]:
+        del SecretId
+        raise _client_error("ServiceUnavailableException", "GetSecretValue")
+
+
+class UnavailableSession(FakeSession):
+    def create_client(self, service: str, *, region_name: str) -> FakeSecretsManagerClient:
+        assert service == "secretsmanager"
+        self.regions_seen.append(region_name)
+        return UnavailableSecretsManagerClient(self._state)
+
+
 @pytest.fixture
 def state() -> dict[str, Any]:
     return {}
@@ -114,6 +128,15 @@ async def test_missing_secrets_and_foreign_references(store: AwsSecretsManagerSt
         await store.resolve(SecretReference.parse("secretref://aws-secrets-manager/nope"))
     with pytest.raises(SecretStoreError, match="refusing to resolve across providers"):
         await store.resolve(SecretReference.parse("secretref://memory/name"))
+
+
+async def test_transient_aws_failure_is_classified_retryable() -> None:
+    store = AwsSecretsManagerStore(
+        region="eu-central-1",
+        session=UnavailableSession({"orgs/1/creds/a": {"value": "v", "deletion_scheduled": False}}),
+    )
+    with pytest.raises(SecretStoreUnavailableError, match="temporarily unavailable"):
+        await store.resolve(SecretReference.parse("secretref://aws-secrets-manager/orgs/1/creds/a"))
 
 
 class TestBackendFactory:

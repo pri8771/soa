@@ -21,5 +21,17 @@ def test_correlation_id_travels_from_request_to_log_records(
     assert completed, "request completion log missing"
     # The middleware set the correlation contextvar; the formatter reads it at
     # emit time. Emitting inside the request scope proves propagation.
-    assert completed[0].http_path == "/health/live"
+    assert completed[0].http_route == "/health/live"
     assert completed[0].http_status == 200
+
+
+def test_untrusted_correlation_header_is_not_echoed() -> None:
+    app = create_app(ApiSettings(environment=Environment.TEST))
+    client = TestClient(app)
+    untrusted = "credential=CANARY customer value"
+
+    response = client.get("/health/live", headers={"X-Request-ID": untrusted})
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] != untrusted
+    assert len(response.headers["X-Request-ID"]) == 32

@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { DEFAULT_STREAM_DRAFT, server } from "../test/msw";
@@ -95,5 +95,118 @@ describe("Stream inheritance editor (CFG-013)", () => {
     expect(await screen.findByText("Resolved preview unavailable")).toBeInTheDocument();
     // The draft's own overrides remain editable.
     expect(screen.getByDisplayValue("0.9")).toBeInTheDocument();
+  });
+
+  it("edits and publishes extraction instructions attached to the stream version", async () => {
+    const user = userEvent.setup();
+    let updated: Record<string, unknown> | null = null;
+    let published = false;
+    server.use(
+      http.patch("/api/orgs/northstar/instructions/:instructionId", async ({ request }) => {
+        updated = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          id: "instruction-1",
+          stream_version_id: DEFAULT_STREAM_DRAFT.id,
+          schema_version_id: "50000000-0000-4000-8000-000000000001",
+          version_number: 1,
+          state: "draft",
+          reference: "instruction:instruction-1:v1",
+          content: updated["content"],
+          change_summary: updated["change_summary"],
+          published_at: null,
+          published_by: null,
+        });
+      }),
+      http.post("/api/orgs/northstar/instructions/:instructionId/publish", () => {
+        published = true;
+        return HttpResponse.json({
+          id: "instruction-1",
+          stream_version_id: DEFAULT_STREAM_DRAFT.id,
+          schema_version_id: "50000000-0000-4000-8000-000000000001",
+          version_number: 1,
+          state: "published",
+          reference: "instruction:instruction-1:v1",
+          content: {
+            instructions: "Extract identifiers, totals, and requested delivery date.",
+            field_guidance: { po_number: "Preserve leading zeroes." },
+          },
+          change_summary: "Cover requested delivery date",
+          published_at: "2026-07-15T14:00:00Z",
+          published_by: "user:test",
+        });
+      }),
+    );
+
+    await renderApp(PATH);
+    const editor = await screen.findByRole("region", { name: "Extraction instructions" });
+    const instructionText = await within(editor).findByDisplayValue(
+      "Extract purchase-order identifiers and totals.",
+    );
+    await user.clear(instructionText);
+    await user.type(instructionText, "Extract identifiers, totals, and requested delivery date.");
+    const summary = within(editor).getByLabelText("Change summary");
+    await user.clear(summary);
+    await user.type(summary, "Cover requested delivery date");
+    await user.click(within(editor).getByRole("button", { name: "Save instructions" }));
+
+    await waitFor(() => expect(updated).not.toBeNull());
+    expect(updated).toMatchObject({
+      content: {
+        instructions: "Extract identifiers, totals, and requested delivery date.",
+        field_guidance: { po_number: "Preserve leading zeros." },
+      },
+      change_summary: "Cover requested delivery date",
+    });
+
+    await user.click(within(editor).getByRole("button", { name: "Publish instructions" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Publish extraction instructions?" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Publish immutable version" }));
+    await waitFor(() => expect(published).toBe(true));
+  });
+
+  it("allows an operator to author the first instruction before creating its draft", async () => {
+    const user = userEvent.setup();
+    let created: Record<string, unknown> | null = null;
+    server.use(
+      http.get("/api/orgs/northstar/stream-versions/:streamVersionId/instructions", () =>
+        HttpResponse.json({ items: [] }),
+      ),
+      http.post(
+        "/api/orgs/northstar/stream-versions/:streamVersionId/instructions",
+        async ({ request, params }) => {
+          created = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(
+            {
+              id: "instruction-first",
+              stream_version_id: String(params["streamVersionId"]),
+              schema_version_id: created["schema_version_id"],
+              version_number: 1,
+              state: "draft",
+              reference: "instruction:instruction-first:v1",
+              content: created["content"],
+              change_summary: created["change_summary"],
+              published_at: null,
+              published_by: null,
+            },
+            { status: 201 },
+          );
+        },
+      ),
+    );
+
+    await renderApp(PATH);
+    const editor = await screen.findByRole("region", { name: "Extraction instructions" });
+    const instructionText = within(editor).getByLabelText("Instruction text");
+    expect(instructionText).not.toHaveAttribute("readonly");
+    await user.type(instructionText, "Extract the exact purchase order number.");
+    await user.click(within(editor).getByRole("button", { name: "Create instruction draft" }));
+
+    await waitFor(() => expect(created).not.toBeNull());
+    expect(created).toMatchObject({
+      schema_version_id: "50000000-0000-4000-8000-000000000001",
+      content: { instructions: "Extract the exact purchase order number.", field_guidance: {} },
+    });
   });
 });

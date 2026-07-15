@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import String, UniqueConstraint, select
+from sqlalchemy import String, UniqueConstraint, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -134,5 +134,7 @@ class MembershipRepository(ScopedRepository[Membership]):
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def get_by_invited_email(self, email: str) -> Membership | None:
-        stmt = self._scoped_select().where(Membership.invited_email == email)
+        stmt = self._scoped_select().where(
+            func.lower(Membership.invited_email) == email.strip().casefold()
+        )
         return (await self._session.execute(stmt)).scalar_one_or_none()

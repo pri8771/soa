@@ -121,6 +121,17 @@ describe("Document viewer (REV-004)", () => {
 
   it("handles a large document: all pages navigable, one full-size image mounted", async () => {
     const user = userEvent.setup();
+    let signedUrlRequests = 0;
+    server.use(
+      http.post("/api/orgs/northstar/artifacts/:artifactId/download-url", ({ params }) => {
+        signedUrlRequests += 1;
+        return HttpResponse.json({
+          url: `https://storage.test/signed/${String(params["artifactId"])}`,
+          expires_at: "2026-07-15T23:59:00+00:00",
+          method: "GET",
+        });
+      }),
+    );
     await makeLargeDocumentHandler(120);
     renderViewer(FAILED_DOC);
     expect(await screen.findByText("Page 1 of 120")).toBeInTheDocument();
@@ -130,6 +141,9 @@ describe("Document viewer (REV-004)", () => {
     expect(await screen.findByText("Page 120 of 120")).toBeInTheDocument();
     // Exactly ONE full-size page image is mounted (alt "Page N of 120").
     expect(screen.getAllByAltText(/^Page \d+ of 120$/)).toHaveLength(1);
+    // Navigation stays O(page count), while storage capabilities and images
+    // stay bounded to the current/nearby pages instead of all 120 pages.
+    expect(signedUrlRequests).toBeLessThanOrEqual(4);
   });
 
   it("renews an expired signed URL once on image error", async () => {

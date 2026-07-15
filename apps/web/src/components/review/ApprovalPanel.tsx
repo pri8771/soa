@@ -39,6 +39,8 @@ export interface ApprovalPanelProps {
   /** Set when the task is already settled: "approved" / "rejected" / etc. */
   settledOutcome: string | null;
   busy: boolean;
+  /** A correction is queued/saving or at least one correction failed. */
+  approvalBlockedReason: string | null;
   /** The latest action outcome; rendered visibly AND announced politely. */
   statusMessage: string | null;
   onApprove: (overrideReason: string | null) => void;
@@ -74,7 +76,7 @@ export function ApprovalPanel(props: ApprovalPanelProps) {
     ? "You do not have the documents.approve permission."
     : !props.editable
       ? (props.readOnlyReason ?? "The task is not claimed by you.")
-      : null;
+      : props.approvalBlockedReason;
   const rejectDisabledReason = !props.canReject
     ? "Rejecting needs the documents.reject permission (supervisors)."
     : !props.editable
@@ -130,6 +132,7 @@ export function ApprovalPanel(props: ApprovalPanelProps) {
         <Button
           variant="primary"
           size="sm"
+          data-review-action="approve"
           isDisabled={approveDisabledReason !== null || props.busy}
           aria-expanded={mode === "approve"}
           onPress={() => setMode(mode === "approve" ? "closed" : "approve")}
@@ -139,6 +142,7 @@ export function ApprovalPanel(props: ApprovalPanelProps) {
         <Button
           variant="destructive"
           size="sm"
+          data-review-action="reject"
           isDisabled={rejectDisabledReason !== null || props.busy}
           aria-expanded={mode === "reject"}
           onPress={() => setMode(mode === "reject" ? "closed" : "reject")}
@@ -147,6 +151,7 @@ export function ApprovalPanel(props: ApprovalPanelProps) {
         </Button>
         <Button
           size="sm"
+          data-review-action="escalate"
           isDisabled={props.busy}
           aria-expanded={mode === "escalate"}
           onPress={() => setMode(mode === "escalate" ? "closed" : "escalate")}

@@ -28,15 +28,21 @@ Failure classification decides what happens next:
   fabricating values or dead-lettering recoverable work.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from soa_worker.extraction.provider import (
     ExtractedField,
+    ExtractionProviderError,
     ExtractionRequest,
     ExtractionResult,
 )
 from soa_worker.llm_extraction import ModelOutputInvalidError
+from soa_worker.model_usage import (
+    ProviderCallUsage,
+    ProviderUsage,
+    combine_provider_usage,
+)
 
 FALLBACK_MANUAL_REVIEW = "manual_review"
 
@@ -84,7 +90,14 @@ class RepairOutcome:
 
 
 def _fallback_result(
-    provider_name: str, request: ExtractionRequest, attempts: list[AttemptRecord]
+    provider_name: str,
+    request: ExtractionRequest,
+    attempts: list[AttemptRecord],
+    *,
+    cost_cents: int,
+    usage: ProviderUsage | None,
+    pricing_reference: str | None,
+    usage_records: tuple[ProviderCallUsage, ...],
 ) -> ExtractionResult:
     """Honest exhaustion: every requested field explicitly absent."""
     fields = tuple(
@@ -95,6 +108,10 @@ def _fallback_result(
     return ExtractionResult(
         provider=provider_name,
         fields=fields,
+        cost_cents=cost_cents,
+        usage=usage,
+        pricing_reference=pricing_reference,
+        usage_records=usage_records,
         warnings=(
             "model output could not be repaired within the policy bounds — "
             f"the document needs manual review ({story})",
@@ -113,6 +130,9 @@ async def extract_with_repair(
     effective = policy or RepairPolicy()
     attempts: list[AttemptRecord] = []
     spent_cents = 0
+    spent_usage: ProviderUsage | None = None
+    pricing_reference: str | None = None
+    usage_records: list[ProviderCallUsage] = []
     repair_hint: str | None = None
 
     for attempt_number in range(1, effective.max_attempts + 1):
@@ -120,6 +140,27 @@ async def extract_with_repair(
             result = await provider.extract(request, repair_hint=repair_hint)
         except ModelOutputInvalidError as invalid:
             spent_cents += invalid.cost_cents
+            spent_usage = combine_provider_usage(spent_usage, invalid.usage)
+            usage_records.append(
+                invalid.call_usage
+                or ProviderCallUsage(
+                    provider=provider.name,
+                    model=None,
+                    usage=invalid.usage,
+                    estimated_cost_cents=invalid.cost_cents,
+                    pricing_reference=invalid.pricing_reference,
+                    outcome="invalid_output",
+                )
+            )
+            if invalid.pricing_reference is not None:
+                if pricing_reference is not None and pricing_reference != invalid.pricing_reference:
+                    raise ExtractionProviderError(
+                        "the provider pricing reference changed during repair",
+                        retryable=False,
+                        usage_records=tuple(usage_records),
+                        usage_records_complete=True,
+                    ) from None
+                pricing_reference = invalid.pricing_reference
             attempts.append(
                 AttemptRecord(
                     attempt_number=attempt_number,
@@ -128,7 +169,10 @@ async def extract_with_repair(
                 )
             )
             repair_hint = invalid.reason
-            if spent_cents >= effective.max_cost_cents:
+            cost_exhausted = spent_cents > effective.max_cost_cents or (
+                spent_cents == effective.max_cost_cents and invalid.cost_cents > 0
+            )
+            if cost_exhausted:
                 attempts.append(
                     AttemptRecord(
                         attempt_number=attempt_number,
@@ -141,12 +185,40 @@ async def extract_with_repair(
                 )
                 break
             continue
+        except ExtractionProviderError as error:
+            # Earlier invalid responses were paid calls even though this
+            # attempt's transport/rate-limit failure belongs to queue retry.
+            error.usage_records = (*usage_records, *error.usage_records)
+            raise
         # Success: record it and stop.
         attempts.append(
             AttemptRecord(attempt_number=attempt_number, outcome="ok", detail="valid output")
         )
+        success_records = result.usage_records or (
+            ProviderCallUsage(
+                provider=result.provider,
+                model=result.model,
+                usage=result.usage,
+                estimated_cost_cents=result.cost_cents,
+                pricing_reference=result.pricing_reference,
+                outcome="succeeded",
+            ),
+        )
+        if not result.usage_records:
+            result = replace(result, usage_records=success_records)
         merged = result
         if len(attempts) > 1:
+            if (
+                pricing_reference is not None
+                and result.pricing_reference is not None
+                and pricing_reference != result.pricing_reference
+            ):
+                raise ExtractionProviderError(
+                    "the provider pricing reference changed during repair",
+                    retryable=False,
+                    usage_records=(*usage_records, *success_records),
+                    usage_records_complete=True,
+                )
             merged = ExtractionResult(
                 provider=result.provider,
                 fields=result.fields,
@@ -157,11 +229,22 @@ async def extract_with_repair(
                     f"valid output after {len(attempts)} attempts ({len(attempts) - 1} repaired)",
                 ),
                 instruction_reference=result.instruction_reference,
+                usage=combine_provider_usage(spent_usage, result.usage),
+                pricing_reference=result.pricing_reference or pricing_reference,
+                usage_records=(*usage_records, *success_records),
             )
         return RepairOutcome(result=merged, attempts=tuple(attempts), fallback=None)
 
     return RepairOutcome(
-        result=_fallback_result(provider.name, request, attempts),
+        result=_fallback_result(
+            provider.name,
+            request,
+            attempts,
+            cost_cents=spent_cents,
+            usage=spent_usage,
+            pricing_reference=pricing_reference,
+            usage_records=tuple(usage_records),
+        ),
         attempts=tuple(attempts),
         fallback=FALLBACK_MANUAL_REVIEW,
     )

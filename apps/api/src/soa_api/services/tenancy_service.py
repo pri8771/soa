@@ -16,7 +16,12 @@ from soa_api.domain.identity import (
     User,
     UserRepository,
 )
-from soa_api.domain.rbac import RoleRepository, assign_role, seed_system_roles
+from soa_api.domain.rbac import (
+    RoleRepository,
+    assign_role,
+    ensure_can_remove_active_org_admin,
+    seed_system_roles,
+)
 from soa_api.domain.tenancy import Organization, OrganizationRepository
 from soa_db.audit import ActorType, record_audit_event
 from soa_db.repository import OrganizationContext
@@ -44,10 +49,15 @@ async def ensure_user(session: AsyncSession, principal: Principal) -> User:
     existing = await repo.get_by_identity_key(principal.identity_key)
     if existing is not None:
         return existing
+    normalized_email = (
+        principal.email.strip().casefold()
+        if principal.email is not None
+        else f"{principal.subject}@unknown.invalid"
+    )
     user = repo.add(
         User(
             identity_key=principal.identity_key,
-            email=principal.email or f"{principal.subject}@unknown.invalid",
+            email=normalized_email,
             display_name=principal.display_name,
         )
     )
@@ -119,8 +129,9 @@ async def invite_member(
 ) -> tuple[Membership, bool]:
     """Invite by email. Duplicate invitations are safe: the existing
     membership is returned with ``created=False`` instead of erroring."""
+    normalized_email = email.strip().casefold()
     repo = MembershipRepository(session, context)
-    existing = await repo.get_by_invited_email(email)
+    existing = await repo.get_by_invited_email(normalized_email)
     if existing is not None:
         if existing.status != MembershipStatus.REMOVED:
             return existing, False
@@ -135,10 +146,10 @@ async def invite_member(
             target_type="membership",
             target_id=str(existing.id),
             organization_id=context.organization_id,
-            summary={"email": email},
+            summary={"email": normalized_email},
         )
         return existing, True
-    membership = repo.add(Membership(invited_email=email))
+    membership = repo.add(Membership(invited_email=normalized_email))
     await session.flush()
     await record_audit_event(
         session,
@@ -148,7 +159,7 @@ async def invite_member(
         target_type="membership",
         target_id=str(membership.id),
         organization_id=context.organization_id,
-        summary={"email": email},
+        summary={"email": normalized_email},
     )
     return membership, True
 
@@ -165,14 +176,20 @@ async def accept_invitation(
     # Invitation matching trusts the email claim, so the claim must be
     # verified by the IdP — otherwise anyone who can type the invitee's
     # address into a lax IdP could take over the invitation.
-    if principal.email is None or principal.email_verified is False:
+    if principal.email is None or principal.email_verified is not True:
         raise NoInvitationError(organization_slug)
+    normalized_email = principal.email.strip().casefold()
     user = await ensure_user(session, principal)
+    # A stable IdP subject can outlive an email-address change. Invitation
+    # ownership must be checked against the current explicitly verified claim,
+    # not a stale email cached on the existing user row.
+    if user.email != normalized_email:
+        user.email = normalized_email
     # The invited membership row has no user_id yet, so tenant binding (not
     # user binding) is what makes it visible under RLS.
     await bind_tenant(session, organization.id)
     context = OrganizationContext(organization_id=organization.id)
-    membership = await MembershipRepository(session, context).get_by_invited_email(user.email)
+    membership = await MembershipRepository(session, context).get_by_invited_email(normalized_email)
     if membership is None or membership.status != MembershipStatus.INVITED:
         raise NoInvitationError(organization_slug)
     membership.accept(user.id)
@@ -184,7 +201,7 @@ async def accept_invitation(
         target_type="membership",
         target_id=str(membership.id),
         organization_id=context.organization_id,
-        summary={"email": user.email},
+        summary={"email": normalized_email},
     )
     return membership
 
@@ -197,6 +214,12 @@ async def change_membership_status(
     new_status: MembershipStatus,
     actor_id: str,
 ) -> Membership:
+    if membership.status == MembershipStatus.ACTIVE and new_status != MembershipStatus.ACTIVE:
+        await ensure_can_remove_active_org_admin(
+            session,
+            context,
+            membership_id=membership.id,
+        )
     membership.transition_to(new_status)
     await record_audit_event(
         session,

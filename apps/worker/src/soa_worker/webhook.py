@@ -23,14 +23,16 @@ Delivers an export payload to a tenant-configured HTTPS endpoint with:
 
 import hashlib
 import hmac
-import ipaddress
 import re
-import socket
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 import httpx
+
+from soa_integrations.destination import (
+    DestinationRefusedError as DestinationRefusedError,
+)
+from soa_integrations.destination import validate_destination
 
 SIGNATURE_HEADER = "X-SOA-Signature"
 IDEMPOTENCY_HEADER = "X-SOA-Idempotency-Key"
@@ -82,64 +84,6 @@ def verify_webhook_signature(
     return hmac.compare_digest(expected, provided)
 
 
-# -- destination policy (SSRF + allowlist) -------------------------------------------
-
-
-class DestinationRefusedError(Exception):
-    pass
-
-
-def _host_allowed(host: str, allowlist: Sequence[str]) -> bool:
-    for entry in allowlist:
-        if entry.startswith("*."):
-            if host == entry[2:] or host.endswith(entry[1:]):
-                return True
-        elif host == entry:
-            return True
-    return False
-
-
-def _default_resolver(host: str) -> list[str]:
-    infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
-    return sorted({str(info[4][0]) for info in infos})
-
-
-def validate_destination(
-    url: str,
-    *,
-    allowlist: Sequence[str],
-    resolve: Callable[[str], list[str]] | None = None,
-) -> None:
-    """Refuse anything that is not an explicitly allowlisted PUBLIC HTTPS
-    destination. Fails closed: no allowlist means no deliveries."""
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise DestinationRefusedError(f"webhook destinations must be https:// — got {url!r}")
-    host = parsed.hostname
-    if not host:
-        raise DestinationRefusedError(f"{url!r} has no hostname")
-    if not allowlist:
-        raise DestinationRefusedError(
-            "no destination allowlist is configured for this integration — "
-            "deliveries fail closed until one is set"
-        )
-    if not _host_allowed(host, allowlist):
-        raise DestinationRefusedError(f"host {host!r} is not on the destination allowlist")
-    resolver = resolve or _default_resolver
-    try:
-        addresses = resolver(host)
-    except OSError as error:
-        raise DestinationRefusedError(f"cannot resolve {host!r}: {error}") from None
-    if not addresses:
-        raise DestinationRefusedError(f"{host!r} resolved to no addresses")
-    for raw in addresses:
-        address = ipaddress.ip_address(raw)
-        if not address.is_global or address.is_multicast:
-            raise DestinationRefusedError(
-                f"{host!r} resolves to non-public address {raw} — refused (SSRF protection)"
-            )
-
-
 # -- delivery -----------------------------------------------------------------------
 
 
@@ -187,7 +131,13 @@ async def deliver_webhook(
         ATTEMPT_HEADER: str(attempt_number),
     }
     try:
-        response = await client.post(url, content=body, headers=headers, timeout=timeout_seconds)
+        response = await client.post(
+            url,
+            content=body,
+            headers=headers,
+            timeout=timeout_seconds,
+            follow_redirects=False,
+        )
     except httpx.TimeoutException:
         return WebhookResult(
             outcome="retryable_error",

@@ -48,7 +48,8 @@ Streams inherit process configuration and may override language, locale, fields,
 1. Receive a document by upload, email, API, or batch import.
 2. Validate the file, scan for malware, hash it, and preserve the immutable original.
 3. Extract native text where possible; run image preprocessing and OCR where needed.
-4. Classify and split multi-document packets.
+4. Enforce the published input contract; a later evaluated capability may
+   classify and split multi-document packets.
 5. Extract fields and tables into a versioned schema.
 6. Normalize dates, numbers, currencies, identifiers, addresses, and units.
 7. Match customer, sold-to, ship-to, materials, price lists, and other reference data.
@@ -94,6 +95,14 @@ Streams inherit process configuration and may override language, locale, fields,
 
 ## 6. P0 functional requirements
 
+### Initial release boundary
+
+The first production slice accepts one sales order per input. It rejects an
+unsupported mixed packet instead of silently processing only part of it.
+Classification/splitting remains a platform requirement, but it is not a launch
+claim until source-byte gold cohorts measure document-class and split-boundary
+accuracy.
+
 ### Tenant and access
 
 - Organizations, memberships, invitations, and roles
@@ -121,7 +130,8 @@ Streams inherit process configuration and may override language, locale, fields,
 
 - Native PDF text extraction
 - OCR fallback
-- Classification and packet splitting
+- Single-sales-order input enforcement; evaluated packet classification and
+  splitting after P0
 - Schema-constrained extraction
 - Header and line-item extraction
 - Evidence regions and source snippets

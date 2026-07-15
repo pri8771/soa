@@ -24,6 +24,7 @@ async function expectNoCriticalViolations(page: Page) {
 }
 
 test("workbench has no critical accessibility violations", async ({ page }) => {
+  await installSessionMock(page);
   await page.goto("/workbench");
   await page.getByRole("heading", { name: "Component workbench" }).waitFor();
   await expectNoCriticalViolations(page);
@@ -37,6 +38,7 @@ test("app shell has no critical accessibility violations", async ({ page }) => {
 });
 
 test("workbench dark theme has no critical accessibility violations", async ({ page }) => {
+  await installSessionMock(page);
   await page.goto("/workbench");
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
   await page.getByRole("heading", { name: "Component workbench" }).waitFor();

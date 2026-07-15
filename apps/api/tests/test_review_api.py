@@ -992,6 +992,9 @@ async def test_catalog_selection_corrects_audits_and_revalidates(
     assert payload["override"] is False
     # lines.sku is an identifier field: the correction is the source id.
     assert payload["correction"]["corrected_raw_value"] == "WID-100"
+    assert payload["selection"]["catalog_record_id"]
+    assert payload["selection"]["catalog_version_id"]
+    assert payload["selection"]["source_id"] == "WID-100"
     assert payload["task_version"] > version
     # Dependent validation recalculated: the fresh decision came back.
     assert payload["revalidation"]["decision"]["route"] in ("approved", "review_required")
@@ -1031,11 +1034,16 @@ async def test_catalog_override_requires_a_reason_and_becomes_a_labeled_example(
     task_id, version = await seed_correctable_task(client, db)
     await bind_catalogs(client, db)
 
-    def select(source_id: str | None, reason: str | None, expected: int) -> object:
+    def select(
+        source_id: str | None,
+        reason: str | None,
+        expected: int,
+        query: str = "WID-100",
+    ) -> object:
         body: dict[str, object] = {
             "field_key": "lines.sku",
             "row_index": 0,
-            "query": "WID-100",
+            "query": query,
             "selected_source_id": source_id,
             "expected_version": expected,
         }
@@ -1060,11 +1068,15 @@ async def test_catalog_override_requires_a_reason_and_becomes_a_labeled_example(
 
     # Confirming NO match (with a reason) records the label, no correction.
     confirmed = select(
-        None, "free-text item; not in the catalog", overridden.json()["task_version"]
+        None,
+        "free-text item; not in the catalog",
+        overridden.json()["task_version"],
+        query="GAD-205",
     )
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["correction"] is None
-    assert confirmed.json()["revalidation"] is None
+    assert confirmed.json()["selection"]["status"] == "confirmed_no_match"
+    assert confirmed.json()["revalidation"]["catalog_identity"]["confirmed_no_match"] == 1
 
     history = client.get(
         f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=SUPERVISOR
@@ -1113,3 +1125,67 @@ async def test_catalog_selection_guards_assignment_and_version(
     )
     assert stale.status_code == 409
     assert "nothing was saved" in stale.json()["error"]["message"]
+
+
+async def test_relevant_free_form_correction_replaces_or_invalidates_catalog_identity(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    from soa_db.catalog_selections import (
+        CatalogFieldSelectionRepository,
+        latest_catalog_selections,
+    )
+    from soa_db.review_tasks import ReviewTaskRepository
+
+    client, db = harness
+    task_id, version = await seed_correctable_task(client, db)
+    await bind_catalogs(client, db)
+    picked = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/catalog-selection",
+        json={
+            "field_key": "lines.sku",
+            "row_index": 0,
+            "query": "WID-100",
+            "selected_source_id": "WID-100",
+            "expected_version": version,
+        },
+        headers=SUPERVISOR,
+    )
+    assert picked.status_code == 200, picked.text
+
+    changed = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/corrections",
+        json={
+            "field_key": "lines.sku",
+            "row_index": 0,
+            "value": "GAD-205",
+            "expected_version": picked.json()["task_version"],
+        },
+        headers=SUPERVISOR,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["revalidation"]["catalog_identity"]["selected"] == 1
+
+    unresolved = client.post(
+        f"/orgs/northstar/review-tasks/{task_id}/corrections",
+        json={
+            "field_key": "lines.sku",
+            "row_index": 0,
+            "value": "NOT-IN-CATALOG",
+            "expected_version": changed.json()["task_version"],
+        },
+        headers=SUPERVISOR,
+    )
+    assert unresolved.status_code == 200, unresolved.text
+    catalog = unresolved.json()["revalidation"]["catalog_identity"]
+    assert any(issue["code"] == "selection_unresolved" for issue in catalog["issues"])
+    assert unresolved.json()["revalidation"]["evaluation"]["blocking"] is True
+
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    context = OrganizationContext(organization_id=org_id)
+    async with db.session_scope() as session:
+        task = await ReviewTaskRepository(session, context).get(uuid.UUID(task_id))
+        assert task is not None
+        rows = await CatalogFieldSelectionRepository(session, context).list_for_run(task.run_id)
+        latest = latest_catalog_selections(rows)[("lines.sku", 0)]
+        assert latest.status == "needs_review"
+        assert latest.matched_value == "NOT-IN-CATALOG"

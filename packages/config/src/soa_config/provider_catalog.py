@@ -6,9 +6,9 @@ facts (a worker test cross-checks the live registry against this
 catalog, so drift fails CI), and the API serves it to the provider
 administration UI without importing worker code.
 
-Health is deliberately NOT here: it is runtime state only the worker
-knows. The API reports it as unknown until a worker-telemetry surface
-exists — an honest gap, not a guess.
+Health is deliberately NOT embedded here: it is runtime state. The API joins
+this static catalog to tenant-scoped, durable worker attempt metrics and
+reports ``unknown`` only until a provider has recent evidence.
 
 ``routing_preview`` mirrors the worker router's elimination semantics
 (AIO-013) over the static catalog so administrators can see how a
@@ -32,7 +32,7 @@ class CatalogEntry:
     retains_content: bool
     uses_content_for_training: bool
     #: What must be true for this adapter to register at runtime.
-    availability: str  # always | requires_binary:<name> | requires_endpoint_config
+    availability: str  # always | requires_binary:<name> | requires_*_config
     description: str
 
     @property
@@ -86,6 +86,42 @@ PROVIDER_CATALOG: tuple[CatalogEntry, ...] = (
         description=(
             "Optional local LLM extraction (llama.cpp/vLLM/Ollama); registers only "
             "when the deployment configures an endpoint."
+        ),
+    ),
+    CatalogEntry(
+        name="anthropic-claude",
+        capability="field_extraction",
+        languages=(ANY_LANGUAGE,),
+        processing_region="us",
+        sends_content_to_third_party=True,
+        retains_content=False,
+        uses_content_for_training=False,
+        availability="requires_tenant_credential",
+        description="Hosted Claude extraction using a tenant-pinned Anthropic credential.",
+    ),
+    CatalogEntry(
+        name="google-gemini",
+        capability="field_extraction",
+        languages=(ANY_LANGUAGE,),
+        processing_region="us",
+        sends_content_to_third_party=True,
+        retains_content=False,
+        uses_content_for_training=False,
+        availability="requires_tenant_credential",
+        description="Hosted Gemini extraction using a tenant-pinned Google credential.",
+    ),
+    CatalogEntry(
+        name="hosted-openai-compatible",
+        capability="field_extraction",
+        languages=(ANY_LANGUAGE,),
+        processing_region="us",
+        sends_content_to_third_party=True,
+        retains_content=False,
+        uses_content_for_training=False,
+        availability="requires_endpoint_and_tenant_credential",
+        description=(
+            "Hosted OpenAI-compatible extraction; endpoint/model are deployment-pinned and "
+            "the API key is tenant-pinned."
         ),
     ),
 )

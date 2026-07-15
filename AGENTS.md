@@ -16,18 +16,21 @@ Before making architectural or product changes, read:
 2. `docs/PRODUCT.md`
 3. `docs/DELIVERY_PLAN.md`
 4. `docs/BUILD_BACKLOG.md`
-5. `docs/ARCHITECTURE.md`
-6. `docs/UI_UX_BLUEPRINT.md` for any user-facing task
-7. `docs/AI_OCR.md` for any document/AI task
-8. `docs/SECURITY_OPERATIONS.md` for any API, storage, file, provider, auth, integration, or release task
-9. `docs/INFRASTRUCTURE.md` for runtime/deployment work
-10. `docs/DECISIONS.md`
+5. `docs/PRODUCTION_READINESS_AUDIT.md` for current implementation truth
+6. `docs/ARCHITECTURE.md`
+7. `docs/UI_UX_BLUEPRINT.md` for any user-facing task
+8. `docs/AI_OCR.md` for any document/AI task
+9. `docs/SECURITY_OPERATIONS.md` for any API, storage, file, provider, auth, integration, or release task
+10. `docs/INFRASTRUCTURE.md` for runtime/deployment work
+11. `docs/DECISIONS.md`
 
 Do not implement from a single prompt while ignoring these contracts.
 
 ## 3. Task selection
 
-- Work from one `BUILD_BACKLOG.md` task or one tightly coupled dependency group.
+- Work from one active Jira task or one tightly coupled dependency group.
+  `BUILD_BACKLOG.md` is the original acceptance catalog, not a completion
+  ledger; reconcile it with the production-readiness audit before coding.
 - Include task IDs in the branch, commit, and PR description when practical.
 - Do not attempt to “build the whole application” in one unreviewable change.
 - If a task depends on an unimplemented prerequisite, implement the prerequisite first or stop and record the dependency.
@@ -40,7 +43,8 @@ Unless an accepted ADR is superseded:
 - React/TypeScript web application.
 - Python/FastAPI API and worker.
 - PostgreSQL canonical relational store.
-- S3-compatible object storage; MinIO locally.
+- Portable object storage: filesystem by default locally, optional MinIO/S3,
+  and GCS in the reference hosted deployment.
 - PostgreSQL-backed durable jobs and transactional outbox initially.
 - Modular monolith with separately runnable web, API, and worker.
 - Generic OIDC authentication boundary and application-owned authorization.
@@ -53,17 +57,20 @@ Unless an accepted ADR is superseded:
 
 ## 5. Repository boundaries
 
-Target layout:
+Current package layout:
 
 ```text
 apps/web
 apps/api
 apps/worker
-packages/contracts
 packages/design-system
-packages/provider-contracts
-packages/canonical-order
+packages/canonical
 packages/config
+packages/db
+packages/integrations
+packages/normalize
+packages/rules
+packages/storage
 packages/test-fixtures
 migrations
 infrastructure
@@ -91,7 +98,9 @@ Tenant isolation is a security invariant.
 - Workers reauthorize resource/tenant relationships from trusted database records.
 - Object keys, cache keys, jobs, audit events, and exports retain tenant context.
 - Add cross-tenant tests for every new tenant-owned resource or endpoint.
-- Internal support access follows the approved, time-limited, audited path; never add a hidden bypass.
+- Controlled internal support access is a known release gap. Never add a hidden
+  bypass or normalize raw database access; any implementation must be
+  purpose-bound, approved, expiring, and audited.
 
 ## 7. Database and migration rules
 
@@ -146,8 +155,12 @@ User-facing work must follow `docs/UI_UX_BLUEPRINT.md`.
 
 ## 11. API rules
 
-- Public API base is `/api/v1`.
-- Use generated OpenAPI and typed client; check generated drift in CI.
+- External machine-ingestion endpoints are versioned under `/v1`; authenticated
+  browser/admin resource routes currently use their committed root paths. Do
+  not invent a global `/api/v1` prefix without a compatibility/migration plan.
+- Keep the hand-written typed web client and API response tests aligned. A
+  generated OpenAPI client/drift gate is a future improvement, not an existing
+  package or CI check.
 - Use cursor pagination for large collections.
 - Use idempotency keys on ingestion, approval, and delivery operations.
 - Use correlation IDs on every request.

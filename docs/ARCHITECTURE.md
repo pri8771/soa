@@ -1,5 +1,11 @@
 # Architecture
 
+This document describes the stable domain and target architecture. The current
+production-readiness boundary is narrower: one sales order per input, a
+PostgreSQL durable queue, text/native-OCR extraction, and a GCP reference
+deployment. See [`PRODUCTION_READINESS_AUDIT.md`](PRODUCTION_READINESS_AUDIT.md)
+for implemented versus unverified capabilities.
+
 ## 1. Architecture goals
 
 - Support secure multi-tenant B2B operation from the beginning.
@@ -18,13 +24,16 @@ soa/
 │   ├── api/              # FastAPI HTTP/control-plane API
 │   └── worker/           # asynchronous document-processing worker
 ├── packages/
-│   ├── contracts/        # shared API and event schemas
+│   ├── canonical/        # canonical order and mapping/export logic
+│   ├── config/           # settings, telemetry, alert, and supply-chain policy
+│   ├── db/               # repositories, durable state, and tenant guard
 │   ├── design-system/    # tokens and reusable UI components
-│   ├── provider-adapters/# OCR, LLM, storage, queue, email adapters
+│   ├── integrations/     # outbound capability and destination controls
+│   ├── normalize,rules/  # deterministic business processing
+│   ├── storage/          # object and managed-secret adapters
 │   └── test-fixtures/    # synthetic documents and expected outputs
-├── services/
-│   └── local/            # local-only development services/configuration
-├── infrastructure/       # deployable infrastructure and environment config
+├── infrastructure/local/ # local supporting services
+├── infra/terraform/      # GCP reference deployment
 ├── migrations/           # database migrations
 ├── tests/
 │   ├── unit/

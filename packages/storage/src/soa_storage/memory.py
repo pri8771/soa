@@ -84,9 +84,20 @@ class MemoryObjectStore:
         return sorted(key for key in self._objects if key.startswith(prefix))
 
     async def signed_upload_url(
-        self, key: str, *, expires_in_seconds: int, content_type: str
+        self,
+        key: str,
+        *,
+        expires_in_seconds: int,
+        content_type: str,
+        size_bytes: int,
+        sha256: str | None = None,
     ) -> SignedUrl:
-        return self._sign(key, method="PUT", expires_in_seconds=expires_in_seconds)
+        return self._sign(
+            key,
+            method="PUT",
+            expires_in_seconds=expires_in_seconds,
+            size_bytes=size_bytes,
+        )
 
     async def signed_download_url(self, key: str, *, expires_in_seconds: int) -> SignedUrl:
         self._require(key)
@@ -109,7 +120,8 @@ class MemoryObjectStore:
         expires_raw = params.get("expires", ["0"])[0]
         signature = params.get("signature", [""])[0]
         method = params.get("method", [""])[0]
-        expected = self._signature(key, method, expires_raw)
+        size_bytes = params.get("size_bytes", [""])[0]
+        expected = self._signature(key, method, expires_raw, size_bytes)
         if not hmac.compare_digest(signature, expected):
             raise ValueError("signed URL failed verification")
         current = now or datetime.now(tz=UTC)
@@ -117,15 +129,26 @@ class MemoryObjectStore:
             raise SignedUrlExpiredError(f"signed URL for {key!r} expired")
         return key
 
-    def _sign(self, key: str, *, method: str, expires_in_seconds: int) -> SignedUrl:
+    def _sign(
+        self,
+        key: str,
+        *,
+        method: str,
+        expires_in_seconds: int,
+        size_bytes: int | None = None,
+    ) -> SignedUrl:
         expires_at = datetime.now(tz=UTC) + timedelta(seconds=expires_in_seconds)
         expires_raw = str(expires_at.timestamp())
-        signature = self._signature(key, method, expires_raw)
-        url = f"{self._base_url}/{key}?method={method}&expires={expires_raw}&signature={signature}"
+        size_raw = str(size_bytes) if size_bytes is not None else ""
+        signature = self._signature(key, method, expires_raw, size_raw)
+        url = (
+            f"{self._base_url}/{key}?method={method}&expires={expires_raw}"
+            f"&size_bytes={size_raw}&signature={signature}"
+        )
         return SignedUrl(url=url, expires_at=expires_at, method=method)
 
-    def _signature(self, key: str, method: str, expires_raw: str) -> str:
-        material = f"{method}\n{key}\n{expires_raw}".encode()
+    def _signature(self, key: str, method: str, expires_raw: str, size_raw: str) -> str:
+        material = f"{method}\n{key}\n{expires_raw}\n{size_raw}".encode()
         return hmac.new(self._secret, material, "sha256").hexdigest()
 
     def _require(self, key: str) -> tuple[bytes, ObjectMetadata]:

@@ -26,10 +26,11 @@ from soa_db.repository import OrganizationContext
 from soa_storage.keys import artifact_key
 from soa_storage.memory import MemoryObjectStore
 from soa_storage.store import sha256_hex
+from soa_worker.database_queue import DatabaseJobQueue
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER, MockExtractionProvider
-from soa_worker.job_runner import DbJobProcessor
 from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
 from soa_worker.pipeline import build_executors
+from soa_worker.registry import HandlerRegistry, JobEnvelope
 
 ORG = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STREAM = uuid.UUID("33333333-3333-4333-8333-333333333333")
@@ -96,22 +97,31 @@ async def test_claim_loop_drives_document_to_approved(db: DatabaseSessions) -> N
     store = MemoryObjectStore()
     document_id = await _seed_queued_document(db, store)
     orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
-    processor = DbJobProcessor(
-        db,
-        {
-            "document.preprocess": orchestrator.handle_preprocess,
-            STAGE_JOB_TYPE: orchestrator.handle_stage,
-        },
-    )
-    registry = processor.build_registry()
+    registry = HandlerRegistry()
+
+    @registry.register("document.preprocess")
+    async def preprocess(job: JobEnvelope) -> None:
+        await orchestrator.handle_preprocess(job.payload)
+
+    @registry.register(STAGE_JOB_TYPE)
+    async def stage(job: JobEnvelope) -> None:
+        await orchestrator.handle_stage(job.payload)
+
+    queue = DatabaseJobQueue(db, worker_id="worker:vertical-slice")
 
     # Drive the worker loop by hand: claim one job, dispatch it, repeat.
     dispatched = 0
     for _ in range(100):
-        envelope = await processor.fetch_job()
+        envelope = await queue.claim()
         if envelope is None:
             break
-        await registry.resolve(envelope.job_type)(envelope)
+        try:
+            await registry.resolve(envelope.job_type)(envelope)
+        except Exception as error:
+            await queue.failed(envelope, error)
+            raise
+        else:
+            await queue.succeeded(envelope)
         dispatched += 1
 
     assert dispatched >= len(("preprocess", "stages...")), "did real work"

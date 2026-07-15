@@ -2,10 +2,10 @@
  * Stream detail (CFG-010, UI_UX_BLUEPRINT §6.2).
  *
  * Hierarchy stays visible everywhere: breadcrumbs carry org → streams →
- * stream, and the parent process is named in the overview panel. Intake
- * endpoints and health render as honest placeholders until ING/ANA land.
- * Archiving is destructive-adjacent (stops intake), so it demands an
- * impact explanation that goes to the audit trail.
+ * stream, and the parent process is named in the overview panel. The overview
+ * links the implemented browser-upload flow and identifies the implemented
+ * service-credential API route. Archiving is destructive-adjacent (stops
+ * intake), so it demands an impact explanation that goes to the audit trail.
  */
 
 import {
@@ -117,6 +117,7 @@ export function StreamDetail() {
   const session = useShellSession();
   const slug = session.organization.slug;
   const canManage = session.permissions.has("streams.manage");
+  const canUpload = session.permissions.has("documents.upload");
   const { streamSlug } = useParams({ strict: false }) as { streamSlug: string };
   const queryClient = useQueryClient();
 
@@ -209,13 +210,35 @@ export function StreamDetail() {
             </dd>
             <dt>Process</dt>
             <dd style={{ margin: 0 }}>{parent ? parent.process_name : "…"}</dd>
-            <dt>Intake endpoints</dt>
+            <dt>Document intake</dt>
             <dd style={{ margin: 0 }}>
-              <Badge tone="neutral">not configured yet — arrives with intake (ING)</Badge>
-            </dd>
-            <dt>Health</dt>
-            <dd style={{ margin: 0 }}>
-              <Badge tone="neutral">not tracked yet</Badge>
+              {stream.status === "archived" ? (
+                <Badge tone="neutral">closed for archived stream</Badge>
+              ) : (
+                <span
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: "var(--soa-space-1)",
+                  }}
+                >
+                  {canUpload ? (
+                    <Link
+                      to="/app/$organizationSlug/documents/upload"
+                      params={{ organizationSlug: slug }}
+                      search={{ stream: streamSlug }}
+                    >
+                      Upload documents in the browser
+                    </Link>
+                  ) : (
+                    <span>Browser upload requires documents.upload.</span>
+                  )}
+                  <span>
+                    Service API: <code>POST /v1/streams/{streamSlug}/documents</code>
+                  </span>
+                </span>
+              )}
             </dd>
           </dl>
         </Panel>

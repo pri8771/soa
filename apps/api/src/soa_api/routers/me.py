@@ -45,7 +45,7 @@ async def me(
     # Abuse control (SEC-003): identity resolution is the session
     # bootstrap — the closest thing to a local login (real login lives
     # at the IdP, OPEN-002) — so it is capped per client address.
-    deps.rate_limiter.enforce(
+    await deps.rate_limiter.enforce(
         "identity",
         request.client.host if request.client else "unknown",
         deps.settings.rate_limit_identity_per_minute,
