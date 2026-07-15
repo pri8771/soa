@@ -25,7 +25,11 @@ def _register_extraction_providers(settings: WorkerSettings) -> None:
     if settings.local_llm_endpoint:
         from soa_worker.llm_extraction import register_local_llm_extraction
 
-        register_local_llm_extraction(settings.local_llm_endpoint, settings.local_llm_model)
+        register_local_llm_extraction(
+            settings.local_llm_endpoint,
+            settings.local_llm_model,
+            timeout_seconds=settings.local_llm_timeout_seconds,
+        )
 
     if settings.anthropic_api_key is not None:
         from soa_worker.anthropic_extraction import register_anthropic_extraction

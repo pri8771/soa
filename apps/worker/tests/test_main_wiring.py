@@ -45,6 +45,22 @@ def test_a_registered_local_llm_provider_is_selected_by_name() -> None:
         unregister_provider(Capability.FIELD_EXTRACTION, LOCAL_NAME)
 
 
+def test_the_local_llm_timeout_setting_reaches_the_adapter() -> None:
+    settings = WorkerSettings(
+        environment=Environment.TEST,
+        local_llm_endpoint="http://llm.local/v1/chat/completions",
+        local_llm_timeout_seconds=240.0,
+        extraction_provider=LOCAL_NAME,
+    )
+    _register_extraction_providers(settings)
+    try:
+        provider = _build_extraction_provider(settings)
+        assert isinstance(provider, OpenAiCompatibleExtractionProvider)
+        assert provider._timeout == 240.0
+    finally:
+        unregister_provider(Capability.FIELD_EXTRACTION, LOCAL_NAME)
+
+
 def test_a_configured_anthropic_key_registers_the_claude_adapter() -> None:
     settings = WorkerSettings(
         environment=Environment.TEST, anthropic_api_key=SecretStr("sk-ant-test")

@@ -213,7 +213,9 @@ class OpenAiCompatibleExtractionProvider:
         )
 
 
-def register_local_llm_extraction(endpoint: str, model: str) -> None:
+def register_local_llm_extraction(
+    endpoint: str, model: str, *, timeout_seconds: float = 60.0
+) -> None:
     """Register the optional local profile. Call this ONLY when the
     deployment configured an endpoint (worker startup does); an
     unconfigured deployment simply has no such provider."""
@@ -232,7 +234,9 @@ def register_local_llm_extraction(endpoint: str, model: str) -> None:
             languages=(ANY_LANGUAGE,),
             data_policy=LOCAL_DATA_POLICY,
         ),
-        lambda: OpenAiCompatibleExtractionProvider(endpoint=endpoint, model=model),
+        lambda: OpenAiCompatibleExtractionProvider(
+            endpoint=endpoint, model=model, timeout_seconds=timeout_seconds
+        ),
     )
 
 

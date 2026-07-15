@@ -45,6 +45,10 @@ class WorkerSettings(BaseServiceSettings):
     #: at Ollama/vLLM/llama.cpp; see docs/LLM_PROVIDERS.md.
     local_llm_endpoint: str | None = None
     local_llm_model: str = "local"
+    #: Per-call answer budget for the local endpoint. Local models on
+    #: shared hardware can take minutes on a long document; hosted
+    #: adapters keep their own defaults.
+    local_llm_timeout_seconds: float = Field(default=60.0, gt=0)
 
     #: Optional BYO hosted Claude key (AIO-008). When set, the hosted
     #: Claude extraction adapter registers at startup; unset means it

@@ -54,6 +54,10 @@ export SOA_WORKER_LOCAL_LLM_MODEL="qwen2.5:7b-instruct"
 
 # 3. Make the pipeline USE it (registering alone does not select it).
 export SOA_WORKER_EXTRACTION_PROVIDER="local-openai-compatible"
+
+# 4. Optional: raise the per-call answer budget (default 60s). Local
+#    models on shared hardware can need minutes on a long document.
+export SOA_WORKER_LOCAL_LLM_TIMEOUT_SECONDS="240"
 ```
 
 The local provider registers with the **strict local data policy**:
