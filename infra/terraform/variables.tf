@@ -70,16 +70,38 @@ variable "api_max_instances" {
   default     = 4
 }
 
-variable "worker_min_instances" {
+variable "worker_instances" {
   type        = number
-  description = "Cloud Run minimum instances for the worker (>=1 so jobs drain)."
+  description = "Manually allocated Cloud Run worker-pool instances (>=1 so jobs drain)."
   default     = 1
+  validation {
+    condition     = var.worker_instances >= 1 && floor(var.worker_instances) == var.worker_instances
+    error_message = "worker_instances must be a positive whole number."
+  }
 }
 
-variable "worker_max_instances" {
-  type        = number
-  description = "Cloud Run maximum instances for the worker."
-  default     = 4
+variable "api_cpu" {
+  type        = string
+  description = "Cloud Run API CPU limit."
+  default     = "1"
+}
+
+variable "api_memory" {
+  type        = string
+  description = "Cloud Run API memory limit."
+  default     = "1Gi"
+}
+
+variable "worker_cpu" {
+  type        = string
+  description = "Cloud Run worker-pool CPU limit; OCR needs more than the platform minimum."
+  default     = "2"
+}
+
+variable "worker_memory" {
+  type        = string
+  description = "Cloud Run worker-pool memory limit for bounded rendering and OCR."
+  default     = "4Gi"
 }
 
 variable "storage_location" {
@@ -97,6 +119,107 @@ variable "alert_notification_channels" {
   type        = list(string)
   description = "Monitoring notification channel IDs the owner created (REL-007)."
   default     = []
+}
+
+# --- Deployed application configuration -----------------------------------
+
+variable "api_oidc_issuer" {
+  type        = string
+  description = "Production OIDC issuer URL."
+  validation {
+    condition     = startswith(var.api_oidc_issuer, "https://")
+    error_message = "api_oidc_issuer must use HTTPS."
+  }
+}
+
+variable "api_oidc_audience" {
+  type        = string
+  description = "Audience accepted by the API OIDC validator."
+  validation {
+    condition     = length(trimspace(var.api_oidc_audience)) > 0
+    error_message = "api_oidc_audience must not be empty."
+  }
+}
+
+variable "api_oidc_jwks_url" {
+  type        = string
+  description = "HTTPS JWKS endpoint for the configured OIDC issuer."
+  validation {
+    condition     = startswith(var.api_oidc_jwks_url, "https://")
+    error_message = "api_oidc_jwks_url must use HTTPS."
+  }
+}
+
+variable "api_cors_allowed_origins" {
+  type        = list(string)
+  description = "Explicit HTTPS browser origins allowed to call the API."
+  validation {
+    condition = (
+      length(var.api_cors_allowed_origins) > 0 &&
+      alltrue([for origin in var.api_cors_allowed_origins : startswith(origin, "https://") && !strcontains(origin, "*")])
+    )
+    error_message = "api_cors_allowed_origins must contain explicit HTTPS origins without wildcards."
+  }
+}
+
+variable "api_clamav_host" {
+  type        = string
+  description = "Private hostname or address of the production malware scanner."
+  validation {
+    condition     = length(trimspace(var.api_clamav_host)) > 0
+    error_message = "api_clamav_host must not be empty."
+  }
+}
+
+variable "api_clamav_port" {
+  type        = number
+  description = "TCP port exposed by the malware scanner."
+  default     = 3310
+  validation {
+    condition     = var.api_clamav_port >= 1 && var.api_clamav_port <= 65535
+    error_message = "api_clamav_port must be between 1 and 65535."
+  }
+}
+
+variable "worker_export_destination_allowlist" {
+  type        = list(string)
+  description = "Exact destination hostnames workers may deliver approved exports to."
+  validation {
+    condition = (
+      length(var.worker_export_destination_allowlist) > 0 &&
+      alltrue([for host in var.worker_export_destination_allowlist : length(trimspace(host)) > 0 && !strcontains(host, "*")])
+    )
+    error_message = "worker_export_destination_allowlist must contain explicit hostnames without wildcards."
+  }
+}
+
+variable "worker_outbox_publish_url" {
+  type        = string
+  description = "Authenticated HTTPS receiver for transactional domain events."
+  validation {
+    condition     = startswith(var.worker_outbox_publish_url, "https://")
+    error_message = "worker_outbox_publish_url must use HTTPS."
+  }
+}
+
+variable "api_allow_unauthenticated" {
+  type        = bool
+  description = "Allow browser access to Cloud Run; application OIDC still protects tenant routes."
+  default     = false
+}
+
+variable "api_uptime_host" {
+  type        = string
+  description = "Optional custom API hostname for uptime checks; null uses the Cloud Run hostname."
+  default     = null
+  nullable    = true
+  validation {
+    condition = (
+      var.api_uptime_host == null ||
+      (!strcontains(var.api_uptime_host, "://") && !strcontains(var.api_uptime_host, "/"))
+    )
+    error_message = "api_uptime_host must be a bare hostname without a scheme or path."
+  }
 }
 
 # --- Derived, not per-env -------------------------------------------------

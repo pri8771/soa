@@ -17,8 +17,8 @@ jobs:
     name: Python lint, types, tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
       - name: Install OCR engine (AIO-004 adapter tests)
@@ -38,9 +38,9 @@ jobs:
     name: Web lint, types, tests, build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -61,7 +61,7 @@ jobs:
     name: Local services health
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Start services
         run: docker compose -f infrastructure/local/docker-compose.yml up -d --wait
       - name: Check service health
@@ -86,9 +86,9 @@ jobs:
     # follow-up commit and are validated on the next run.
     if: ${{ !contains(github.event.head_commit.message, '[update-baselines]') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -102,7 +102,7 @@ jobs:
         run: pnpm --filter @soa/web run test:visual
       - name: Upload actual screenshots and diffs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-results
           path: |
@@ -123,9 +123,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -169,8 +169,8 @@ jobs:
     env:
       SOA_DATABASE_URL: postgresql+psycopg://soa_dev:soa_dev_password@localhost:5432/soa
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
       - name: Sync dependencies
@@ -204,8 +204,8 @@ jobs:
       SOA_TEST_MINIO_ACCESS_KEY: soa_dev
       SOA_TEST_MINIO_SECRET_KEY: soa_dev_password
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
       - name: Sync dependencies
@@ -233,7 +233,7 @@ jobs:
     name: Documentation links and commands
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Validate docs
         run: python3 scripts/check_docs.py
 
@@ -241,14 +241,14 @@ jobs:
     name: Supply-chain scans, SBOM, and policy gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -260,12 +260,32 @@ jobs:
         run: python3 scripts/supply_chain.py check-exceptions
       - name: Resolve Python dependency closure
         run: uv export --format requirements-txt --no-emit-project --no-emit-workspace > /tmp/requirements.txt
-      # Scans capture JSON and never fail the step themselves — the
-      # policy gate below makes the single release decision.
-      - name: Python dependency audit (pip-audit)
-        run: uvx pip-audit -r /tmp/requirements.txt --format json --output /tmp/pip-audit.json || true
-      - name: JavaScript dependency audit (pnpm audit)
-        run: pnpm audit --json > /tmp/pnpm-audit.json || true
+      # A scanner finding exits 1 and is evaluated by our policy. A scanner
+      # crash exits >1 (or leaves invalid/missing JSON) and must fail here;
+      # otherwise a broken scanner would be misreported as zero findings.
+      - name: Run dependency scanners and validate reports
+        shell: bash
+        run: |
+          set -u
+          rm -f /tmp/pip-audit.json /tmp/pnpm-audit.json
+          set +e
+          uvx pip-audit -r /tmp/requirements.txt --format json --output /tmp/pip-audit.json
+          pip_status=$?
+          pnpm audit --json > /tmp/pnpm-audit.json
+          pnpm_status=$?
+          set -e
+          if [ "$pip_status" -gt 1 ]; then
+            echo "pip-audit crashed with status $pip_status" >&2
+            exit "$pip_status"
+          fi
+          if [ "$pnpm_status" -gt 1 ]; then
+            echo "pnpm audit crashed with status $pnpm_status" >&2
+            exit "$pnpm_status"
+          fi
+          test -s /tmp/pip-audit.json
+          test -s /tmp/pnpm-audit.json
+          python3 -m json.tool /tmp/pip-audit.json >/dev/null
+          python3 -m json.tool /tmp/pnpm-audit.json >/dev/null
       - name: Supply-chain policy gate
         run: |
           python3 scripts/supply_chain.py evaluate \
@@ -278,7 +298,7 @@ jobs:
           pnpm dlx @cyclonedx/cyclonedx-npm --output-format JSON \
             --output-file sbom/web-sbom.cdx.json
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom
           path: sbom/
@@ -287,7 +307,7 @@ jobs:
       # (build + Trivy per image), since REL-001 introduced the
       # Dockerfiles. See docs/SUPPLY_CHAIN_SECURITY.md.
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -298,13 +318,16 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - { name: soa-api, dockerfile: apps/api/Dockerfile }
-          - { name: soa-worker, dockerfile: apps/worker/Dockerfile }
-          - { name: soa-web, dockerfile: apps/web/Dockerfile }
+          - { name: soa-api, dockerfile: apps/api/Dockerfile, target: api }
+          - { name: soa-migrator, dockerfile: apps/api/Dockerfile, target: migrator }
+          - { name: soa-worker, dockerfile: apps/worker/Dockerfile, target: runtime }
+          - { name: soa-web, dockerfile: apps/web/Dockerfile, target: runtime }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build ${{ matrix.image.name }} image
-        run: docker build -f ${{ matrix.image.dockerfile }} -t ${{ matrix.image.name }}:ci .
+        run: >-
+          docker build --target ${{ matrix.image.target }}
+          -f ${{ matrix.image.dockerfile }} -t ${{ matrix.image.name }}:ci .
       # Assert the runtime image is unprivileged: the default user must
       # not be root. (nginx-unprivileged and our `soa` user both satisfy
       # this; a regression to root fails here.)
@@ -315,18 +338,31 @@ jobs:
           echo "runtime uid=$uid"
           test "$uid" != "0"
       - name: Scan ${{ matrix.image.name }} with Trivy
-        # @master is the action's documented reference and always
-        # resolves; REL-002 pins it to a digest alongside the base images.
-        uses: aquasecurity/trivy-action@master
+        # Every external action is pinned to an audited commit; the trailing
+        # comment records the upstream release that commit represents.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: ${{ matrix.image.name }}:ci
           format: table
           severity: CRITICAL,HIGH
           # Unfixed OS-package CVEs cannot be remediated by us; the
           # dependency gate (soa_config.supply_chain) fails closed on app
-          # deps we CAN pin. Base-image build-tooling CVEs unreachable at
-          # runtime are justified in .trivyignore. See
-          # docs/SUPPLY_CHAIN_SECURITY.md.
+          # deps we CAN pin. There are currently no container vulnerability
+          # suppressions; see docs/SUPPLY_CHAIN_SECURITY.md.
           ignore-unfixed: true
-          trivyignores: .trivyignore
           exit-code: "1"
+
+  terraform:
+    name: Terraform formatting and validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.12.2"
+      - name: Terraform format
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+      - name: Terraform initialize without remote state
+        run: terraform -chdir=infra/terraform init -backend=false -input=false
+      - name: Terraform validate
+        run: terraform -chdir=infra/terraform validate

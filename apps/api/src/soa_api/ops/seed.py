@@ -20,7 +20,7 @@ from soa_api.domain.schemas import SchemaVersion
 from soa_api.domain.streams import Stream, StreamVersion, resolve_snapshot
 from soa_api.domain.tenancy import Organization, Workspace
 from soa_api.domain.versioning import VersionState
-from soa_api.settings import load_settings
+from soa_api.settings import ApiSettings, load_settings
 from soa_db import DatabaseSessions, utcnow
 from soa_db.catalogs import Catalog, CatalogRecord, CatalogVersion
 from soa_db.documents import Document, SourceChannel
@@ -40,6 +40,14 @@ class DatabaseSeedReport:
     @property
     def total(self) -> int:
         return sum(self.created.values()) + sum(self.existing.values())
+
+
+def ensure_seed_allowed(settings: ApiSettings) -> None:
+    """Refuse deterministic demo data in staging and production."""
+    if not settings.is_development_like:
+        raise RuntimeError(
+            f"database seeding is development/test-only; refusing {settings.environment.value}"
+        )
 
 
 async def _add_once(
@@ -388,6 +396,7 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
 
 async def _run() -> int:
     settings = load_settings()
+    ensure_seed_allowed(settings)
     db = DatabaseSessions(create_database_engine(settings.database_url))
     try:
         report = await seed_database(db)

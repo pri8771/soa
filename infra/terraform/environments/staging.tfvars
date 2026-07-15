@@ -9,10 +9,11 @@ db_disk_gb               = 20
 db_availability_type     = "ZONAL"
 db_backup_retention_days = 14
 
-api_min_instances    = 1
-api_max_instances    = 4
-worker_min_instances = 1
-worker_max_instances = 4
+api_min_instances = 1
+api_max_instances = 4
+worker_instances  = 1
+
+api_allow_unauthenticated = true
 
 storage_location    = "EU"
 deletion_protection = true

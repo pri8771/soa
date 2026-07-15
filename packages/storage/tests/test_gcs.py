@@ -52,9 +52,21 @@ class FakeBlob:
         del self._bucket.objects[self.name]
 
     def generate_signed_url(
-        self, *, version: str, expiration: object, method: str, content_type: str | None = None
+        self,
+        *,
+        version: str,
+        expiration: object,
+        method: str,
+        content_type: str | None = None,
+        service_account_email: str | None = None,
+        access_token: str | None = None,
     ) -> str:
-        return f"https://signed.example/{self._bucket.name}/{self.name}?method={method}"
+        credential = service_account_email or "local"
+        token = access_token or "local"
+        return (
+            f"https://signed.example/{self._bucket.name}/{self.name}"
+            f"?method={method}&credential={credential}&token={token}"
+        )
 
 
 class FakeBucket:
@@ -93,6 +105,24 @@ class FakeGcsClient:
         if bucket is None:
             return []
         return [type("B", (), {"name": key})() for key in bucket.objects if key.startswith(prefix)]
+
+
+class FakeMetadataCredentials:
+    def __init__(self) -> None:
+        self.service_account_email = "default"
+        self.token = None
+        self.refresh_count = 0
+
+    def refresh(self, request: object) -> None:
+        self.refresh_count += 1
+        self.service_account_email = "runtime@example.iam.gserviceaccount.com"
+        self.token = "short-lived-token"
+
+
+class FakeMetadataGcsClient(FakeGcsClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._credentials = FakeMetadataCredentials()
 
 
 def make_store(kms: str | None = None) -> GcsObjectStore:
@@ -202,6 +232,18 @@ class TestSignedUrls:
         await store.put("k", b"x")
         signed = await store.signed_download_url("k", expires_in_seconds=300)
         assert signed.method == "GET"
+
+    async def test_cloud_run_credentials_use_keyless_iam_signing(self) -> None:
+        client = FakeMetadataGcsClient()
+        store = GcsObjectStore(GcsSettings(bucket="soa-docs", project="soa-pilot"), client=client)
+
+        signed = await store.signed_upload_url(
+            "k", expires_in_seconds=300, content_type="application/pdf"
+        )
+
+        assert "credential=runtime@example.iam.gserviceaccount.com" in signed.url
+        assert "token=short-lived-token" in signed.url
+        assert client._credentials.refresh_count == 1
 
 
 class TestKms:

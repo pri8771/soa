@@ -1,13 +1,14 @@
 # Container images (REL-001)
 
-Three runtime images, all built from the repository root so the uv /
-pnpm workspaces resolve:
+Four independently promoted artifacts, all built from the repository root so
+the uv / pnpm workspaces resolve:
 
 | Image | Dockerfile | Base | Runs | Health |
 | --- | --- | --- | --- | --- |
 | `soa-api` | `apps/api/Dockerfile` | `python:3.11-slim-bookworm` | `uvicorn soa_api.main:app` on :8000 | `HEALTHCHECK` hits `/health/live` (stdlib, no curl) |
+| `soa-migrator` | `apps/api/Dockerfile` target `migrator` | `python:3.11-slim-bookworm` | one-shot `alembic upgrade head` | Cloud Run job exit status |
 | `soa-worker` | `apps/worker/Dockerfile` | `python:3.11-slim-bookworm` + Tesseract + fonts | `soa-worker` | `HEALTHCHECK` runs `python -m soa_worker.healthcheck` against the heartbeat file |
-| `soa-web` | `apps/web/Dockerfile` | `nginxinc/nginx-unprivileged:1.27-bookworm` | nginx on :8080 serving the Vite bundle | external HTTP probe on `/healthz` |
+| `soa-web` | `apps/web/Dockerfile` | `nginxinc/nginx-unprivileged:1.27-bookworm` | nginx on :8080 serving the Vite bundle; its exact static bytes are deployed to Firebase Hosting | external HTTP probe on `/healthz` in the container |
 
 ## Design
 
@@ -25,10 +26,18 @@ pnpm workspaces resolve:
   local state out of the build context; configuration is supplied at run
   time via `SOA_*` environment variables (secret *values* live behind
   the SEC-005 secret store, never baked in).
-- **Pinned bases.** Base images are pinned to the Debian bookworm /
-  Python 3.11 (and nginx 1.27, node 22) series — the latest patch, so
-  Trivy scans stay clean; REL-002 tightens these to reproducible
-  registry digests with tooling to refresh them.
+- **Migration/API separation.** The API target contains no migration files;
+  the migrator adds only `alembic.ini` and `migrations/` to the same locked
+  environment. It receives only `SOA_DATABASE_URL` and runs under a dedicated
+  one-shot service account.
+- **Immutable web publication.** Vite embeds the environment's public HTTPS
+  API URL at release build time. The publish workflow scans that web image;
+  deploy then extracts its `dist/` bytes and sends those exact bytes to
+  Firebase Hosting without rebuilding source.
+- **Pinned bases.** Every external base/build image keeps a readable version
+  tag and is pinned to its multi-architecture registry digest. Renovation is
+  deliberate: update tag + digest together, rebuild, and let Trivy gate the
+  resulting runtime artifacts.
 - **Health checks.** The API reuses its own `/health/live` endpoint. The
   worker has no HTTP surface, so its liveness is a heartbeat file the run
   loop rewrites each beat (`SOA_WORKER_LIVENESS_FILE`, default
@@ -42,12 +51,13 @@ pnpm workspaces resolve:
 make docker-build
 ```
 
-builds all three images, or individually from the repo root:
+builds all four artifacts, or individually from the repo root:
 
 ```
-docker build -f apps/api/Dockerfile -t soa-api .
-docker build -f apps/worker/Dockerfile -t soa-worker .
-docker build -f apps/web/Dockerfile -t soa-web .
+docker build --target api -f apps/api/Dockerfile -t soa-api .
+docker build --target migrator -f apps/api/Dockerfile -t soa-migrator .
+docker build --target runtime -f apps/worker/Dockerfile -t soa-worker .
+docker build --target runtime -f apps/web/Dockerfile -t soa-web .
 ```
 
 Image vulnerability scanning (Trivy) and the non-root assertion run in

@@ -7,9 +7,9 @@
 # needed at runtime. Build from the REPO ROOT:
 #   docker build -f apps/worker/Dockerfile -t soa-worker .
 
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.17@sha256:e4644cb5bd56fdc2c5ea3ee0525d9d21eed1603bccd6a21f887a938be7e85be1 /uv /bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -20,7 +20,7 @@ COPY . .
 RUN uv sync --frozen --no-dev --no-editable --package soa-worker
 
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime
 
 # OCR engine + the language packs the Tesseract adapter maps
 # (soa_worker.tesseract_ocr.LANGUAGE_PACKS) and base fonts for rendering.

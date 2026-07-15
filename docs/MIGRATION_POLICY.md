@@ -56,9 +56,11 @@ Deploys promote the *same* immutable image (REL-001, pinned by digest
 under REL-002) through environments; a rollback redeploys the previous
 digest. Nothing is rebuilt, so the rolled-back version is byte-identical
 to what last passed CI. The expand/contract discipline above is what
-makes that safe against the live schema. The mechanical deploy/rollback
-workflow that drives this is REL-005 (blocked on the REL-002 platform
-choice); this document is the policy it will enforce.
+makes that safe against the live schema. The REL-005 deploy workflow runs the
+independently scanned `soa-migrator` image as a one-shot, private-VPC Cloud
+Run job before it promotes the API/worker digests. A failed migration stops
+the rollout; image rollback uses the prior recorded release manifest and
+never auto-downgrades a live database.
 
 ## Configuration and provider rollback
 

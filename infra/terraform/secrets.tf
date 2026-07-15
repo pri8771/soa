@@ -42,3 +42,25 @@ resource "google_secret_manager_secret_version" "app_secret_key" {
   secret      = google_secret_manager_secret.app_secret_key.id
   secret_data = random_password.app_secret_key.result
 }
+
+# A dedicated HMAC key authenticates worker outbox deliveries. It is not
+# reused for API sessions, so either credential can be rotated or revoked
+# without coupling two unrelated security boundaries.
+resource "google_secret_manager_secret" "outbox_signing_secret" {
+  secret_id = "${local.name_prefix}-outbox-signing-secret"
+  labels    = local.labels
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
+resource "random_password" "outbox_signing_secret" {
+  length  = 48
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "outbox_signing_secret" {
+  secret      = google_secret_manager_secret.outbox_signing_secret.id
+  secret_data = random_password.outbox_signing_secret.result
+}

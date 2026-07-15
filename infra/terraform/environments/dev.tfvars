@@ -9,13 +9,16 @@ db_disk_gb               = 10
 db_availability_type     = "ZONAL"
 db_backup_retention_days = 7
 
-api_min_instances    = 0
-api_max_instances    = 2
-worker_min_instances = 1
-worker_max_instances = 2
+api_min_instances = 0
+api_max_instances = 2
+worker_instances  = 1
+
+# Cloud Run admits browser traffic; application OIDC remains the tenant
+# authorization boundary.
+api_allow_unauthenticated = true
 
 storage_location    = "EU"
 deletion_protection = false
 
-# project_id, api_image, worker_image are supplied at apply time
-# (-var), since they change per project and per release.
+# Project, bootstrap image digests, and deployment-specific identity/
+# integration settings are supplied at apply time; see ../README.md.

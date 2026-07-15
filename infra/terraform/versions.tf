@@ -6,8 +6,10 @@ terraform {
 
   required_providers {
     google = {
-      source  = "hashicorp/google"
-      version = "~> 6.0"
+      source = "hashicorp/google"
+      # 6.42 is the first baseline used here with the Cloud Run v2 worker
+      # pool resource. Keep the minor line bounded until a reviewed upgrade.
+      version = "~> 6.42"
     }
     random = {
       source  = "hashicorp/random"

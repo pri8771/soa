@@ -10,10 +10,11 @@ db_disk_gb               = 50
 db_availability_type     = "REGIONAL"
 db_backup_retention_days = 30
 
-api_min_instances    = 2
-api_max_instances    = 10
-worker_min_instances = 2
-worker_max_instances = 10
+api_min_instances = 2
+api_max_instances = 10
+worker_instances  = 2
+
+api_allow_unauthenticated = true
 
 storage_location    = "EU"
 deletion_protection = true

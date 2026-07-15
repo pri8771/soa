@@ -6,9 +6,9 @@ output "api_url" {
   value       = google_cloud_run_v2_service.api.uri
 }
 
-output "worker_service" {
-  description = "Name of the worker Cloud Run service."
-  value       = google_cloud_run_v2_service.worker.name
+output "worker_pool" {
+  description = "Name of the continuously polling Cloud Run worker pool."
+  value       = google_cloud_run_v2_worker_pool.worker.name
 }
 
 output "database_instance" {
@@ -34,4 +34,9 @@ output "api_service_account" {
 output "worker_service_account" {
   description = "Worker runtime service account email."
   value       = google_service_account.worker.email
+}
+
+output "migrator_service_account" {
+  description = "One-shot migration job service account email."
+  value       = google_service_account.migrator.email
 }

@@ -78,7 +78,7 @@ class GcsObjectStore:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            from google.cloud import storage  # type: ignore[attr-defined]
+            from google.cloud import storage  # type: ignore[import-untyped, attr-defined]
 
             self._client = storage.Client(project=self._settings.project)
         return self._client
@@ -90,6 +90,39 @@ class GcsObjectStore:
         if self._settings.kms_key_name:
             return self._bucket().blob(key, kms_key_name=self._settings.kms_key_name)
         return self._bucket().blob(key)
+
+    def _signed_url_credentials(self) -> dict[str, str]:
+        """Return keyless IAM-signing arguments when running on Cloud Run.
+
+        Local service-account credentials implement ``sign_bytes`` and the
+        storage library uses them directly. Metadata-server credentials do
+        not carry a private key, so refresh them to discover the runtime
+        identity and ask IAM Credentials ``signBlob`` to sign with the short-
+        lived access token. The runtime service account receives permission
+        to sign only as itself in Terraform; no downloadable key exists.
+
+        Injected test clients intentionally have no credentials and keep the
+        adapter's original fake-friendly path.
+        """
+        client = self._get_client()
+        credentials = getattr(client, "_credentials", None)
+        if credentials is None or hasattr(credentials, "sign_bytes"):
+            return {}
+
+        email = getattr(credentials, "service_account_email", None)
+        token = getattr(credentials, "token", None)
+        if not token or not email or email == "default":
+            from google.auth.transport.requests import Request
+
+            credentials.refresh(Request())
+            email = getattr(credentials, "service_account_email", None)
+            token = getattr(credentials, "token", None)
+        if not token or not email or email == "default":
+            raise RuntimeError(
+                "GCS signed URLs require signable credentials or a refreshed "
+                "Cloud Run service-account identity"
+            )
+        return {"service_account_email": str(email), "access_token": str(token)}
 
     # -- helpers that run the blocking SDK off the event loop --------------
 
@@ -195,6 +228,7 @@ class GcsObjectStore:
                     expiration=timedelta(seconds=expires_in_seconds),
                     method="PUT",
                     content_type=content_type,
+                    **self._signed_url_credentials(),
                 )
             )
 
@@ -214,6 +248,7 @@ class GcsObjectStore:
                     version="v4",
                     expiration=timedelta(seconds=expires_in_seconds),
                     method="GET",
+                    **self._signed_url_credentials(),
                 )
             )
 

@@ -17,6 +17,11 @@ coverage/
 htmlcov/
 *.tsbuildinfo
 .vite/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.tfstate.lock.info
 
 # Environment and secrets
 .env

@@ -11,10 +11,10 @@
 # latest patch, so image scans stay clean); REL-002 tightens these to
 # reproducible registry digests with tooling to refresh them.
 
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS builder
 
 # Pinned uv, copied from its published image (no curl|sh install).
-COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.17@sha256:e4644cb5bd56fdc2c5ea3ee0525d9d21eed1603bccd6a21f887a938be7e85be1 /uv /bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -28,7 +28,7 @@ COPY . .
 RUN uv sync --frozen --no-dev --no-editable --package soa-api
 
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime-base
 
 # Drop root: a fixed, high, system UID with no shell and no home writes.
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin soa
@@ -41,6 +41,23 @@ COPY --from=builder --chown=soa:soa /app/.venv /app/.venv
 
 USER soa
 WORKDIR /app
+
+
+# One-shot migration image. It intentionally shares the exact locked Python
+# environment with the API, but includes only the Alembic configuration and
+# migration scripts in addition to that environment. Deployments promote this
+# image by its own digest and run it with SOA_DATABASE_URL; the API runtime
+# remains free of schema-management files and permissions.
+FROM runtime-base AS migrator
+
+COPY --chown=soa:soa alembic.ini /app/alembic.ini
+COPY --chown=soa:soa migrations /app/migrations
+
+CMD ["alembic", "upgrade", "head"]
+
+
+FROM runtime-base AS api
+
 EXPOSE 8000
 
 # Liveness via the app's own endpoint using stdlib only (no curl in the

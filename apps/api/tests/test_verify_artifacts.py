@@ -9,11 +9,15 @@ from pathlib import Path
 import pytest
 
 from soa_api.domain.tenancy import Organization
-from soa_api.ops.verify_artifacts import verify_artifacts
+from soa_api.ops.verify_artifacts import build_object_store, verify_artifacts
+from soa_api.settings import ApiSettings, Environment
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.repository import OrganizationContext
 from soa_storage import MemoryObjectStore, sha256_hex
+from soa_storage.filesystem import FilesystemObjectStore
+from soa_storage.gcs import GcsObjectStore
+from soa_storage.s3 import S3ObjectStore
 
 
 @pytest.fixture
@@ -89,3 +93,39 @@ async def test_corruption_loss_and_orphans_across_tenants(db: DatabaseSessions) 
 
     serialized = json.dumps(report.to_dict())
     assert "EVIL BYTES" not in serialized and "unowned" not in serialized
+
+
+def test_verifier_builds_the_deployed_gcs_backend() -> None:
+    settings = ApiSettings(
+        environment=Environment.TEST,
+        storage_backend="gcs",
+        storage_bucket="artifact-bucket",
+        storage_gcs_project="artifact-project",
+    )
+
+    assert isinstance(build_object_store(settings), GcsObjectStore)
+
+
+def test_verifier_builds_development_backends(tmp_path: Path) -> None:
+    filesystem = ApiSettings(
+        environment=Environment.TEST,
+        storage_backend="filesystem",
+        storage_filesystem_root=str(tmp_path),
+    )
+    s3 = ApiSettings(
+        environment=Environment.TEST,
+        storage_backend="s3",
+        storage_endpoint_url="http://127.0.0.1:9000",
+        storage_access_key="access",
+        storage_secret_key="secret",
+    )
+
+    assert isinstance(build_object_store(filesystem), FilesystemObjectStore)
+    assert isinstance(build_object_store(s3), S3ObjectStore)
+
+
+def test_verifier_refuses_incomplete_backend_configuration() -> None:
+    settings = ApiSettings(environment=Environment.TEST, storage_backend="s3")
+
+    with pytest.raises(ValueError, match="endpoint, access key, and secret key"):
+        build_object_store(settings)

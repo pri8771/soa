@@ -1,0 +1,155 @@
+name: Publish release images
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: release-images-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    # Never publish pull-request code. Only a successful push CI run on one of
+    # the three protected promotion branches can mint release artifacts.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      contains(fromJSON('["dev", "qa", "main"]'), github.event.workflow_run.head_branch)
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.workflow_run.head_branch == 'main' && 'production' || 'staging' }}
+    env:
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+      WEB_API_BASE_URL: ${{ vars.WEB_API_BASE_URL }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_RELEASE_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and publish immutable images
+        id: images
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$AR_REPO"
+          mkdir -p /tmp/soa-release
+
+          build_image() {
+            local name="$1"
+            local dockerfile="$2"
+            local target="$3"
+            shift 3
+            local reference="${AR_REPO}/${name}:${SOURCE_SHA}"
+            docker buildx build \
+              --file "$dockerfile" \
+              --target "$target" \
+              --tag "$reference" \
+              --cache-from "type=gha,scope=${name}" \
+              --cache-to "type=gha,mode=max,scope=${name}" \
+              --provenance=mode=max \
+              --sbom=true \
+              --push \
+              --iidfile "/tmp/soa-release/${name}.digest" \
+              "$@" \
+              .
+            local digest
+            digest=$(cat "/tmp/soa-release/${name}.digest")
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "buildx returned an invalid digest for $name" >&2
+              exit 1
+            fi
+            echo "${name//-/_}_digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${name//-/_}_ref=${AR_REPO}/${name}@${digest}" >> "$GITHUB_OUTPUT"
+          }
+
+          build_image api apps/api/Dockerfile api
+          build_image worker apps/worker/Dockerfile runtime
+          build_image migrator apps/api/Dockerfile migrator
+          test -n "$WEB_API_BASE_URL"
+          [[ "$WEB_API_BASE_URL" =~ ^https:// ]]
+          build_image web apps/web/Dockerfile runtime \
+            --build-arg "VITE_API_BASE_URL=${WEB_API_BASE_URL}"
+
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.images.outputs.api_ref }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan worker image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.images.outputs.worker_ref }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan migrator image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.images.outputs.migrator_ref }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan web image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.images.outputs.web_ref }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Write release manifest
+        run: |
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg branch "${{ github.event.workflow_run.head_branch }}" \
+            --arg api "${{ steps.images.outputs.api_digest }}" \
+            --arg worker "${{ steps.images.outputs.worker_digest }}" \
+            --arg migrator "${{ steps.images.outputs.migrator_digest }}" \
+            --arg web "${{ steps.images.outputs.web_digest }}" \
+            '{schema_version: 1, source_sha: $source_sha, branch: $branch, images: {api: $api, worker: $worker, migrator: $migrator, web: $web}}' \
+            > release-manifest.json
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-manifest-${{ github.event.workflow_run.head_sha }}
+          path: release-manifest.json
+          retention-days: 365
+
+      - name: Record publication evidence
+        run: |
+          {
+            echo "## Release images"
+            echo "- source: ${SOURCE_SHA}"
+            echo "- API: ${{ steps.images.outputs.api_ref }}"
+            echo "- worker: ${{ steps.images.outputs.worker_ref }}"
+            echo "- migrator: ${{ steps.images.outputs.migrator_ref }}"
+            echo "- web: ${{ steps.images.outputs.web_ref }}"
+          } >> "$GITHUB_STEP_SUMMARY"

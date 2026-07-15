@@ -97,15 +97,13 @@ force a noise exception. This differs deliberately from the dependency
 gate, which fails closed — application dependencies we *can* pin or
 upgrade get no such grace.
 
-A small `.trivyignore` at the repo root suppresses advisories in the
-base image's Python **build tooling** (pip / setuptools / wheel), which
-sits in the system site-packages of `python:3.11-slim` but is never
-invoked by services that run from the self-contained `/app/.venv`. Each
-entry is documented with its reason — the container analog of the
-[exception process](#exception-process) above, not a blanket skip — and
-should disappear as REL-002 digest-pins refresh the base tooling. The runtime sandbox profile those images must
-satisfy at deploy time (read-only root filesystem, dropped capabilities,
-no network for converters) is specified in
+A prior unbounded `.trivyignore` was removed when the digest-pinned Python
+base eliminated those findings. Container scans currently carry **no ignored
+vulnerability IDs**. A future exception must use Trivy's structured YAML
+ignore format with an owner/reason in `statement` and an `expired_at` date,
+and must be reviewed like the dependency exceptions above. The runtime
+sandbox profile those images must satisfy at deploy time (read-only root
+filesystem, dropped capabilities, no network for converters) is specified in
 [`SANDBOX_PROFILE.md`](SANDBOX_PROFILE.md).
 
 ## Running it locally

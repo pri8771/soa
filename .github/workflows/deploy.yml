@@ -1,12 +1,15 @@
-# Deployment workflow (REL-005). Promotes ONE immutable image (built and
-# scanned by CI, REL-001) through an environment: run migrations as a
-# one-shot job, deploy the API and worker to Cloud Run, gate on readiness,
-# smoke-test, and record evidence. A failed readiness or smoke step stops
-# the rollout — the previous revision keeps serving.
+# Deployment workflow (REL-005). Promotes one immutable, independently
+# scanned digest for each runtime artifact: migrator, API, worker, and web.
+# It runs migrations as a one-shot job, deploys the worker pool and API,
+# gates on reconciliation/readiness, smoke-tests, and records all promoted
+# digests. A failed API readiness or smoke step leaves the previous API
+# revision serving; operator rollback still uses the previously recorded
+# release manifest.
 #
 # This is authored ahead of the GCP project; the owner wires the secrets
 # below (Workload Identity Federation is preferred over a key file). It is
-# manual (workflow_dispatch) so a human chooses the environment + digest.
+# manual (workflow_dispatch) so a human chooses the environment and one
+# successful, atomic publication manifest.
 
 name: Deploy
 
@@ -20,8 +23,12 @@ on:
           - staging
           - production
         required: true
-      image_digest:
-        description: Image digest to promote (sha256:...), same for api and worker tags
+      release_run_id:
+        description: Successful "Publish release images" workflow run ID
+        type: string
+        required: true
+      source_sha:
+        description: Full source commit SHA recorded by that release run
         type: string
         required: true
 
@@ -33,6 +40,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
   id-token: write # for Workload Identity Federation
 
 jobs:
@@ -43,21 +51,73 @@ jobs:
       GCP_PROJECT: ${{ vars.GCP_PROJECT }}
       GCP_REGION: ${{ vars.GCP_REGION }}
       AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }} # e.g. REGION-docker.pkg.dev/PROJECT/soa
+      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
+      # Promotion consumes one successful publication manifest, not four
+      # operator-pasted digests that could accidentally mix releases.
+      - name: Verify and download release manifest
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          run_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}")
+          test "$(jq -r .name <<<"$run_json")" = "Publish release images"
+          test "$(jq -r .conclusion <<<"$run_json")" = "success"
+
+          mkdir -p /tmp/soa-release
+          gh run download "$RELEASE_RUN_ID" \
+            --name "release-manifest-${SOURCE_SHA}" \
+            --dir /tmp/soa-release
+          manifest=/tmp/soa-release/release-manifest.json
+          jq -e '.schema_version == 1' "$manifest" >/dev/null
+          test "$(jq -r .source_sha "$manifest")" = "$SOURCE_SHA"
+
+          branch=$(jq -r .branch "$manifest")
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            test "$branch" = "main"
+          else
+            [[ "$branch" = "qa" || "$branch" = "dev" ]]
+          fi
+
+          for artifact in api worker migrator web; do
+            digest=$(jq -r ".images.${artifact}" "$manifest")
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "release manifest contains an invalid $artifact digest" >&2
+              exit 1
+            fi
+            echo "${artifact}_digest=${digest}" >> "$GITHUB_OUTPUT"
+          done
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOYER_SA }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Resolve immutable image references
         id: images
         run: |
-          echo "api=${AR_REPO}/api@${{ inputs.image_digest }}" >> "$GITHUB_OUTPUT"
-          echo "worker=${AR_REPO}/worker@${{ inputs.image_digest }}" >> "$GITHUB_OUTPUT"
+          echo "api=${AR_REPO}/api@${{ steps.release.outputs.api_digest }}" >> "$GITHUB_OUTPUT"
+          echo "worker=${AR_REPO}/worker@${{ steps.release.outputs.worker_digest }}" >> "$GITHUB_OUTPUT"
+          echo "migrator=${AR_REPO}/migrator@${{ steps.release.outputs.migrator_digest }}" >> "$GITHUB_OUTPUT"
+          echo "web=${AR_REPO}/web@${{ steps.release.outputs.web_digest }}" >> "$GITHUB_OUTPUT"
 
       # Migrations run as a one-shot Cloud Run job BEFORE the new revisions
       # take traffic. Expand/contract discipline (REL-006) makes this safe:
@@ -66,20 +126,35 @@ jobs:
       - name: Run database migrations
         run: |
           gcloud run jobs deploy soa-${{ inputs.environment }}-migrate \
-            --image="${{ steps.images.outputs.api }}" \
+            --image="${{ steps.images.outputs.migrator }}" \
             --region="${GCP_REGION}" \
             --command="alembic" --args="upgrade,head" \
             --vpc-connector="soa-${{ inputs.environment }}-vpcconn" \
-            --set-secrets="SOA_API_DATABASE_URL=soa-${{ inputs.environment }}-database-url:latest" \
+            --service-account="soa-${{ inputs.environment }}-migrator@${GCP_PROJECT}.iam.gserviceaccount.com" \
+            --set-secrets="SOA_DATABASE_URL=soa-${{ inputs.environment }}-database-url:latest" \
             --quiet
           gcloud run jobs execute soa-${{ inputs.environment }}-migrate \
             --region="${GCP_REGION}" --wait
 
-      - name: Deploy worker
+      - name: Deploy worker pool
         run: |
-          gcloud run services update soa-${{ inputs.environment }}-worker \
+          gcloud run worker-pools deploy soa-${{ inputs.environment }}-worker \
             --image="${{ steps.images.outputs.worker }}" \
             --region="${GCP_REGION}" --quiet
+
+      - name: Verify worker-pool reconciliation
+        id: worker
+        run: |
+          reconciling=$(gcloud run worker-pools describe soa-${{ inputs.environment }}-worker \
+            --region="${GCP_REGION}" --format='value(reconciling)')
+          if [ "$reconciling" = "True" ]; then
+            echo "worker pool is still reconciling" >&2
+            exit 1
+          fi
+          revision=$(gcloud run worker-pools describe soa-${{ inputs.environment }}-worker \
+            --region="${GCP_REGION}" --format='value(latestReadyRevision)')
+          test -n "$revision"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy API (no traffic yet)
         id: deploy_api
@@ -112,6 +187,25 @@ jobs:
           # Add deeper smoke checks (auth, a read endpoint) as they gain
           # unauthenticated-safe health surfaces.
 
+      # The scanned web image doubles as the immutable static-asset artifact.
+      # Extract exactly those bytes and publish them to the Firebase Hosting
+      # site in the target GCP project; do not rebuild mutable source here.
+      - name: Deploy web to Firebase Hosting
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${{ steps.images.outputs.web }}"
+          container=$(docker create "${{ steps.images.outputs.web }}")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          rm -rf apps/web/dist
+          mkdir -p apps/web/dist
+          docker cp "${container}:/usr/share/nginx/html/." apps/web/dist/
+          test -s apps/web/dist/index.html
+          npx --yes firebase-tools@15.23.0 deploy \
+            --only hosting \
+            --project "$GCP_PROJECT" \
+            --non-interactive
+
       - name: Shift 100% traffic to the new revision
         run: |
           gcloud run services update-traffic soa-${{ inputs.environment }}-api \
@@ -122,6 +216,12 @@ jobs:
         run: |
           {
             echo "## Deploy ${{ inputs.environment }}"
-            echo "- image digest: ${{ inputs.image_digest }}"
+            echo "- API image: ${{ steps.images.outputs.api }}"
+            echo "- worker image: ${{ steps.images.outputs.worker }}"
+            echo "- migrator image: ${{ steps.images.outputs.migrator }}"
+            echo "- web image: ${{ steps.images.outputs.web }}"
+            echo "- source: ${SOURCE_SHA} (${{ steps.release.outputs.branch }})"
+            echo "- release run: ${RELEASE_RUN_ID}"
+            echo "- worker revision: ${{ steps.worker.outputs.revision }}"
             echo "- outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

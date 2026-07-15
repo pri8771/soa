@@ -18,9 +18,12 @@ resource "google_monitoring_uptime_check_config" "api" {
     type = "uptime_url"
     labels = {
       project_id = var.project_id
-      # The host is filled in after the first apply exposes the Cloud Run
-      # URL; kept as a variable-free placeholder the owner sets.
-      host = "REPLACE_WITH_API_HOST"
+      # Prefer a custom hostname when one exists; otherwise derive the
+      # managed Cloud Run hostname directly from the created service.
+      host = coalesce(
+        var.api_uptime_host,
+        trimprefix(google_cloud_run_v2_service.api.uri, "https://"),
+      )
     }
   }
 
