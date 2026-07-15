@@ -27,6 +27,7 @@ from soa_api.routers import (
     jobs,
     me,
     organizations,
+    outbox,
     processes,
     providers,
     public_ingest,
@@ -237,6 +238,7 @@ def create_app(
     app.include_router(me.router)
     app.include_router(organizations.router)
     app.include_router(jobs.router)
+    app.include_router(outbox.router)
     app.include_router(processes.router)
     app.include_router(catalogs.router)
     app.include_router(providers.router)

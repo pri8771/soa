@@ -22,6 +22,7 @@ from soa_worker.worker import Worker
 PREPROCESS_JOB_TYPE = "document.preprocess"
 EXPORT_JOB_TYPE = "export.deliver"
 EVALUATION_JOB_TYPE = "evaluation.run"
+OUTBOX_JOB_TYPE = "outbox.publish"
 
 
 def _register_extraction_providers(settings: WorkerSettings) -> None:
@@ -136,6 +137,23 @@ async def _run() -> None:
                 OrganizationContext(organization_id=organization_id),
                 uuid.UUID(str(job.payload["evaluation_run_id"])),
             )
+
+    @registry.register(OUTBOX_JOB_TYPE)
+    async def publish_outbox(job: JobEnvelope) -> None:
+        from soa_worker.outbox_publisher import publish_outbox_event
+
+        if not settings.outbox_publish_url:
+            raise RuntimeError("outbox publication destination is not configured")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async with db.session_scope() as session:
+                result = await publish_outbox_event(
+                    session,
+                    event_id=uuid.UUID(str(job.payload["outbox_event_id"])),
+                    destination_url=settings.outbox_publish_url,
+                    client=client,
+                )
+        if result.outcome == "retryable_error":
+            raise RuntimeError("outbox destination asked for a retry")
 
     worker_id = f"{socket.gethostname()}:{uuid.uuid4()}"
     queue = DatabaseJobQueue(db, worker_id=worker_id)

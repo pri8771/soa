@@ -80,7 +80,40 @@ async def enqueue_event(
         correlation_id=correlation_id,
     )
     session.add(event)
+    await session.flush()
+    # Each event gets an independently retryable durable publication job.
+    # The local import avoids making the jobs schema depend on this module.
+    from soa_db.jobs import enqueue_job
+
+    await enqueue_job(
+        session,
+        job_type="outbox.publish",
+        organization_id=organization_id,
+        payload={"outbox_event_id": str(event.id)},
+        dedupe_key=f"outbox:{event.id}",
+        max_attempts=10,
+    )
     return event
+
+
+async def replay_failed_event(session: AsyncSession, event: OutboxEvent) -> None:
+    """Reset one dead-lettered event and enqueue an audited caller-owned replay."""
+    if event.status != OutboxStatus.FAILED:
+        raise ValueError("only failed outbox events can be replayed")
+    previous_attempts = event.attempts
+    event.status = OutboxStatus.PENDING
+    event.next_attempt_at = utcnow()
+    event.last_error = None
+    from soa_db.jobs import enqueue_job
+
+    await enqueue_job(
+        session,
+        job_type="outbox.publish",
+        organization_id=event.organization_id,
+        payload={"outbox_event_id": str(event.id)},
+        dedupe_key=f"outbox:{event.id}:replay:{previous_attempts}",
+        max_attempts=10,
+    )
 
 
 async def claim_pending_events(

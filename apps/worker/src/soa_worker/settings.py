@@ -46,6 +46,9 @@ class WorkerSettings(BaseServiceSettings):
     # Runtime extraction is selected from each run's pinned provider policy.
     extraction_provider: str = "mock"
     export_destination_allowlist: tuple[str, ...] = ()
+    #: HTTPS endpoint that receives transactional domain events. The event UUID
+    #: is sent as Idempotency-Key so receivers can absorb retry duplicates.
+    outbox_publish_url: str | None = None
     #: Optional local OpenAI-compatible extraction endpoint (AIO-007).
     #: Unset (the default) means the profile never registers. Point this
     #: at Ollama/vLLM/llama.cpp; see docs/LLM_PROVIDERS.md.
@@ -91,6 +94,8 @@ class WorkerSettings(BaseServiceSettings):
                 problems.append("S3 storage requires endpoint, access key, and secret key")
             if not self.export_destination_allowlist:
                 problems.append("production requires an export_destination_allowlist")
+            if not self.outbox_publish_url or not self.outbox_publish_url.startswith("https://"):
+                problems.append("production requires an HTTPS outbox_publish_url")
             if problems:
                 raise ValueError("; ".join(problems))
         return self

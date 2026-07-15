@@ -12,6 +12,7 @@ import soa_api.services.ingestion as ingestion_module
 from soa_api.app import create_app
 from soa_api.domain.uploads import UploadSession
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import Artifact
 from soa_db.documents import Document
@@ -34,7 +35,7 @@ async def harness(tmp_path: Path) -> tuple[TestClient, DatabaseSessions, MemoryO
     return TestClient(app, raise_server_exceptions=False), db, store
 
 
-def seed_stream(client: TestClient) -> None:
+async def seed_stream(client: TestClient, db: DatabaseSessions) -> None:
     for path, body in (
         ("/organizations", {"name": "Northstar", "slug": "northstar"}),
         ("/orgs/northstar/processes", {"name": "POs", "slug": "purchase-orders"}),
@@ -44,6 +45,7 @@ def seed_stream(client: TestClient) -> None:
         ),
     ):
         assert client.post(path, json=body, headers=ADMIN).status_code == 201
+    await publish_runtime_config(client, db)
 
 
 async def open_and_upload(client: TestClient, store: MemoryObjectStore) -> dict[str, str]:
@@ -77,7 +79,7 @@ async def test_completion_registers_everything_exactly_once(
     harness: tuple[TestClient, DatabaseSessions, MemoryObjectStore],
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     payload = await open_and_upload(client, store)
 
     completed = client.post(
@@ -94,10 +96,12 @@ async def test_completion_registers_everything_exactly_once(
         assert again.status_code == 200
 
     counts = await count_rows(db)
-    assert counts == {"documents": 1, "artifacts": 1, "jobs": 1, "outbox": 1}
+    assert counts == {"documents": 1, "artifacts": 1, "jobs": 2, "outbox": 1}
 
     async with db.session_scope() as session:
-        job = (await session.execute(select(Job))).scalars().one()
+        job = (
+            await session.execute(select(Job).where(Job.job_type == "document.preprocess"))
+        ).scalar_one()
         assert job.job_type == "document.preprocess"
         assert job.payload["document_id"] == payload["document_id"]
         assert job.dedupe_key == f"document.preprocess:{payload['document_id']}"
@@ -111,7 +115,7 @@ async def test_failure_rolls_back_registration_and_leaves_session_explainable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, db, store = harness
-    seed_stream(client)
+    await seed_stream(client, db)
     payload = await open_and_upload(client, store)
 
     # Blow up at the very end of registration: everything before it must
@@ -142,4 +146,4 @@ async def test_failure_rolls_back_registration_and_leaves_session_explainable(
         f"/orgs/northstar/uploads/{payload['session_id']}/complete", headers=ADMIN
     )
     assert retried.status_code == 200, retried.text
-    assert await count_rows(db) == {"documents": 1, "artifacts": 1, "jobs": 1, "outbox": 1}
+    assert await count_rows(db) == {"documents": 1, "artifacts": 1, "jobs": 2, "outbox": 1}
