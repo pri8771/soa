@@ -30,6 +30,12 @@ RUN uv sync --frozen --no-dev --no-editable --package soa-api
 
 FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime-base
 
+# The upstream Python image includes packaging tools for general-purpose use.
+# This image installs its immutable environment in the builder, so retaining
+# pip/setuptools/wheel at runtime only adds unused code and vulnerability
+# surface. Uninstall them before copying the already-built virtualenv.
+RUN python -m pip uninstall --yes wheel setuptools pip
+
 # Drop root: a fixed, high, system UID with no shell and no home writes.
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin soa
 

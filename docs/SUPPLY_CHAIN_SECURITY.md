@@ -97,8 +97,11 @@ force a noise exception. This differs deliberately from the dependency
 gate, which fails closed — application dependencies we *can* pin or
 upgrade get no such grace.
 
-A prior unbounded `.trivyignore` was removed when the digest-pinned Python
-base eliminated those findings. Container scans currently carry **no ignored
+A prior unbounded `.trivyignore` was removed. Digest pinning makes the base
+reproducible; it does not make that base permanently vulnerability-free. The
+Python runtime stages therefore also remove unused packaging tools after the
+locked application environment is built, fixing that attack surface instead
+of suppressing its findings. Container scans currently carry **no ignored
 vulnerability IDs**. A future exception must use Trivy's structured YAML
 ignore format with an owner/reason in `statement` and an `expired_at` date,
 and must be reviewed like the dependency exceptions above. The runtime

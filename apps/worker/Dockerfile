@@ -22,6 +22,12 @@ RUN uv sync --frozen --no-dev --no-editable --package soa-worker
 
 FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime
 
+# Dependency resolution and wheel installation finish in the builder. Remove
+# the base image's otherwise-unused packaging toolchain from the final image so
+# pip, setuptools (including its vendored libraries), and wheel cannot expand
+# the worker's runtime attack surface.
+RUN python -m pip uninstall --yes wheel setuptools pip
+
 # OCR engine + the language packs the Tesseract adapter maps
 # (soa_worker.tesseract_ocr.LANGUAGE_PACKS) and base fonts for rendering.
 RUN apt-get update \
