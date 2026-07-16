@@ -1,9 +1,13 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
 from soa_config.telemetry import configure_telemetry
+from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_storage import MemoryObjectStore
 
 
 def test_api_request_creates_correlated_span() -> None:
@@ -30,7 +34,7 @@ def test_api_request_creates_correlated_span() -> None:
     assert span.attributes["soa.correlation_id"] == "span-corr-1"
 
 
-def test_dynamic_url_values_never_become_trace_names_or_attributes() -> None:
+async def test_dynamic_url_values_never_become_trace_names_or_attributes(tmp_path: Path) -> None:
     exporter = InMemorySpanExporter()
     telemetry = configure_telemetry(
         service_name="soa-api",
@@ -38,7 +42,18 @@ def test_dynamic_url_values_never_become_trace_names_or_attributes() -> None:
         profile="none",
         span_exporter=exporter,
     )
-    app = create_app(ApiSettings(environment=Environment.TEST), telemetry=telemetry)
+    # The /orgs/{slug} route queries the database (404 for an unknown org),
+    # so give the app a real in-memory test DB — otherwise it connects to
+    # the default Postgres, which the unit-test CI job has no service for.
+    engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/tracing.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    app = create_app(
+        ApiSettings(environment=Environment.TEST),
+        db=DatabaseSessions(engine),
+        object_store=MemoryObjectStore(),
+        telemetry=telemetry,
+    )
     client = TestClient(app)
 
     response = client.get(
