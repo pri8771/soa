@@ -26,6 +26,8 @@ model output over customer data must never be interpolated into them.
 """
 
 import json
+from collections.abc import Mapping
+from typing import Any
 
 from soa_worker.extraction.provider import (
     EvidenceSpan,
@@ -94,6 +96,52 @@ class ModelOutputInvalidError(ExtractionProviderError):
         )
 
 
+def _clamp_confidence(raw: object) -> float:
+    numeric = float(raw) if isinstance(raw, int | float) else 0.5
+    return min(max(numeric, 0.0), 1.0)
+
+
+def _expand_table_rows(
+    table_key: str,
+    rows: list[Any],
+    requested: set[str],
+    found: dict[tuple[str, int | None], ExtractedField],
+    entry: Mapping[str, Any],
+    *,
+    cost_cents: int,
+) -> None:
+    """Flatten a table field the model returned the natural way — a nested
+    array of row objects (``lines: [{"sku": ..., "quantity": ...}, ...]``) —
+    into the flat, row-indexed ``table.column`` entries the pipeline stores.
+    Real models often emit tabular data this way instead of separate
+    ``lines.sku`` + ``row_index`` entries; both shapes now capture. Only
+    requested columns are kept; unknown sub-keys and null cells are dropped."""
+    if len(rows) > MAX_FIELD_ENTRIES:
+        raise ModelOutputInvalidError(
+            f"a table returned more than the maximum of {MAX_FIELD_ENTRIES} rows",
+            cost_cents=cost_cents,
+        )
+    confidence = _clamp_confidence(entry.get("confidence"))
+    for index, item in enumerate(rows):
+        if not isinstance(item, dict):
+            continue
+        for column, cell in item.items():
+            column_key = f"{table_key}.{column}"
+            if column_key not in requested or cell is None:
+                continue
+            if len(str(cell)) > MAX_VALUE_LENGTH:
+                raise ModelOutputInvalidError(
+                    f"a field value exceeds the maximum length of {MAX_VALUE_LENGTH} characters",
+                    cost_cents=cost_cents,
+                )
+            found[(column_key, index)] = ExtractedField(
+                field_key=column_key,
+                raw_value=str(cell),
+                confidence=confidence,
+                row_index=index,
+            )
+
+
 def parse_model_extraction(
     request: ExtractionRequest,
     content: str,
@@ -151,6 +199,7 @@ def parse_model_extraction(
         )
 
     requested = {spec.key for spec in request.fields}
+    table_keys = {spec.key for spec in request.fields if spec.field_type == "table"}
     pages = {page.page_number: page for page in request.pages}
     warnings = [*lead_warnings, *built.warnings]
     found: dict[tuple[str, int | None], ExtractedField] = {}
@@ -162,6 +211,13 @@ def parse_model_extraction(
             warnings.append(f"the model returned unrequested field {key!r}; dropped")
             continue
         value = entry.get("value")
+        # A table field the model returned as a nested array of rows —
+        # expand it into the flat "table.column" + row_index entries the
+        # pipeline stores, so line items capture whether the model emitted
+        # the nested or the flat shape.
+        if key in table_keys and isinstance(value, list):
+            _expand_table_rows(key, value, requested, found, entry, cost_cents=cost_cents)
+            continue
         row_index = entry.get("row_index")
         row = int(row_index) if isinstance(row_index, int) and row_index >= 0 else None
         if value is None:
@@ -175,8 +231,7 @@ def parse_model_extraction(
                 provider=provider,
                 model=model,
             )
-        confidence = entry.get("confidence")
-        numeric = float(confidence) if isinstance(confidence, int | float) else 0.5
+        numeric = _clamp_confidence(entry.get("confidence"))
         evidence: tuple[EvidenceSpan, ...] = ()
         page_number = entry.get("page_number")
         page = pages.get(page_number) if isinstance(page_number, int) else None
@@ -197,7 +252,7 @@ def parse_model_extraction(
         found[(key, row)] = ExtractedField(
             field_key=key,
             raw_value=str(value),
-            confidence=min(max(numeric, 0.0), 1.0),
+            confidence=numeric,
             row_index=row,
             evidence=evidence,
         )
