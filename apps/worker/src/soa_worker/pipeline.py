@@ -14,6 +14,7 @@ constructs it from the run's authenticated immutable stream snapshot;
 the canonical helper remains only for deterministic tests and tooling.
 """
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -423,6 +424,11 @@ class _Pipeline:
             ),
             fields=self._config.field_specs,
         )
+        # Persist the positioned text so a reviewer can locate a typed value
+        # on the page later (AIO-014 reused at review time). Only when real
+        # geometry exists — the mock and scanned-without-OCR paths have none.
+        if geometry_by_page:
+            await self._persist_text_geometry(session, context, run, document, geometry_by_page)
         # Recognition artifacts and usage are now durable. Provider latency
         # must not retain their SQL transaction or a pool connection.
         await commit_unit_of_work(session)
@@ -638,6 +644,60 @@ class _Pipeline:
                 reason="; ".join(reason_parts),
                 actor_id=ACTOR,
             )
+
+    async def _persist_text_geometry(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        geometry_by_page: Mapping[int, TextGeometry],
+    ) -> None:
+        """Store the per-page positioned text (spans + polygons) so the
+        review-time locate endpoint can anchor a typed value to a region
+        without re-running recognition. Serialized as one JSON artifact."""
+        payload = {
+            "pages": [
+                {
+                    "page_number": geometry.page_number,
+                    "width_px": geometry.width_px,
+                    "height_px": geometry.height_px,
+                    "spans": [
+                        {"text": unit.text, "polygon": [[x, y] for x, y in unit.polygon]}
+                        for unit in geometry.units
+                    ],
+                }
+                for _, geometry in sorted(geometry_by_page.items())
+            ]
+        }
+        key = artifact_key(
+            context.organization_id,
+            document.id,
+            kind="text_geometry",
+            filename=f"run-{run.run_number:04}.json",
+        )
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        metadata = await self._store.put(key, encoded, content_type="application/json")
+        register_external_resource_rollback(
+            session,
+            organization_id=context.organization_id,
+            resource_type=ExternalResourceType.OBJECT,
+            resource_locator=key,
+            cleanup=_delete_object_compensation(self._store, key),
+        )
+        await create_artifact(
+            session,
+            context,
+            document_id=document.id,
+            kind=ArtifactKind.TEXT_GEOMETRY,
+            object_key=key,
+            sha256=metadata.sha256,
+            size_bytes=len(encoded),
+            content_type="application/json",
+            produced_by_run_id=run.id,
+            produced_by_stage="extracting",
+            actor_id=ACTOR,
+        )
 
     async def _recognize_page_text(
         self,

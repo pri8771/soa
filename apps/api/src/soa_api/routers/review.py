@@ -15,6 +15,7 @@ rather than silently skipping rows.
 import base64
 import binascii
 import hashlib
+import json
 import uuid
 from typing import Annotated, Any, cast
 
@@ -24,7 +25,7 @@ from sqlalchemy import CursorResult, select, update
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, ObjectStoreDep
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
 from soa_api.services.approval import (
     ApprovalPermissionError,
@@ -33,6 +34,7 @@ from soa_api.services.approval import (
     approve_document,
     reject_document,
 )
+from soa_api.services.locate import locate_value
 from soa_api.services.revalidation import (
     RevalidationConfig,
     RevalidationConfigError,
@@ -40,6 +42,7 @@ from soa_api.services.revalidation import (
     normalize_correction,
     revalidate_run,
 )
+from soa_db.artifacts import ArtifactKind, ArtifactRepository
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.catalog_match_policy import (
     MatchDecision,
@@ -590,6 +593,53 @@ async def review_workspace(
         "history": history,
         "context": context,
     }
+
+
+class LocateRequest(BaseModel):
+    value: str = Field(min_length=1, max_length=10_000)
+    page_hint: int | None = None
+
+
+@router.post("/orgs/{organization_slug}/review-tasks/{task_id}/locate")
+async def locate_field_value(
+    task_id: uuid.UUID,
+    body: LocateRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.review"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+) -> dict[str, Any]:
+    """Anchor a reviewer's typed value to a region on the page (AIO-014 at
+    review time). Reads the run's persisted text geometry and returns the
+    matching polygon, or ``found=false`` so the reviewer draws the box by
+    hand — a value not present as positioned text is never given a
+    fabricated box."""
+    from soa_storage import ObjectNotFoundError
+
+    task = await ReviewTaskRepository(session, authorized.org_context).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    artifacts = await ArtifactRepository(session, authorized.org_context).list_for_document(
+        task.document_id
+    )
+    geometry = [
+        a
+        for a in artifacts
+        if a.kind == ArtifactKind.TEXT_GEOMETRY.value and a.produced_by_run_id == task.run_id
+    ]
+    if not geometry:
+        return {"found": False, "reason": "no positioned text was captured for this run"}
+    try:
+        raw = await store.get(geometry[-1].object_key)
+    except ObjectNotFoundError:
+        return {"found": False, "reason": "the positioned text is unavailable"}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"found": False, "reason": "the positioned text is unreadable"}
+    match = locate_value(parsed, body.value, page_hint=body.page_hint)
+    if match is None:
+        return {"found": False}
+    return {"found": True, **match}
 
 
 class CorrectionRequest(BaseModel):

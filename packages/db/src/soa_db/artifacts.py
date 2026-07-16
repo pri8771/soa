@@ -34,6 +34,10 @@ class ArtifactKind(StrEnum):
     ORIGINAL = "original"
     PAGE_IMAGE = "page_image"
     OCR_TEXT = "ocr_text"
+    #: Per-page positioned text (spans with polygons) captured during
+    #: recognition, so a reviewer's typed value can be located on the page
+    #: after the fact (AIO-014 reused at review time).
+    TEXT_GEOMETRY = "text_geometry"
     EXTRACTION = "extraction"
     NORMALIZED = "normalized"
     EXPORT_PAYLOAD = "export_payload"

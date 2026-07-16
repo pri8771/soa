@@ -1463,6 +1463,14 @@ export interface CorrectionResult {
   } | null;
 }
 
+/** A reviewer-supplied or auto-located evidence region for a corrected
+ * field. `polygon` null = page-level (no exact region). */
+export interface EvidenceSelection {
+  page_number: number;
+  polygon: number[][] | null;
+  quote?: string | null;
+}
+
 export function correctField(
   organizationSlug: string,
   taskId: string,
@@ -1472,11 +1480,33 @@ export function correctField(
     value: string | null;
     reason?: string;
     expected_version: number;
+    evidence_selection?: EvidenceSelection | null;
   },
 ): Promise<CorrectionResult> {
   return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/corrections`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export interface LocateResult {
+  found: boolean;
+  page_number?: number;
+  polygon?: number[][];
+  reason?: string;
+}
+
+/** Find where a typed value sits on the page (AIO-014 at review time), so
+ * the viewer can highlight it. `found: false` means draw the box by hand. */
+export function locateFieldValue(
+  organizationSlug: string,
+  taskId: string,
+  value: string,
+  pageHint?: number,
+): Promise<LocateResult> {
+  return apiFetch(`/orgs/${organizationSlug}/review-tasks/${taskId}/locate`, {
+    method: "POST",
+    body: JSON.stringify({ value, page_hint: pageHint ?? null }),
   });
 }
 
