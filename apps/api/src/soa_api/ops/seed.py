@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -30,6 +31,20 @@ from soa_db.tenant_guard import bind_tenant
 from soa_fixtures import DEMO_TENANT, stable_id
 
 ACTOR = "system:seed"
+
+#: Env override for the seeded provider policy's primary provider. Defaults
+#: to the fixture's value (the deterministic mock) so tests and CI seed a
+#: self-contained tenant. Set it to a registered provider name — e.g.
+#: ``local-openai-compatible`` (a local Ollama endpoint) or a hosted BYO-key
+#: provider — to seed a demo tenant whose documents extract with a real model.
+SEED_EXTRACTION_PROVIDER_ENV = "SOA_SEED_EXTRACTION_PROVIDER"
+
+
+def _provider_policy_definition(base: dict[str, Any]) -> dict[str, Any]:
+    override = os.environ.get(SEED_EXTRACTION_PROVIDER_ENV, "").strip()
+    if not override:
+        return base
+    return {**base, "provider_name": override}
 
 
 @dataclass(frozen=True)
@@ -304,7 +319,7 @@ async def seed_database(db: DatabaseSessions) -> DatabaseSeedReport:
                 "organization_id": context.organization_id,
                 "policy_type": PolicyType.PROVIDER.value,
                 "version_number": 1,
-                "definition": tenant.provider_policy.data,
+                "definition": _provider_policy_definition(tenant.provider_policy.data),
                 "state": VersionState.PUBLISHED.value,
                 "change_summary": "Deterministic development seed",
                 "published_at": now,

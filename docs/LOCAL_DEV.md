@@ -105,10 +105,50 @@ evidence.
 
 ## Optional: real extraction instead of the mock
 
-The seeded stream pins the deterministic mock provider. To use a real model,
-run a local LLM (for example Ollama) or configure a hosted BYO credential, then
-publish a stream/provider-policy version that names that registered provider.
-The worker authenticates and executes the exact policy and credential pinned to
-the run; setting an environment variable registers an adapter but does not
-silently override a published stream. See
-[`LLM_PROVIDERS.md`](LLM_PROVIDERS.md).
+By default the seed pins the deterministic mock provider (so tests and CI are
+self-contained). To seed a demo tenant whose documents extract with a REAL
+local model instead, the pieces must line up in three places — the worker
+registers the adapter, the seed pins it in the stream's provider policy, and
+the model endpoint is actually reachable:
+
+1. **Run a local model.** Install [Ollama](https://ollama.com), then:
+   ```bash
+   ollama serve &                       # must stay running
+   ollama pull qwen2.5-coder:14b        # an instruction-following model
+   ```
+   (Small models like `gemma3:4b` read the document but ignore the schema and
+   drop every field — use a 14B-class instruct/coder model or a BYO hosted key.)
+
+2. **Seed the provider policy to name that provider.** The provider the pipeline
+   uses is the one PINNED in the stream's provider policy — a worker env var
+   registers an adapter but never overrides a published policy. Re-seed with the
+   override so the policy names the local adapter:
+   ```bash
+   SOA_SEED_EXTRACTION_PROVIDER=local-openai-compatible make seed
+   ```
+   (Defaults to `mock` when unset. Re-seeding needs a clean schema:
+   `uv run alembic downgrade base && uv run alembic upgrade head` first.)
+
+3. **Register the adapter in the worker** by pointing it at the endpoint:
+   ```bash
+   SOA_WORKER_STORAGE_BACKEND=filesystem \
+   SOA_WORKER_LOCAL_LLM_ENDPOINT=http://localhost:11434/v1/chat/completions \
+   SOA_WORKER_LOCAL_LLM_MODEL=qwen2.5-coder:14b \
+   SOA_WORKER_LOCAL_LLM_TIMEOUT_SECONDS=480 \
+   uv run soa-worker
+   ```
+   Local models on shared hardware can take minutes per document; the generous
+   timeout keeps the first (cold-load) call from being cut off.
+
+**Gotcha — a down endpoint poisons routing.** If the model endpoint is
+unreachable when a document runs, the provider records consecutive failures in
+`provider_runtime_metrics` and the AIO-013 router then eliminates it as
+`unreachable` — so even after the endpoint is back, routing raises
+`NoRouteError` until the stale health clears. There is no automatic re-probe
+yet; clear it manually after fixing the endpoint:
+```bash
+psql "$SOA_DATABASE_URL" -c \
+  "DELETE FROM provider_runtime_metrics WHERE provider='local-openai-compatible';"
+```
+
+See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md) for hosted BYO-key providers.
