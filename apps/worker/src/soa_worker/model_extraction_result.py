@@ -37,7 +37,20 @@ from soa_worker.extraction.provider import (
 from soa_worker.model_request_builder import BuiltModelRequest
 from soa_worker.model_usage import ProviderCallUsage, ProviderUsage
 
-__all__ = ["ModelOutputInvalidError", "parse_model_extraction"]
+__all__ = [
+    "MAX_FIELD_ENTRIES",
+    "MAX_VALUE_LENGTH",
+    "ModelOutputInvalidError",
+    "parse_model_extraction",
+]
+
+#: Hard bounds on model output, enforced regardless of whether the
+#: provider honored ``max_tokens``. A response past either is rejected as
+#: invalid so it flows through the AIO-012 repair path instead of landing
+#: an unbounded row in the database. Generous enough that a legitimate
+#: sales order never trips them.
+MAX_FIELD_ENTRIES = 1000
+MAX_VALUE_LENGTH = 20_000
 
 
 class ModelOutputInvalidError(ExtractionProviderError):
@@ -127,6 +140,15 @@ def parse_model_extraction(
             provider=provider,
             model=model,
         )
+    if len(entries) > MAX_FIELD_ENTRIES:
+        raise ModelOutputInvalidError(
+            f'"fields" has more than the maximum of {MAX_FIELD_ENTRIES} entries',
+            cost_cents=cost_cents,
+            usage=usage,
+            pricing_reference=pricing_reference,
+            provider=provider,
+            model=model,
+        )
 
     requested = {spec.key for spec in request.fields}
     pages = {page.page_number: page for page in request.pages}
@@ -144,6 +166,15 @@ def parse_model_extraction(
         row = int(row_index) if isinstance(row_index, int) and row_index >= 0 else None
         if value is None:
             continue  # absent: handled below with the requested sweep
+        if len(str(value)) > MAX_VALUE_LENGTH:
+            raise ModelOutputInvalidError(
+                f"a field value exceeds the maximum length of {MAX_VALUE_LENGTH} characters",
+                cost_cents=cost_cents,
+                usage=usage,
+                pricing_reference=pricing_reference,
+                provider=provider,
+                model=model,
+            )
         confidence = entry.get("confidence")
         numeric = float(confidence) if isinstance(confidence, int | float) else 0.5
         evidence: tuple[EvidenceSpan, ...] = ()

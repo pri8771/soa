@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from soa_api.services.export_orchestration import _deliverable, schedule_exports_on_approval
+from soa_api.services.export_orchestration import (
+    EXPORT_JOB_TYPE,
+    _deliverable,
+    schedule_exports_on_approval,
+)
 from soa_config import MemorySecretStore
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import SourceChannel, create_document
@@ -145,3 +149,72 @@ def test_only_production_ready_connector_types_schedule(
         active_mapping_version_id=uuid.uuid4(),
     )
     assert _deliverable(integration) is expected
+
+
+async def test_active_quickbooks_integration_schedules_export(db: DatabaseSessions) -> None:
+    """The ERP promise: an ACTIVE ``quickbooks_online`` integration is
+    scheduled on approval exactly like a webhook. A fully configured ERP
+    connector (endpoint, credential, published mapping) yields one
+    export_jobs row and one queued ``EXPORT_JOB_TYPE`` job — the type gate
+    is no longer webhook-only. The credential differs only in KIND: an
+    OAuth2 access token rather than an HMAC secret."""
+    async with db.session_scope() as session:
+        document = await create_document(
+            session,
+            CONTEXT,
+            stream_id=uuid.uuid4(),
+            source_channel=SourceChannel.UPLOAD,
+            original_filename="po.pdf",
+            content_sha256="e" * 64,
+            size_bytes=10,
+            content_type="application/pdf",
+            actor_id="user:test",
+        )
+        integration = await create_integration(
+            session,
+            CONTEXT,
+            name="QuickBooks Online",
+            slug="qbo",
+            integration_type="quickbooks_online",
+            endpoint_url="https://sandbox-quickbooks.api.intuit.com/v3/company/123",
+            actor_id="user:test",
+        )
+        integration.status = IntegrationStatus.ACTIVE
+        await store_integration_credential(
+            session,
+            CONTEXT,
+            integration=integration,
+            kind="oauth2_access_token",
+            secret="qbo_access_token",
+            actor_id="user:test",
+            secret_store=MemorySecretStore(),
+        )
+        draft = await create_mapping_draft(
+            session,
+            CONTEXT,
+            integration=integration,
+            definition={"fields": [{"target": "DocNumber", "source": "identifiers.po_number"}]},
+            actor_id="user:test",
+        )
+        await publish_mapping_draft(
+            session, CONTEXT, integration=integration, draft=draft, actor_id="user:test"
+        )
+
+        scheduled = await schedule_exports_on_approval(
+            session,
+            CONTEXT,
+            document=document,
+            run_id=uuid.uuid4(),
+            canonical_payload_id=uuid.uuid4(),
+            actor_id="user:supervisor",
+        )
+        assert len(scheduled) == 1
+        assert scheduled[0].integration_id == integration.id
+        assert await ExportJobRepository(session, CONTEXT).count() == 1
+        queue_jobs = (
+            (await session.execute(select(Job).where(Job.job_type == EXPORT_JOB_TYPE)))
+            .scalars()
+            .all()
+        )
+        assert len(queue_jobs) == 1
+        assert queue_jobs[0].payload["export_job_id"] == str(scheduled[0].id)

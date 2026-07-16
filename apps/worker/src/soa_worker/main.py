@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import socket
-import time
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
@@ -20,7 +19,8 @@ from soa_storage.secrets_gcp import build_secret_store
 from soa_worker.database_queue import DatabaseJobQueue
 from soa_worker.document_deletion import execute_document_deletion
 from soa_worker.domain_job_failures import DomainJobFailureCoordinator
-from soa_worker.export_orchestrator import execute_export
+from soa_worker.export_orchestrator import EXPORT_JOB_TYPE
+from soa_worker.export_runner import ExportDeliveryHandler
 from soa_worker.external_cleanup import (
     ExternalCleanupCoordinator,
     register_external_cleanup_handler,
@@ -36,7 +36,6 @@ from soa_worker.upload_cleanup import cleanup_expired_upload
 from soa_worker.worker import Worker
 
 PREPROCESS_JOB_TYPE = "document.preprocess"
-EXPORT_JOB_TYPE = "export.deliver"
 EVALUATION_JOB_TYPE = "evaluation.run"
 OUTBOX_JOB_TYPE = "outbox.publish"
 DATA_EXPORT_JOB_TYPE = "data_export.build"
@@ -223,6 +222,18 @@ async def _run() -> None:
     registry = HandlerRegistry()
     register_secret_revoke_handler(registry, db, secret_store)
     register_external_cleanup_handler(registry, db, store, secret_store)
+    # One process-lifetime client backs every export delivery attempt. The
+    # handler owns the domain result, so one queue job remains exactly one
+    # attempt; retryable exports are replayed by the export workflow rather
+    # than being redelivered by the generic queue retry loop.
+    export_client = httpx.AsyncClient(timeout=60.0)
+    export_handler = ExportDeliveryHandler(
+        db,
+        store,
+        export_client,
+        secret_store,
+        settings.export_destination_allowlist,
+    )
 
     @register_tenant_handler(registry, PREPROCESS_JOB_TYPE)
     async def preprocess(job: JobEnvelope, _organization_id: uuid.UUID) -> None:
@@ -251,23 +262,8 @@ async def _run() -> None:
         )
 
     @register_tenant_handler(registry, EXPORT_JOB_TYPE)
-    async def export(job: JobEnvelope, organization_id: uuid.UUID) -> None:
-        export_job_id = uuid.UUID(str(job.payload["export_job_id"]))
-        from soa_db.repository import OrganizationContext
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            result = await execute_export(
-                db,
-                store,
-                OrganizationContext(organization_id=organization_id),
-                export_job_id=export_job_id,
-                client=client,
-                allowlist=settings.export_destination_allowlist,
-                timestamp=int(time.time()),
-                secret_store=secret_store,
-            )
-        if result.outcome == "retryable_error":
-            raise RuntimeError("export destination asked for a retry")
+    async def export(job: JobEnvelope, _organization_id: uuid.UUID) -> None:
+        await export_handler.handle(job.payload)
 
     @register_tenant_handler(registry, EVALUATION_JOB_TYPE)
     async def evaluation(job: JobEnvelope, organization_id: uuid.UUID) -> None:
@@ -393,6 +389,7 @@ async def _run() -> None:
     try:
         await worker.run()
     finally:
+        await export_client.aclose()
         telemetry.shutdown()
         await db.dispose()
 

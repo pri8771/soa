@@ -69,6 +69,13 @@ _REGISTERED_ADAPTER_MODULES = (
 
 ACTOR = "system:export"
 
+#: The queue job type the worker claims to run one delivery attempt. It
+#: MUST match ``soa_api.services.export_orchestration.EXPORT_JOB_TYPE`` — the
+#: API enqueues under that string, and the worker must register a handler
+#: under the identical one. The two packages do not import each other, so
+#: the literal is duplicated deliberately and cross-checked by wiring tests.
+EXPORT_JOB_TYPE = "export.deliver"
+
 _SETTLED = (
     ExportJobState.SUCCEEDED.value,
     ExportJobState.FAILED_TERMINAL.value,

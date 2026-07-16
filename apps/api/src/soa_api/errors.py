@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from soa_api.settings import ApiSettings
@@ -100,6 +101,21 @@ def register_error_handlers(app: FastAPI, settings: ApiSettings) -> None:
             content=error_body(
                 code="conflict",
                 message="The change conflicts with concurrent activity; retry the request.",
+                correlation_id=_correlation_id(request),
+            ),
+        )
+
+    @app.exception_handler(StaleDataError)
+    async def handle_stale_data_error(request: Request, exc: StaleDataError) -> JSONResponse:
+        # Optimistic concurrency lost the race: a read-then-flush on a
+        # VersionedMixin record (deletion, approval, cancel, reprocess, …)
+        # found the row already advanced by a concurrent writer. That is a
+        # client-visible conflict to retry, not a 500.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=error_body(
+                code="conflict",
+                message="The document changed concurrently; retry the request.",
                 correlation_id=_correlation_id(request),
             ),
         )

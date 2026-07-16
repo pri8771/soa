@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_any_permission, require_permission
-from soa_api.dependencies import DbSession
+from soa_api.dependencies import DbSession, Dependencies, get_dependencies
 from soa_db.deletion_requests import (
     DeletionLifecycleError,
     DeletionRequest,
@@ -21,6 +21,7 @@ from soa_db.deletion_requests import (
     release_legal_hold,
     request_document_deletion,
 )
+from soa_db.documents import DocumentRepository
 
 router = APIRouter(tags=["data-deletion"])
 
@@ -104,7 +105,16 @@ async def create_deletion_request(
     body: ReasonRequest,
     authorized: Annotated[AuthorizedContext, Depends(require_permission("data.delete.request"))],
     session: DbSession,
+    deps: Annotated[Dependencies, Depends(get_dependencies)],
 ) -> DeletionRequestResponse:
+    await deps.rate_limiter.enforce(
+        "deletion",
+        authorized.principal.subject,
+        deps.settings.rate_limit_deletions_per_minute,
+    )
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     try:
         request = await request_document_deletion(
             session,

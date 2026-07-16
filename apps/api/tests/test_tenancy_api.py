@@ -262,6 +262,92 @@ def test_custom_role_with_unknown_permission_is_422(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def _role_version(client: TestClient, slug: str, headers: dict[str, str] = REVIEWER) -> int:
+    roles = client.get("/orgs/northstar/roles", headers=headers).json()
+    return next(role["version"] for role in roles if role["slug"] == slug)
+
+
+def test_update_role_permissions_reaches_existing_role(client: TestClient) -> None:
+    # A permission added to the registry after seeding never reaches an
+    # existing org's role without this endpoint (TEN-006 drift correction).
+    assert create_org(client).status_code == 201
+
+    response = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={
+            "permissions": [
+                "documents.read",
+                "documents.review",
+                "data.delete.request",
+            ]
+        },
+        headers=REVIEWER,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "data.delete.request" in body["permissions"]
+    assert body["is_system"] is True, "system roles stay system after a drift-correction update"
+
+    roles = client.get("/orgs/northstar/roles", headers=REVIEWER).json()
+    reviewer = next(role for role in roles if role["slug"] == "reviewer")
+    assert "data.delete.request" in reviewer["permissions"]
+
+
+def test_update_role_with_unknown_permission_is_422(client: TestClient) -> None:
+    assert create_org(client).status_code == 201
+    response = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={"permissions": ["documents.read", "everything.always"]},
+        headers=REVIEWER,
+    )
+    assert response.status_code == 422
+
+
+def test_update_role_with_internal_permission_is_422(client: TestClient) -> None:
+    # jobs.admin is a platform-operator permission; tenants cannot grant it.
+    assert create_org(client).status_code == 201
+    response = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={"permissions": ["documents.read", "jobs.admin"]},
+        headers=REVIEWER,
+    )
+    assert response.status_code == 422
+
+
+def test_update_role_is_tenant_scoped(client: TestClient) -> None:
+    # Org A's admin cannot update Org B's role — membership existence must
+    # not leak, so this is a 404.
+    assert create_org(client).status_code == 201
+    assert create_org(client, slug="southstar", headers=SUPERVISOR).status_code == 201
+
+    response = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={"permissions": ["documents.read"]},
+        headers=SUPERVISOR,
+    )
+    assert response.status_code == 404, "membership existence must not leak"
+
+
+def test_update_role_with_optimistic_concurrency(client: TestClient) -> None:
+    assert create_org(client).status_code == 201
+    version = _role_version(client, "reviewer")
+
+    stale = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={"permissions": ["documents.read"]},
+        headers={**REVIEWER, "If-Match": str(version + 5)},
+    )
+    assert stale.status_code == 409
+
+    ok = client.put(
+        "/orgs/northstar/roles/reviewer",
+        json={"permissions": ["documents.read"]},
+        headers={**REVIEWER, "If-Match": str(version)},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["permissions"] == ["documents.read"]
+
+
 def test_members_pagination_chains(client: TestClient) -> None:
     assert create_org(client).status_code == 201
     for i in range(4):

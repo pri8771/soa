@@ -19,7 +19,7 @@ evidence listed below.
 
 ## Validation checkpoint
 
-- Python: Ruff, formatting, mypy, and the complete 1,850-test collection
+- Python: Ruff, formatting, mypy, and the complete 1,869-test collection
   exited successfully.
 - Web: formatting, lint, typecheck, production build, all 372 unit tests, and
   all three accessibility E2E tests passed; E2E passed twice consecutively.
@@ -103,6 +103,12 @@ behavior.
   its signed URL cannot outlive the database session. Cleanup, completion, and
   abort lock the same tenant row; the sweep removes late PUT bytes after
   abort/expiry without deleting completed uploads.
+- The latest `dev` runtime corrections remain intact: Darwin skips the
+  unsupported `RLIMIT_AS` cap while Linux enforces it; exact-duplicate `allow`
+  stays processing-transparent; and the queue/dashboard polling and responsive
+  shell fixes remain in place. Historical notes about deployment-wide provider
+  selection and single-step deletion are superseded by pinned per-stream
+  routing and the persisted two-principal deletion workflow.
 
 ## Resume rules
 

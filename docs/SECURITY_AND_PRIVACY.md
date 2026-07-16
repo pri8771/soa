@@ -124,6 +124,9 @@ deployment.
   pinned (not live-editable) retention window, with an absolute
   **legal-hold** override that always wins, and a gated state machine
   (`RETAINED → ELIGIBLE → PENDING_APPROVAL → APPROVED → DELETED`).
+  **Wiring status, stated honestly:** automatic aging into `ELIGIBLE` is not
+  connected to a scheduler; deletion begins only through the persisted
+  operator request and independent-approval endpoints today.
 - **Deletion** — a persisted request accepts only settled documents and needs
   approval by a different authorized principal. An active legal hold is an
   absolute veto; placing one revokes an unexecuted approval, and release never

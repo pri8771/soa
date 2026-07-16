@@ -99,6 +99,7 @@ class ApiSettings(WebServiceSettings):
     rate_limit_uploads_per_minute: int = Field(default=60, ge=1, le=10_000)
     rate_limit_download_urls_per_minute: int = Field(default=240, ge=1, le=10_000)
     rate_limit_reprocess_per_minute: int = Field(default=30, ge=1, le=10_000)
+    rate_limit_deletions_per_minute: int = Field(default=30, ge=1, le=10_000)
     rate_limit_replays_per_minute: int = Field(default=30, ge=1, le=10_000)
     rate_limit_identity_per_minute: int = Field(default=240, ge=1, le=10_000)
     rate_limit_public_auth_per_minute: int = Field(default=240, ge=1, le=10_000)

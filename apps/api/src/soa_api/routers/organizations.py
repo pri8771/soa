@@ -16,6 +16,7 @@ from soa_api.domain.identity import (
 )
 from soa_api.domain.rbac import (
     LastActiveOrgAdminError,
+    Role,
     RoleAssignmentRepository,
     RoleRepository,
     UnknownPermissionError,
@@ -23,6 +24,7 @@ from soa_api.domain.rbac import (
     create_custom_role,
     ensure_can_remove_active_org_admin,
     revoke_role,
+    update_role_permissions,
 )
 from soa_api.domain.tenancy import Organization, OrganizationRepository
 from soa_api.services import tenancy_service
@@ -113,6 +115,22 @@ class RoleResponse(BaseModel):
     name: str
     slug: str
     is_system: bool
+    permissions: list[str]
+    version: int
+
+    @classmethod
+    def from_model(cls, role: Role) -> "RoleResponse":
+        return cls(
+            id=str(role.id),
+            name=role.name,
+            slug=role.slug,
+            is_system=role.is_system,
+            permissions=list(role.permissions),
+            version=role.version,
+        )
+
+
+class RolePermissionsUpdateRequest(BaseModel):
     permissions: list[str]
 
 
@@ -331,16 +349,7 @@ async def list_roles(
     session: DbSession,
 ) -> list[RoleResponse]:
     page = await RoleRepository(session, authorized.org_context).list_page(CursorRequest(limit=200))
-    return [
-        RoleResponse(
-            id=str(role.id),
-            name=role.name,
-            slug=role.slug,
-            is_system=role.is_system,
-            permissions=list(role.permissions),
-        )
-        for role in page.items
-    ]
+    return [RoleResponse.from_model(role) for role in page.items]
 
 
 @router.post("/orgs/{organization_slug}/roles", status_code=status.HTTP_201_CREATED)
@@ -362,13 +371,41 @@ async def create_role(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from None
-    return RoleResponse(
-        id=str(role.id),
-        name=role.name,
-        slug=role.slug,
-        is_system=role.is_system,
-        permissions=list(role.permissions),
-    )
+    return RoleResponse.from_model(role)
+
+
+@router.put("/orgs/{organization_slug}/roles/{role_slug}")
+async def update_role(
+    role_slug: str,
+    body: RolePermissionsUpdateRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("roles.manage"))],
+    session: DbSession,
+    if_match: Annotated[int | None, Header(alias="If-Match")] = None,
+) -> RoleResponse:
+    """Replace a role's permission set so newly-added permissions reach an
+    existing org without hand SQL. System roles stay ``is_system`` (this is
+    exactly the drift-correction path); permissions fail closed against the
+    registry and internal permissions remain non-grantable."""
+    role = await RoleRepository(session, authorized.org_context).get_by_slug(role_slug)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
+    try:
+        if if_match is not None:
+            role.expect_version(if_match)
+        role = await update_role_permissions(
+            session,
+            authorized.org_context,
+            role=role,
+            permissions=body.permissions,
+            actor_id=f"user:{authorized.membership.user_id}",
+        )
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except UnknownPermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+    return RoleResponse.from_model(role)
 
 
 @router.post(
@@ -416,16 +453,7 @@ async def list_member_roles(
         if role is not None:
             roles.append(role)
     roles.sort(key=lambda role: role.slug)
-    return [
-        RoleResponse(
-            id=str(role.id),
-            name=role.name,
-            slug=role.slug,
-            is_system=role.is_system,
-            permissions=list(role.permissions),
-        )
-        for role in roles
-    ]
+    return [RoleResponse.from_model(role) for role in roles]
 
 
 @router.delete("/orgs/{organization_slug}/members/{membership_id}/roles/{role_slug}")

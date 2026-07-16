@@ -1,8 +1,9 @@
 """Export scheduling at approval time (EXP-008, API side).
 
-Approval fans out to every DELIVERABLE integration — active, webhook
-endpoint configured, credential set, mapping published — in the SAME
-transaction that completed the review. Exactly-once business intent
+Approval fans out to every DELIVERABLE integration — active, a
+deliverable type (webhook or an ERP connector), endpoint configured,
+credential set, mapping published — in the SAME transaction that
+completed the review. Exactly-once business intent
 holds twice over: export jobs are idempotent on their business key
 (EXP-005), and the queue job is deduped per export job, so a duplicate
 approval event cannot double-deliver.
@@ -22,6 +23,24 @@ from soa_integrations import capabilities_for
 
 EXPORT_JOB_TYPE = "export.deliver"
 
+#: Integration types the approve flow will schedule for delivery. Each
+#: entry MUST have a worker-side destination adapter registered under the
+#: SAME type string (``resolve_adapter`` in ``soa_worker``); the API
+#: package never imports worker code, so this is an EXPLICIT mirror of
+#: that registry rather than an adapter lookup. The strings match
+#: ``soa_db.integrations.INTEGRATION_TYPES`` exactly — webhook plus the
+#: four ERP connectors (QuickBooks Online, NetSuite, Dynamics 365, SAP
+#: S/4HANA). Fail-closed: a type absent here is never scheduled.
+DELIVERABLE_INTEGRATION_TYPES = frozenset(
+    {
+        "webhook",
+        "quickbooks_online",
+        "netsuite",
+        "microsoft_dynamics365",
+        "sap_s4hana",
+    }
+)
+
 
 def _deliverable(integration: Integration) -> bool:
     try:
@@ -31,6 +50,7 @@ def _deliverable(integration: Integration) -> bool:
     return (
         integration.status == "active"
         and production_ready
+        and integration.integration_type in DELIVERABLE_INTEGRATION_TYPES
         and integration.endpoint_url is not None
         and integration.credential_id is not None
         and integration.active_mapping_version_id is not None

@@ -17,7 +17,7 @@ the canonical helper remains only for deterministic tests and tooling.
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,15 +69,24 @@ from soa_rules.baseline import (
 )
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
+from soa_worker.evidence_resolver import (
+    TextGeometry,
+    geometry_from_native_page,
+    geometry_from_ocr_page,
+    resolve_quote,
+)
 from soa_worker.extraction.mock import SYNTHETIC_SALES_ORDER_FIELD_SPECS
 from soa_worker.extraction.provider import (
+    EvidenceSpan,
     ExtractionProvider,
     ExtractionProviderError,
     ExtractionRequest,
+    ExtractionResult,
     FieldSpec,
     PageInput,
     validate_result_against_request,
 )
+from soa_worker.extraction_repair import RepairableExtractionProvider, extract_with_repair
 from soa_worker.model_usage import ProviderCallUsage
 from soa_worker.orchestrator import StageExecutionError, StageExecutor, StageOutcome
 from soa_worker.provider_router import (
@@ -116,6 +125,58 @@ def _delete_object_compensation(
             pass
 
     return cleanup
+
+
+class _RepairChannelProvider:
+    """Adapt an :class:`ExtractionProvider` to the AIO-012 repair
+    interface so the extracting stage can run every provider through
+    :func:`extract_with_repair` uniformly. Model adapters expose the
+    ``repair_hint`` channel natively and receive it; the mock never emits
+    :class:`ModelOutputInvalidError`, so it is only ever called without a
+    hint and a plain ``extract`` suffices — the mock path is unchanged."""
+
+    def __init__(self, provider: ExtractionProvider) -> None:
+        self._provider = provider
+
+    @property
+    def name(self) -> str:
+        return self._provider.name
+
+    async def extract(
+        self, request: ExtractionRequest, *, repair_hint: str | None = None
+    ) -> ExtractionResult:
+        if repair_hint is None:
+            return await self._provider.extract(request)
+        # A hint only ever follows a ModelOutputInvalidError, which only
+        # repairable (model) adapters raise — so this branch is theirs.
+        repairable = cast(RepairableExtractionProvider, self._provider)
+        return await repairable.extract(request, repair_hint=repair_hint)
+
+
+def _resolve_evidence(span: EvidenceSpan, geometry_by_page: Mapping[int, TextGeometry]) -> Evidence:
+    """AIO-014: turn one provider evidence span into stored evidence with
+    HONEST certainty. A span whose verbatim quote resolves to real
+    positioned text on its page (native-text geometry) becomes a REGION
+    carrying those resolved coordinates; anything else — no quote, no
+    geometry for the page (the mock, or a scanned original), or a quote
+    that does not match — is page-level, and no polygon is ever
+    fabricated."""
+    geometry = geometry_by_page.get(span.page_number)
+    if span.quote and geometry is not None:
+        resolved = resolve_quote(span.quote, geometry)
+        if resolved.match_kind in ("exact", "fuzzy"):
+            return Evidence(
+                page_number=span.page_number,
+                certainty=EvidenceCertainty.REGION,
+                polygon=resolved.polygon,
+                quote=span.quote,
+            )
+    return Evidence(
+        page_number=span.page_number,
+        certainty=EvidenceCertainty.PAGE,
+        polygon=None,
+        quote=span.quote,
+    )
 
 
 @dataclass(frozen=True)
@@ -180,6 +241,7 @@ class _Pipeline:
     ) -> None:
         self._store = store
         self._provider = provider
+        self._repairable = _RepairChannelProvider(provider)
         self._config = config
 
     # -- preprocessing: render the original into bounded page rasters -------
@@ -327,13 +389,24 @@ class _Pipeline:
         text_by_page: dict[int, str] = {}
         text_warnings: list[str] = []
         recognition_provenance: list[dict[str, Any]] = []
+        geometry_by_page: dict[int, TextGeometry] = {}
         # Model providers read page text; passing empty PageInput values
         # would produce a syntactically valid request containing no
         # document. The deterministic fixture mock intentionally does not
         # need text, but every real provider does.
         if self._provider.name != "mock":
-            text_by_page, text_warnings, recognition_provenance = await self._recognize_page_text(
-                session, context, run, document, stage_run, pages
+            (
+                text_by_page,
+                text_warnings,
+                recognition_provenance,
+                geometry_by_page,
+            ) = await self._recognize_page_text(
+                session,
+                context,
+                run,
+                document,
+                stage_run,
+                pages,
             )
         request = ExtractionRequest(
             document_id=document.id,
@@ -354,7 +427,11 @@ class _Pipeline:
         # must not retain their SQL transaction or a pool connection.
         await commit_unit_of_work(session)
         try:
-            result = await self._provider.extract(request)
+            # AIO-012: bounded in-call repair. A passthrough for the mock
+            # (it never returns malformed output); model adapters re-ask
+            # on ModelOutputInvalidError and fall back to an honest
+            # all-absent result once the attempt/cost ceilings are spent.
+            repaired = await extract_with_repair(self._repairable, request)
         except ExtractionProviderError as error:
             await bind_tenant(session, context.organization_id)
             if error.usage_records:
@@ -374,6 +451,7 @@ class _Pipeline:
             ) from None
 
         await bind_tenant(session, context.organization_id)
+        result = repaired.result
 
         contract_violations = validate_result_against_request(request, result)
         if contract_violations:
@@ -454,13 +532,7 @@ class _Pipeline:
                 execution_fingerprint=actual_fingerprint,
                 row_index=extracted.row_index,
                 evidence=tuple(
-                    Evidence(
-                        page_number=span.page_number,
-                        certainty=EvidenceCertainty.REGION,
-                        polygon=span.polygon,
-                        quote=span.quote,
-                    )
-                    for span in extracted.evidence
+                    _resolve_evidence(span, geometry_by_page) for span in extracted.evidence
                 ),
                 candidates=tuple(
                     Candidate(c.raw_value, c.confidence) for c in extracted.candidates
@@ -575,7 +647,12 @@ class _Pipeline:
         document: Document,
         stage_run: StageRun,
         pages: list[Any],
-    ) -> tuple[dict[int, str], list[str], list[dict[str, Any]]]:
+    ) -> tuple[
+        dict[int, str],
+        list[str],
+        list[dict[str, Any]],
+        dict[int, TextGeometry],
+    ]:
         """Native text first, OCR only for image/low-coverage pages.
 
         The recognized text is persisted per page and attached to the page
@@ -597,6 +674,7 @@ class _Pipeline:
         texts: dict[int, str] = {}
         warnings: list[str] = []
         provenance: list[dict[str, Any]] = []
+        geometry_by_page: dict[int, TextGeometry] = {}
         needs_ocr = {page.page_number for page in pages}
         if document.content_type == "application/pdf":
             native = create_provider(Capability.NATIVE_TEXT, "pdfium-native-text")
@@ -633,6 +711,9 @@ class _Pipeline:
                     if result_page.coverage >= NATIVE_COVERAGE_THRESHOLD:
                         texts[result_page.page_number] = "\n".join(
                             span.text for span in result_page.spans
+                        )
+                        geometry_by_page[result_page.page_number] = geometry_from_native_page(
+                            result_page
                         )
                         needs_ocr.discard(result_page.page_number)
                         accepted_pages.append(result_page.page_number)
@@ -704,10 +785,16 @@ class _Pipeline:
                 raise StageExecutionError(str(error), retryable=error.retryable) from None
             warnings.extend(ocr_result.warnings)
             recognized_pages: list[int] = []
+            ocr_inputs = {item.page_number: item for item in inputs}
             for ocr_page in ocr_result.pages:
                 texts[ocr_page.page_number] = "\n".join(
                     line.text for block in ocr_page.blocks for line in block.lines
                 )
+                page_input = ocr_inputs.get(ocr_page.page_number)
+                if page_input is not None:
+                    geometry_by_page[ocr_page.page_number] = geometry_from_ocr_page(
+                        page_input, ocr_page
+                    )
                 recognized_pages.append(ocr_page.page_number)
             provenance.append(
                 {
@@ -776,7 +863,7 @@ class _Pipeline:
                 actor_id=ACTOR,
             )
             page.text_artifact_id = artifact.id
-        return texts, warnings, provenance
+        return texts, warnings, provenance, geometry_by_page
 
     # -- normalizing: raw -> canonical, never overwriting raw ------------------
 

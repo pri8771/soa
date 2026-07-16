@@ -39,10 +39,13 @@ from soa_config.telemetry import configure_telemetry
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.documents import DocumentState, SourceChannel, create_document, transition_document
+from soa_db.extracted_fields import create_extracted_field
 from soa_db.jobs import Job, JobStatus
 from soa_db.repository import OrganizationContext
+from soa_db.runs import start_run
 from soa_storage import MemoryObjectStore, sha256_hex
 from soa_storage.keys import artifact_key
+from soa_worker.document_deletion import execute_document_deletion
 from soa_worker.extraction.mock import (
     SYNTHETIC_SALES_ORDER,
     MockExtractionProvider,
@@ -51,6 +54,9 @@ from soa_worker.orchestrator import Orchestrator
 from soa_worker.pipeline import build_executors
 
 ADMIN = {"X-Dev-User": "user:admin"}
+# Development auth accepts only fixture-backed identities. Give the seeded
+# integration admin the narrow deletion-approver role for this test.
+DELETION_APPROVER = {"X-Dev-User": "user:integration-admin"}
 
 #: Platform-level canaries, injected through settings.
 CANARY_SECRET_KEY = "CANARY-platform-secret-key-0123456789abcdef"
@@ -60,6 +66,9 @@ CANARY_CREDENTIAL = "whsec_CANARY_credential_value_31c"
 CANARY_CREDENTIAL_ROTATED = "whsec_CANARY_rotated_value_9d4"
 #: Customer document content, ingested as file bytes.
 CANARY_DOCUMENT = b"%PDF-1.7 CANARY-DOCUMENT-BODY-5f2e purchase order"
+#: Customer DATA on a document erased through the SEC-010 deletion path —
+#: the extracted value the deletion workflow removes must not leak.
+CANARY_DELETION_FIELD = "PO-CANARY-deletion-8a3f"
 #: Extracted values of the synthetic sales order — customer DATA that
 #: flows through the entire worker pipeline.
 DOCUMENT_VALUE_CANARIES = ("PO-100042", "Acme Industrial Supply")
@@ -101,6 +110,7 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     db = DatabaseSessions(engine)
+    store = MemoryObjectStore()
     app = create_app(
         ApiSettings(
             environment=Environment.TEST,
@@ -112,7 +122,7 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
         ),
         telemetry=telemetry,
         db=db,
-        object_store=MemoryObjectStore(),
+        object_store=store,
         secret_store=MemorySecretStore(),
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -209,6 +219,141 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
         assert ingest(raw_api_key, CANARY_DOCUMENT + b"3").status_code == 201
         assert ingest(raw_api_key, CANARY_DOCUMENT + b"4").status_code == 429
 
+        # Operator-initiated deletion (SEC-010): a document tagged with a
+        # customer-DATA canary (a stored object plus an extracted field) is
+        # erased through the endpoint. The workflow removes the object and
+        # the field and audits counts-only — the extracted value and the
+        # object bytes must never surface in a log, span, metric, or the
+        # response envelope.
+        context = OrganizationContext(organization_id=org_id)
+        stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+        deletable = CANARY_DOCUMENT + b" deletable"
+        async with db.session_scope() as session:
+            doomed = await create_document(
+                session,
+                context,
+                stream_id=stream_id,
+                source_channel=SourceChannel.UPLOAD,
+                original_filename="doomed.pdf",
+                content_sha256=sha256_hex(deletable),
+                size_bytes=len(deletable),
+                content_type="application/pdf",
+                actor_id="user:test",
+            )
+            # received -> cancelled is a single valid transition into a
+            # deletable state.
+            await transition_document(
+                session,
+                context,
+                document=doomed,
+                to_state=DocumentState.CANCELLED,
+                actor_id="worker",
+            )
+            run = await start_run(
+                session,
+                context,
+                document_id=doomed.id,
+                input_sha256=sha256_hex(deletable),
+                stream_version_id=None,
+                config_fingerprint="f" * 64,
+                triggered_by="user:test",
+            )
+            await create_extracted_field(
+                session,
+                context,
+                document_id=doomed.id,
+                run_id=run.id,
+                field_key="po_number",
+                raw_value=CANARY_DELETION_FIELD,
+                confidence=0.99,
+                provider="mock",
+            )
+            key = artifact_key(org_id, doomed.id, kind="original", filename="doomed.pdf")
+            await store.put(key, deletable, content_type="application/pdf")
+            await create_artifact(
+                session,
+                context,
+                document_id=doomed.id,
+                kind=ArtifactKind.ORIGINAL,
+                object_key=key,
+                sha256=sha256_hex(deletable),
+                size_bytes=len(deletable),
+                content_type="application/pdf",
+            )
+            doomed_id = doomed.id
+
+        # SEC-008/010 is a durable two-principal workflow. The requester and
+        # approver are deliberately different identities; the worker then
+        # performs the approved erasure outside the API request transaction.
+        assert (
+            track(
+                client.post(
+                    "/orgs/northstar/roles",
+                    json={
+                        "name": "Deletion approver",
+                        "slug": "deletion-approver",
+                        "permissions": ["data.delete.approve"],
+                    },
+                    headers=ADMIN,
+                )
+            ).status_code
+            == 201
+        )
+        assert (
+            track(
+                client.post(
+                    "/orgs/northstar/invitations",
+                    json={"email": "integrations@northstar.example"},
+                    headers=ADMIN,
+                )
+            ).status_code
+            == 201
+        )
+        accepted = track(
+            client.post(
+                "/invitations/accept",
+                json={"organization_slug": "northstar"},
+                headers=DELETION_APPROVER,
+            )
+        )
+        assert accepted.status_code == 200
+        assert (
+            track(
+                client.post(
+                    f"/orgs/northstar/members/{accepted.json()['membership_id']}/roles",
+                    json={"role_slug": "deletion-approver"},
+                    headers=ADMIN,
+                )
+            ).status_code
+            == 201
+        )
+        requested = track(
+            client.post(
+                f"/orgs/northstar/documents/{doomed_id}/deletion-requests",
+                json={"reason": "canary erasure request"},
+                headers=ADMIN,
+            )
+        )
+        assert requested.status_code == 202
+        deletion_request_id = uuid.UUID(requested.json()["id"])
+        approved = track(
+            client.post(
+                f"/orgs/northstar/deletion-requests/{deletion_request_id}/approve",
+                json={"reason": "identity and scope verified"},
+                headers=DELETION_APPROVER,
+            )
+        )
+        assert approved.status_code == 202
+        assert (
+            await execute_document_deletion(
+                db,
+                store,
+                organization_id=org_id,
+                deletion_request_id=deletion_request_id,
+            )
+            == "completed"
+        )
+
     canaries = {
         "platform secret_key": CANARY_SECRET_KEY,
         "database password": CANARY_DB_PASSWORD,
@@ -217,6 +362,8 @@ async def test_api_critical_paths_leak_no_canaries_anywhere(
         "raw API key": raw_api_key,
         # The marker substring, so even a PARTIAL body leak trips it.
         "document content": "CANARY-DOCUMENT-BODY-5f2e",
+        # Customer DATA erased through the deletion endpoint.
+        "deletion extracted field": CANARY_DELETION_FIELD,
     }
     assert_no_canaries(formatted_log_output(caplog.records), canaries, channel="logs")
     spans = span_exporter.get_finished_spans()
