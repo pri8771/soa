@@ -192,6 +192,134 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(overlay).toBeInTheDocument();
   });
 
+  it("tightens the focused field's highlight to the located value box", async () => {
+    // The model's stored evidence box for po_number is 10%x10% of the page.
+    // locate() finds the value in a tight 5%x5% box; focusing the field must
+    // re-anchor the highlight to that tight box, not the rambling stored one.
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/locate", () =>
+        HttpResponse.json({
+          found: true,
+          page_number: 1,
+          polygon: [
+            [170, 220],
+            [255, 220], // 85px / 1700 = 5%
+            [255, 330], // 110px / 2200 = 5%
+            [170, 330],
+          ],
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByLabelText("po number"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Evidence for po_number/ })).toHaveStyle({
+        width: "5%",
+        height: "5%",
+      }),
+    );
+  });
+
+  it("does NOT re-anchor when locate lands on a different page (no stranding)", async () => {
+    // po_number's stored evidence is on page 1. A cross-page located box must
+    // be ignored, or the highlight would be filtered off the shown page and
+    // the viewer would never navigate to it — worse than the stored box.
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/locate", () =>
+        HttpResponse.json({
+          found: true,
+          page_number: 2, // different page than the stored evidence (page 1)
+          polygon: [
+            [170, 220],
+            [255, 220],
+            [255, 330],
+            [170, 330],
+          ],
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByLabelText("po number"));
+    // Give the locate query time to resolve, then assert the stored 10% box
+    // (page 1) is still what renders — the cross-page result was rejected.
+    await waitFor(() => expect(screen.getByLabelText("po number")).toHaveFocus());
+    const overlay = await screen.findByRole("button", { name: /Evidence for po_number/ });
+    expect(overlay).toHaveStyle({ width: "10%", height: "10%" });
+  });
+
+  it("does NOT override an already-tight stored box with a different occurrence", async () => {
+    // If the model's stored box is already tight, a located box that is not
+    // materially smaller must not replace it (it could be a wrong occurrence
+    // of a duplicated value). Stored po box here is a tight ~5% box; locate
+    // returns a similarly-sized box elsewhere — the stored box must win.
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", () =>
+        HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          fields: DEFAULT_WORKSPACE.fields.map((f) =>
+            f.field_key === "po_number"
+              ? {
+                  ...f,
+                  evidence: [
+                    {
+                      page_number: 1,
+                      certainty: "region",
+                      polygon: [
+                        [170, 220],
+                        [255, 220], // tight ~5% x 5% stored box
+                        [255, 330],
+                        [170, 330],
+                      ],
+                      quote: "PO-1000A2",
+                    },
+                  ],
+                }
+              : f,
+          ),
+        }),
+      ),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/locate", () =>
+        HttpResponse.json({
+          found: true,
+          page_number: 1,
+          polygon: [
+            [800, 600],
+            [885, 600], // same ~5% size, different location
+            [885, 710],
+            [800, 710],
+          ],
+        }),
+      ),
+    );
+    await renderApp(PATH);
+    await user.click(await screen.findByLabelText("po number"));
+    await waitFor(() => expect(screen.getByLabelText("po number")).toHaveFocus());
+    const overlay = await screen.findByRole("button", { name: /Evidence for po_number/ });
+    // Stored box kept: left 10% (170/1700), not the located 800/1700 ≈ 47%.
+    expect(overlay).toHaveStyle({ left: "10%", top: "10%" });
+  });
+
+  it("drops the stale highlight when the reviewer clears the field", async () => {
+    // Currency-style: focus shows a box; clearing the value leaves nothing to
+    // point at, so the (often over-broad) stored box must not linger.
+    const user = userEvent.setup();
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.click(input);
+    // The region overlay (a positioned box) is present while the field has a value.
+    expect(await screen.findByRole("button", { name: /Evidence for po_number/ })).toHaveStyle({
+      width: "10%",
+    });
+    await user.clear(input);
+    // Cleared -> the field's evidence collapses to a page-level marker.
+    await waitFor(() =>
+      expect(screen.getByText("po_number: somewhere on this page")).toBeInTheDocument(),
+    );
+  });
+
   it("Alt+ArrowDown moves to the next field (documented keyboard map)", async () => {
     const user = userEvent.setup();
     await renderApp(PATH);

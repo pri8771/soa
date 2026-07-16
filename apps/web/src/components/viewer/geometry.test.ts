@@ -1,4 +1,5 @@
 import {
+  boundingArea,
   describeEvidencePosition,
   fractionToRaster,
   isMeaningfulRect,
@@ -26,6 +27,18 @@ describe("Evidence geometry (REV-005)", () => {
       ]),
     ).toEqual({ x: 10, y: 10, width: 80, height: 80 });
     expect(() => polygonBounds([])).toThrow("at least one vertex");
+  });
+
+  it("measures a polygon's bounding-box area (0 when empty)", () => {
+    expect(
+      boundingArea([
+        [100, 200],
+        [400, 200],
+        [400, 260],
+        [100, 260],
+      ]),
+    ).toBe(300 * 60);
+    expect(boundingArea([])).toBe(0);
   });
 
   it("converts to percentages of the page so zoom needs no recompute", () => {

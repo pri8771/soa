@@ -36,6 +36,13 @@ export function polygonBounds(polygon: readonly PolygonPoint[]): {
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
+/** Area (px²) of a polygon's bounding box; 0 for an empty polygon. */
+export function boundingArea(polygon: readonly PolygonPoint[]): number {
+  if (polygon.length === 0) return 0;
+  const bounds = polygonBounds(polygon);
+  return bounds.width * bounds.height;
+}
+
 /**
  * Pixel bounds -> percentages of the page raster, clamped to the page.
  * Percentages survive any rendered size, so zoom needs no recompute.

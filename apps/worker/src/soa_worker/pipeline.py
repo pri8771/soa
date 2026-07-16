@@ -71,6 +71,8 @@ from soa_rules.baseline import (
 from soa_storage.keys import artifact_key
 from soa_storage.store import ObjectNotFoundError, ObjectStore
 from soa_worker.evidence_resolver import (
+    Polygon,
+    ResolvedEvidence,
     TextGeometry,
     geometry_from_native_page,
     geometry_from_ocr_page,
@@ -154,22 +156,89 @@ class _RepairChannelProvider:
         return await repairable.extract(request, repair_hint=repair_hint)
 
 
-def _resolve_evidence(span: EvidenceSpan, geometry_by_page: Mapping[int, TextGeometry]) -> Evidence:
+def _polygon_center(polygon: Polygon) -> tuple[float, float]:
+    xs = [x for x, _ in polygon]
+    ys = [y for _, y in polygon]
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
+def _center_within(center: tuple[float, float], region: Polygon) -> bool:
+    xs = [x for x, _ in region]
+    ys = [y for _, y in region]
+    return bool(min(xs) <= center[0] <= max(xs) and min(ys) <= center[1] <= max(ys))
+
+
+def _pick_occurrence(candidates: tuple[Polygon, ...], region: Polygon) -> Polygon:
+    """Choose which occurrence of an ambiguous value the ``region`` (the
+    quote's own resolved box) points at: the first candidate whose center the
+    region contains, in reading order; failing that, the candidate nearest the
+    region's center. This lets the quote's surrounding context disambiguate a
+    short/duplicated value (e.g. a bare ``3`` that also appears in an address)
+    without ever leaving the set of real matched boxes."""
+    region_center = _polygon_center(region)
+    for candidate in candidates:
+        if _center_within(_polygon_center(candidate), region):
+            return candidate
+
+    def squared_distance(candidate: Polygon) -> float:
+        cx, cy = _polygon_center(candidate)
+        return (cx - region_center[0]) ** 2 + (cy - region_center[1]) ** 2
+
+    return min(candidates, key=squared_distance)
+
+
+def _anchor_polygon(
+    value_resolved: ResolvedEvidence | None, quote_resolved: ResolvedEvidence | None
+) -> Polygon | None:
+    """Pick the best real region for a field from its value and quote
+    resolutions. A UNIQUE value match wins (tightest, unambiguous). An
+    AMBIGUOUS value is disambiguated by the quote's region so it lands on the
+    right occurrence, not merely the first in reading order. With no usable
+    value we fall back to the quote's own region, then to an ambiguous value's
+    first occurrence, then to nothing (page-level)."""
+    value_ok = value_resolved is not None and value_resolved.match_kind in ("exact", "fuzzy")
+    quote_ok = quote_resolved is not None and quote_resolved.match_kind in ("exact", "fuzzy")
+    if value_ok and value_resolved is not None and not value_resolved.ambiguous:
+        return value_resolved.polygon
+    if value_ok and value_resolved is not None and quote_ok and quote_resolved is not None:
+        return _pick_occurrence(value_resolved.candidates, quote_resolved.polygon)
+    if quote_ok and quote_resolved is not None:
+        return quote_resolved.polygon
+    if value_ok and value_resolved is not None:
+        return value_resolved.polygon
+    return None
+
+
+def _resolve_evidence(
+    span: EvidenceSpan,
+    geometry_by_page: Mapping[int, TextGeometry],
+    *,
+    value: str | None = None,
+) -> Evidence:
     """AIO-014: turn one provider evidence span into stored evidence with
-    HONEST certainty. A span whose verbatim quote resolves to real
-    positioned text on its page (native-text geometry) becomes a REGION
-    carrying those resolved coordinates; anything else — no quote, no
-    geometry for the page (the mock, or a scanned original), or a quote
-    that does not match — is page-level, and no polygon is ever
-    fabricated."""
+    HONEST certainty. A span whose text resolves to real positioned text on
+    its page (native-text geometry) becomes a REGION carrying those resolved
+    coordinates; anything else — no text, no geometry for the page (the mock,
+    or a scanned original), or text that does not match — is page-level, and
+    no polygon is ever fabricated.
+
+    We anchor to the field's ``value`` — a short, specific string — rather
+    than the model's verbatim ``quote``, whose bounding box can swallow half
+    the page when the model wraps the value in a rambling multi-line context.
+    The quote is still resolved: it disambiguates which occurrence an
+    ambiguous value points at, and is the fallback when the value (e.g. a
+    reformatted/normalized number) has no match on the page. See
+    ``_anchor_polygon``."""
     geometry = geometry_by_page.get(span.page_number)
-    if span.quote and geometry is not None:
-        resolved = resolve_quote(span.quote, geometry)
-        if resolved.match_kind in ("exact", "fuzzy"):
+    if geometry is not None:
+        value_resolved = resolve_quote(value, geometry) if value else None
+        quote_resolved = resolve_quote(span.quote, geometry) if span.quote else None
+        polygon = _anchor_polygon(value_resolved, quote_resolved)
+        if polygon is not None:
             return Evidence(
                 page_number=span.page_number,
                 certainty=EvidenceCertainty.REGION,
-                polygon=resolved.polygon,
+                polygon=polygon,
                 quote=span.quote,
             )
     return Evidence(
@@ -538,7 +607,8 @@ class _Pipeline:
                 execution_fingerprint=actual_fingerprint,
                 row_index=extracted.row_index,
                 evidence=tuple(
-                    _resolve_evidence(span, geometry_by_page) for span in extracted.evidence
+                    _resolve_evidence(span, geometry_by_page, value=extracted.raw_value)
+                    for span in extracted.evidence
                 ),
                 candidates=tuple(
                     Candidate(c.raw_value, c.confidence) for c in extracted.candidates

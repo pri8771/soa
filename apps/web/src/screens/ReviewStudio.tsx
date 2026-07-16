@@ -42,6 +42,7 @@ import { SplitLayout } from "../components/review/SplitLayout";
 import { LineItemGrid, type GridRow } from "../components/review/LineItemGrid";
 import { ReviewComments } from "../components/review/ReviewComments";
 import { DocumentViewer, type EvidenceHighlight } from "../components/viewer/DocumentViewer";
+import { boundingArea } from "../components/viewer/geometry";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -442,19 +443,65 @@ export function ReviewStudio() {
     () => workspace.data?.fields ?? [],
     [workspace.data?.fields],
   );
-  const evidence: EvidenceHighlight[] = useMemo(
-    () =>
-      headerFields.flatMap((field) =>
-        field.evidence.map((span, index) => ({
-          id: evidenceId(field.field_key, index),
-          label: field.field_key,
-          page_number: span.page_number,
-          polygon: span.certainty === "region" ? span.polygon : null,
-          kind: (field.field_key === activeFieldKey ? "active" : "related") as "active" | "related",
-        })),
-      ),
+  // Tighten the active field's highlight. The model's stored evidence box
+  // is the bounding box of its verbatim quote, and a rambling quote (e.g.
+  // currency "GBP" quoted with the whole cost paragraph around it) boxes
+  // half the page. Re-anchor the highlight to the field's actual value so
+  // clicking a field marks JUST the value, not the paragraph it sat in.
+  // locate() never mutates, so this works on a read-only (unclaimed) task.
+  const activeField = useMemo(
+    () => headerFields.find((entry) => entry.field_key === activeFieldKey) ?? null,
     [headerFields, activeFieldKey],
   );
+  const activeValue = (
+    drafts[stateKey(activeFieldKey ?? "", activeRowIndex)] ??
+    activeField?.raw_value ??
+    ""
+  ).trim();
+  const activePageHint = activeField?.evidence[0]?.page_number;
+  const locatedActive = useQuery({
+    queryKey: ["locate", slug, taskId, activeFieldKey, activeRowIndex, activeValue],
+    queryFn: () => locateFieldValue(slug, taskId, activeValue, activePageHint),
+    enabled: activeFieldKey !== null && activeValue !== "",
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  const located = locatedActive.data;
+  const evidence: EvidenceHighlight[] = useMemo(() => {
+    const tightPolygon =
+      located?.found === true && located.polygon != null && located.polygon.length > 0
+        ? (located.polygon as [number, number][])
+        : null;
+    const tightPage = located?.found === true ? (located.page_number ?? null) : null;
+    return headerFields.flatMap((field) => {
+      const isActive = field.field_key === activeFieldKey;
+      return field.evidence.map((span, index) => {
+        const stored = span.certainty === "region" ? span.polygon : null;
+        // Re-anchor the active field's highlight to the located value box, but
+        // only when it is a genuine improvement: same page as the model's
+        // evidence (never strand the highlight on another page), and either
+        // the model gave no box or its box is materially larger than the
+        // located one — so we never overwrite an already-tight, correct box
+        // with a possibly-different occurrence of the value.
+        const canTighten =
+          isActive &&
+          index === 0 &&
+          tightPolygon !== null &&
+          tightPage === span.page_number &&
+          (stored === null || boundingArea(tightPolygon) < boundingArea(stored) * 0.5);
+        // A field the reviewer has cleared has no value to point at — drop the
+        // stale (often over-broad) box rather than leaving it highlighted.
+        const cleared = isActive && index === 0 && activeValue === "";
+        return {
+          id: evidenceId(field.field_key, index),
+          label: field.field_key,
+          page_number: canTighten && tightPage !== null ? tightPage : span.page_number,
+          polygon: cleared ? null : canTighten ? tightPolygon : stored,
+          kind: (isActive ? "active" : "related") as "active" | "related",
+        };
+      });
+    });
+  }, [headerFields, activeFieldKey, activeValue, located]);
   const activeEvidenceId = useMemo(() => {
     if (activeFieldKey === null) return null;
     const field = headerFields.find((entry) => entry.field_key === activeFieldKey);
