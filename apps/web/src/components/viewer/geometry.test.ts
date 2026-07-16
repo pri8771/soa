@@ -1,4 +1,11 @@
-import { describeEvidencePosition, polygonBounds, toPercentBox } from "./geometry";
+import {
+  describeEvidencePosition,
+  fractionToRaster,
+  isMeaningfulRect,
+  polygonBounds,
+  rectPolygon,
+  toPercentBox,
+} from "./geometry";
 
 describe("Evidence geometry (REV-005)", () => {
   it("computes polygon bounding boxes in raster pixels", () => {
@@ -76,5 +83,39 @@ describe("Evidence geometry (REV-005)", () => {
     expect(describeEvidencePosition(null, 1700, 2200)).toBe(
       "somewhere on this page (no exact region was captured)",
     );
+  });
+});
+
+describe("Reviewer-drawn regions (REV-005 manual evidence)", () => {
+  it("maps a page-box fraction back to raster pixels, clamped", () => {
+    expect(fractionToRaster(0.5, 0.25, 1000, 2000)).toEqual([500, 500]);
+    expect(fractionToRaster(-0.1, 1.4, 1000, 2000)).toEqual([0, 2000]); // clamped to page
+  });
+
+  it("normalizes two corners into a clockwise rectangle regardless of drag direction", () => {
+    const expected = [
+      [10, 20],
+      [60, 20],
+      [60, 90],
+      [10, 90],
+    ];
+    // Dragging bottom-right -> top-left yields the same normalized polygon.
+    expect(rectPolygon([60, 90], [10, 20])).toEqual(expected);
+    expect(rectPolygon([10, 20], [60, 90])).toEqual(expected);
+  });
+
+  it("round-trips a drawn rectangle through the overlay percentage math", () => {
+    const polygon = rectPolygon(fractionToRaster(0.1, 0.1, 1000, 1000), [400, 300]);
+    const box = toPercentBox(polygon as [number, number][], 1000, 1000);
+    expect(box).toMatchObject({ left: 10, top: 10, width: 30, height: 20 });
+  });
+
+  it("rejects an accidental click but accepts a deliberate box", () => {
+    expect(isMeaningfulRect(rectPolygon([100, 100], [101, 101]) as [number, number][])).toBe(false);
+    expect(isMeaningfulRect(rectPolygon([100, 100], [140, 130]) as [number, number][])).toBe(true);
+  });
+
+  it("refuses non-positive page dimensions", () => {
+    expect(() => fractionToRaster(0.5, 0.5, 0, 100)).toThrow();
   });
 });

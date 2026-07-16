@@ -75,3 +75,49 @@ export function describeEvidencePosition(
   const horizontal = centre < 33 ? "left" : centre < 66 ? "center" : "right";
   return `${vertical} ${horizontal} of the page, about ${Math.round(box.left)}% from the left and ${Math.round(box.top)}% from the top`;
 }
+
+/**
+ * Reviewer-drawn regions (REV-005 manual evidence). The inverse of the
+ * overlay math: a pointer position expressed as a FRACTION of the page box
+ * (0..1, so it is zoom-independent) maps back to raster pixels, and two
+ * corners become the normalized rectangle polygon the correction stores.
+ * Rotation-0 only — the caller disables drawing on a rotated page rather
+ * than guess the transform.
+ */
+export function fractionToRaster(
+  fx: number,
+  fy: number,
+  pageWidthPx: number,
+  pageHeightPx: number,
+): [number, number] {
+  if (pageWidthPx <= 0 || pageHeightPx <= 0) {
+    throw new Error("page dimensions must be positive");
+  }
+  const clamp01 = (v: number) => Math.min(Math.max(v, 0), 1);
+  return [clamp01(fx) * pageWidthPx, clamp01(fy) * pageHeightPx];
+}
+
+/** Two raster corners -> a normalized clockwise rectangle polygon
+ * (top-left, top-right, bottom-right, bottom-left). */
+export function rectPolygon(
+  a: readonly [number, number],
+  b: readonly [number, number],
+): number[][] {
+  const x0 = Math.min(a[0], b[0]);
+  const x1 = Math.max(a[0], b[0]);
+  const y0 = Math.min(a[1], b[1]);
+  const y1 = Math.max(a[1], b[1]);
+  return [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+}
+
+/** Whether a drawn rectangle is big enough to be a deliberate region and
+ * not an accidental click (both sides must exceed a raster-pixel floor). */
+export function isMeaningfulRect(polygon: readonly PolygonPoint[], minPx = 4): boolean {
+  const bounds = polygonBounds(polygon);
+  return bounds.width >= minPx && bounds.height >= minPx;
+}

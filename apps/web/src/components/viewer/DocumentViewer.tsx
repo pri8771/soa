@@ -20,14 +20,26 @@
 
 import { Badge, Banner, Button, Skeleton, TextField } from "@soa/design-system";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   fetchDocumentPages,
   requestArtifactDownload,
   type DocumentPageEntry,
 } from "../../api/client";
-import { describeEvidencePosition, toPercentBox } from "./geometry";
+import {
+  describeEvidencePosition,
+  fractionToRaster,
+  isMeaningfulRect,
+  rectPolygon,
+  toPercentBox,
+} from "./geometry";
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 //: Signed URLs are renewed this long before their stated expiry.
@@ -213,6 +225,8 @@ export function DocumentViewer({
   evidence = [],
   activeEvidenceId = null,
   onEvidenceSelect,
+  drawTarget = null,
+  onRegionDrawn,
 }: {
   organizationSlug: string;
   documentId: string;
@@ -222,6 +236,11 @@ export function DocumentViewer({
   activeEvidenceId?: string | null;
   /** Source -> field: fired when the user clicks an overlay. */
   onEvidenceSelect?: (id: string) => void;
+  /** When set, the reviewer can draw/adjust the region for this field
+   * (a short label for the prompt); null disables editing. */
+  drawTarget?: string | null;
+  /** A drawn/adjusted region in raster pixels, for the current page. */
+  onRegionDrawn?: (region: { pageNumber: number; polygon: number[][] }) => void;
 }) {
   const resolve = useSignedUrl(organizationSlug);
   const pagesQuery = useQuery({
@@ -246,6 +265,68 @@ export function DocumentViewer({
   );
   const pageCount = pages.length;
   const zoom = ZOOM_STEPS[zoomIndex];
+
+  // Reviewer-drawn region (REV-005). Editing is armed only with a draw
+  // target and an UNROTATED page — a rotated page would need the inverse
+  // transform, so we ask the reviewer to reset rotation rather than guess.
+  const pageBoxRef = useRef<HTMLDivElement>(null);
+  const editingArmed = drawTarget !== null && rotation === 0 && current !== undefined;
+  // The drag in progress, in raster pixels: `fixed` is the anchored corner
+  // (the drag start for a fresh box, or the opposite corner when resizing).
+  const [drag, setDrag] = useState<{ fixed: [number, number]; cursor: [number, number] } | null>(
+    null,
+  );
+
+  const pointerToRaster = useCallback(
+    (clientX: number, clientY: number): [number, number] | null => {
+      const box = pageBoxRef.current;
+      if (box === null || current === undefined) return null;
+      const rect = box.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      return fractionToRaster(
+        (clientX - rect.left) / rect.width,
+        (clientY - rect.top) / rect.height,
+        current.width_px,
+        current.height_px,
+      );
+    },
+    [current],
+  );
+
+  const beginDrag = useCallback(
+    (event: ReactPointerEvent, fixed: [number, number]) => {
+      if (!editingArmed) return;
+      const cursor = pointerToRaster(event.clientX, event.clientY);
+      if (cursor === null) return;
+      event.preventDefault();
+      // Capture on the page box so moves route here whether the drag began
+      // on empty page (fresh box) or on a corner handle (resize).
+      pageBoxRef.current?.setPointerCapture?.(event.pointerId);
+      setDrag({ fixed, cursor });
+    },
+    [editingArmed, pointerToRaster],
+  );
+
+  const moveDrag = useCallback(
+    (event: ReactPointerEvent) => {
+      if (drag === null) return;
+      const cursor = pointerToRaster(event.clientX, event.clientY);
+      if (cursor !== null) setDrag((prev) => (prev ? { ...prev, cursor } : prev));
+    },
+    [drag, pointerToRaster],
+  );
+
+  const endDrag = useCallback(() => {
+    if (drag === null || current === undefined) {
+      setDrag(null);
+      return;
+    }
+    const polygon = rectPolygon(drag.fixed, drag.cursor);
+    setDrag(null);
+    if (isMeaningfulRect(polygon as [number, number][])) {
+      onRegionDrawn?.({ pageNumber: current.page_number, polygon });
+    }
+  }, [drag, current, onRegionDrawn]);
 
   const goTo = useCallback(
     (target: number) => {
@@ -502,12 +583,26 @@ export function DocumentViewer({
             // in percentages of the page box, so zoom needs no recompute
             // either — the coordinate transform cannot drift (REV-005).
             <div
+              ref={pageBoxRef}
               data-testid="page-container"
+              onPointerDown={
+                editingArmed && drag === null
+                  ? (event) => {
+                      // A press on empty page (not a handle) starts a fresh box.
+                      const start = pointerToRaster(event.clientX, event.clientY);
+                      if (start !== null) beginDrag(event, start);
+                    }
+                  : undefined
+              }
+              onPointerMove={drag !== null ? moveDrag : undefined}
+              onPointerUp={drag !== null ? endDrag : undefined}
               style={{
                 position: "relative",
                 width: `${Math.round(zoom * 100)}%`,
                 transform: rotation ? `rotate(${rotation}deg)` : undefined,
                 transformOrigin: "center center",
+                cursor: editingArmed ? "crosshair" : undefined,
+                touchAction: editingArmed ? "none" : undefined,
               }}
             >
               {/* Only the CURRENT page mounts at full size — bounded
@@ -519,6 +614,31 @@ export function DocumentViewer({
                 loading="eager"
                 style={{ width: "100%", maxWidth: "none", display: "block" }}
               />
+              {/* Live preview of the box being drawn/resized. */}
+              {drag !== null
+                ? (() => {
+                    const preview = toPercentBox(
+                      rectPolygon(drag.fixed, drag.cursor) as [number, number][],
+                      current.width_px,
+                      current.height_px,
+                    );
+                    return (
+                      <div
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          left: `${preview.left}%`,
+                          top: `${preview.top}%`,
+                          width: `${preview.width}%`,
+                          height: `${preview.height}%`,
+                          border: "2px solid var(--soa-accent, #4c6ef5)",
+                          background: "rgba(76, 110, 245, 0.18)",
+                          pointerEvents: "none",
+                        }}
+                      />
+                    );
+                  })()
+                : null}
               {evidence
                 .filter((entry) => entry.page_number === current.page_number)
                 .map((entry) => {
@@ -555,30 +675,71 @@ export function DocumentViewer({
                     );
                   }
                   const box = toPercentBox(entry.polygon, current.width_px, current.height_px);
+                  const xs = entry.polygon.map((p) => p[0]);
+                  const ys = entry.polygon.map((p) => p[1]);
+                  const [rMinX, rMaxX] = [Math.min(...xs), Math.max(...xs)];
+                  const [rMinY, rMaxY] = [Math.min(...ys), Math.max(...ys)];
+                  // Each corner handle resizes toward its DIAGONAL opposite,
+                  // which stays anchored (in raster px) during the drag.
+                  const handles: { cx: number; cy: number; fixed: [number, number] }[] = [
+                    { cx: box.left, cy: box.top, fixed: [rMaxX, rMaxY] },
+                    { cx: box.left + box.width, cy: box.top, fixed: [rMinX, rMaxY] },
+                    { cx: box.left + box.width, cy: box.top + box.height, fixed: [rMinX, rMinY] },
+                    { cx: box.left, cy: box.top + box.height, fixed: [rMaxX, rMinY] },
+                  ];
+                  const showHandles = active && editingArmed && drag === null;
                   return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      data-evidence-id={entry.id}
-                      aria-label={`Evidence for ${entry.label}: ${description}`}
-                      onClick={() => onEvidenceSelect?.(entry.id)}
-                      style={{
-                        position: "absolute",
-                        left: `${box.left}%`,
-                        top: `${box.top}%`,
-                        width: `${box.width}%`,
-                        height: `${box.height}%`,
-                        border: active
-                          ? "2px solid var(--soa-accent, #4c6ef5)"
-                          : "2px dashed rgba(76, 110, 245, 0.5)",
-                        background: active
-                          ? "rgba(76, 110, 245, 0.18)"
-                          : "rgba(76, 110, 245, 0.08)",
-                        borderRadius: 2,
-                        padding: 0,
-                        cursor: "pointer",
-                      }}
-                    />
+                    <div key={entry.id}>
+                      <button
+                        type="button"
+                        data-evidence-id={entry.id}
+                        aria-label={`Evidence for ${entry.label}: ${description}`}
+                        onClick={() => onEvidenceSelect?.(entry.id)}
+                        style={{
+                          position: "absolute",
+                          left: `${box.left}%`,
+                          top: `${box.top}%`,
+                          width: `${box.width}%`,
+                          height: `${box.height}%`,
+                          border: active
+                            ? "2px solid var(--soa-accent, #4c6ef5)"
+                            : "2px dashed rgba(76, 110, 245, 0.5)",
+                          background: active
+                            ? "rgba(76, 110, 245, 0.18)"
+                            : "rgba(76, 110, 245, 0.08)",
+                          borderRadius: 2,
+                          padding: 0,
+                          cursor: "pointer",
+                        }}
+                      />
+                      {showHandles
+                        ? handles.map((handle, i) => (
+                            <div
+                              key={i}
+                              role="button"
+                              aria-label={`Resize ${entry.label} evidence region`}
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                                beginDrag(event, handle.fixed);
+                              }}
+                              style={{
+                                position: "absolute",
+                                left: `${handle.cx}%`,
+                                top: `${handle.cy}%`,
+                                width: 10,
+                                height: 10,
+                                marginLeft: -5,
+                                marginTop: -5,
+                                background: "#fff",
+                                border: "2px solid var(--soa-accent, #4c6ef5)",
+                                borderRadius: 2,
+                                cursor: "nwse-resize",
+                                touchAction: "none",
+                              }}
+                            />
+                          ))
+                        : null}
+                    </div>
                   );
                 })}
             </div>

@@ -12,7 +12,7 @@
 import { Badge, Banner, Button, Skeleton } from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -226,17 +226,20 @@ export function ReviewStudio() {
       fieldKey,
       rowIndex,
       value,
+      region,
     }: {
       fieldKey: string;
       rowIndex: number | null;
       value: string;
+      // A region drawn/adjusted by hand on the viewer. When present it is
+      // authoritative and auto-locate is skipped.
+      region?: EvidenceSelection;
     }) => {
-      // Auto-locate: a typed value is anchored to where it sits on the page
-      // so the viewer can highlight it. Best-effort — a locate miss or error
-      // never blocks the save (the reviewer can draw the box by hand).
-      let evidenceSelection: EvidenceSelection | undefined;
+      let evidenceSelection: EvidenceSelection | undefined = region;
       const trimmed = value.trim();
-      if (trimmed !== "") {
+      // Auto-locate a typed value only when no hand-drawn region is given —
+      // best-effort, a miss/error never blocks the save.
+      if (evidenceSelection === undefined && trimmed !== "") {
         try {
           const located = await locateFieldValue(slug, taskId, trimmed);
           if (located.found && located.page_number != null && located.polygon) {
@@ -445,6 +448,29 @@ export function ReviewStudio() {
     const field = headerFields.find((entry) => entry.field_key === activeFieldKey);
     return field && field.evidence.length > 0 ? evidenceId(field.field_key, 0) : null;
   }, [activeFieldKey, headerFields]);
+
+  // A region drawn or adjusted on the viewer saves against the active
+  // field, preserving its current value — so a reviewer can teach WHERE a
+  // (blank or filled) field lives on the page.
+  const onRegionDrawn = useCallback(
+    ({ pageNumber, polygon }: { pageNumber: number; polygon: number[][] }) => {
+      if (activeFieldKey === null) return;
+      const field = headerFields.find((entry) => entry.field_key === activeFieldKey);
+      const draftValue = drafts[stateKey(activeFieldKey, activeRowIndex)];
+      const value = draftValue ?? field?.raw_value ?? "";
+      save.mutate({
+        fieldKey: activeFieldKey,
+        rowIndex: activeRowIndex,
+        value,
+        region: {
+          page_number: pageNumber,
+          polygon,
+          quote: value.trim() === "" ? null : value.trim(),
+        },
+      });
+    },
+    [activeFieldKey, activeRowIndex, headerFields, drafts, save],
+  );
 
   // Required Review Studio shortcuts are global within this screen, but
   // never consume keystrokes from an input, textarea, select, or editable
@@ -817,6 +843,8 @@ export function ReviewStudio() {
               evidence={evidence}
               activeEvidenceId={activeEvidenceId}
               onEvidenceSelect={(id) => focusField(id.split("#")[0] ?? "")}
+              drawTarget={editable && activeFieldKey !== null ? activeFieldKey : null}
+              onRegionDrawn={onRegionDrawn}
             />
           }
           right={
