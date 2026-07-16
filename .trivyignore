@@ -1,0 +1,15 @@
+# Trivy ignore list — justified, re-reviewed acceptances of container-image
+# advisories the CRITICAL/HIGH gate (.github/workflows/ci.yml) would otherwise
+# block on. Each entry names build-time packaging tooling that the running
+# services never invoke; the runtime attack surface is unaffected. Re-review
+# whenever the base image is rebuilt or the tooling is upgraded.
+
+# jaraco.context 5.3.0 -> 6.1.0: path traversal in a setuptools-ecosystem
+# context-manager helper. Present only as build/packaging tooling in the base
+# Python image; no app code (soa_api/soa_worker) imports it at runtime.
+CVE-2026-23949
+
+# wheel 0.45.1 -> 0.46.2: privilege escalation during wheel installation. A
+# build-time tool used to install packages; not on any runtime code path of
+# the API or worker services.
+CVE-2026-24049
