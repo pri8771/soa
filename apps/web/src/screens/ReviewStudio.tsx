@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   approveReviewTask,
+  claimReviewTask,
   correctField,
   escalateReviewTask,
   fetchCatalogCandidates,
@@ -290,6 +291,17 @@ export function ReviewStudio() {
         ...prev,
         [stateKey(fieldKey, rowIndex)]: { status: "error", message },
       }));
+    },
+  });
+
+  // Claim the task right here so a reviewer can go from opening a link to
+  // editing without a detour through the queue. Only an OPEN task is
+  // claimable; the queue owns contention (a lost race surfaces as a 409).
+  const claim = useMutation({
+    mutationFn: () => claimReviewTask(slug, taskId),
+    onSuccess: () => {
+      versionRef.current = null;
+      void queryClient.invalidateQueries({ queryKey: ["review-workspace", slug, taskId] });
     },
   });
 
@@ -647,7 +659,9 @@ export function ReviewStudio() {
   const readOnlyReason =
     data.task.state === "in_progress"
       ? `This task is assigned to ${data.task.assigned_to}; claim it from the queue to edit.`
-      : `This task is ${data.task.state}; claim it from the queue to edit.`;
+      : data.task.state === "open"
+        ? "Claim this task to edit fields, locate values, and draw evidence regions."
+        : `This task is ${data.task.state} and can no longer be edited.`;
 
   //: REV-014: the server's current value (and its editor, when a
   //: correction authored it) for a conflicted field.
@@ -814,8 +828,22 @@ export function ReviewStudio() {
           />
         ) : null}
         {!editable && data.task.state !== "completed" ? (
-          <Banner tone="info" title="Read-only">
-            {readOnlyReason}
+          <Banner
+            tone="info"
+            title="Read-only"
+            action={
+              data.task.state === "open" ? (
+                <Button size="sm" onPress={() => claim.mutate()} isDisabled={claim.isPending}>
+                  {claim.isPending ? "Claiming…" : "Claim to edit"}
+                </Button>
+              ) : undefined
+            }
+          >
+            {claim.isError
+              ? claim.error instanceof Error
+                ? claim.error.message
+                : "Couldn’t claim the task."
+              : readOnlyReason}
           </Banner>
         ) : null}
         {currentDecision ? (

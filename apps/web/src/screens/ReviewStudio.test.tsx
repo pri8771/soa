@@ -220,6 +220,39 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
   });
 
+  it("claims an open task from the read-only banner and becomes editable", async () => {
+    const user = userEvent.setup();
+    let claimed = false;
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", () =>
+        HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          task: {
+            ...DEFAULT_WORKSPACE.task,
+            state: claimed ? "in_progress" : "open",
+            assigned_to: claimed ? "user:u-1" : null,
+          },
+        }),
+      ),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/claim", () => {
+        claimed = true;
+        return HttpResponse.json({
+          ...DEFAULT_WORKSPACE.task,
+          state: "in_progress",
+          assigned_to: "user:u-1",
+        });
+      }),
+    );
+    await renderApp(PATH);
+    // Open + unassigned: read-only, but claimable right here.
+    expect(await screen.findByText("Read-only")).toBeInTheDocument();
+    expect(screen.getByLabelText("po number")).toHaveAttribute("readonly");
+    await user.click(screen.getByRole("button", { name: "Claim to edit" }));
+    // After the claim + refetch the field is editable and the banner is gone.
+    await waitFor(() => expect(screen.getByLabelText("po number")).not.toHaveAttribute("readonly"));
+    expect(screen.queryByText("Read-only")).not.toBeInTheDocument();
+  });
+
   it("redirects a superseded task URL to the document's current active task", async () => {
     // A reprocess cancels the old task and opens a fresh one; the stale URL
     // must land the reviewer on the live task, not on dead data.
