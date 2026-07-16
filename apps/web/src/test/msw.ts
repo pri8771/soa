@@ -881,6 +881,9 @@ export const handlers = [
       { status: 201 },
     );
   }),
+  http.post("/api/orgs/:slug/review-tasks/:taskId/locate", () =>
+    HttpResponse.json({ found: false }),
+  ),
   http.post("/api/orgs/:slug/review-tasks/:taskId/corrections", async ({ request }) => {
     const body = (await request.json()) as { field_key: string; value: string | null };
     return HttpResponse.json({

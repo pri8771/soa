@@ -21,10 +21,12 @@ import {
   escalateReviewTask,
   fetchCatalogCandidates,
   fetchReviewWorkspace,
+  locateFieldValue,
   postCatalogSelection,
   rejectReviewTask,
   type CatalogSelectionResult,
   type CorrectionResult,
+  type EvidenceSelection,
   type ReviewWorkspace,
   type WorkspaceField,
 } from "../api/client";
@@ -220,7 +222,7 @@ export function ReviewStudio() {
   };
 
   const save = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       fieldKey,
       rowIndex,
       value,
@@ -228,13 +230,34 @@ export function ReviewStudio() {
       fieldKey: string;
       rowIndex: number | null;
       value: string;
-    }) =>
-      correctField(slug, taskId, {
+    }) => {
+      // Auto-locate: a typed value is anchored to where it sits on the page
+      // so the viewer can highlight it. Best-effort — a locate miss or error
+      // never blocks the save (the reviewer can draw the box by hand).
+      let evidenceSelection: EvidenceSelection | undefined;
+      const trimmed = value.trim();
+      if (trimmed !== "") {
+        try {
+          const located = await locateFieldValue(slug, taskId, trimmed);
+          if (located.found && located.page_number != null && located.polygon) {
+            evidenceSelection = {
+              page_number: located.page_number,
+              polygon: located.polygon,
+              quote: trimmed,
+            };
+          }
+        } catch {
+          // ignore — locating is a convenience, not a precondition of saving
+        }
+      }
+      return correctField(slug, taskId, {
         field_key: fieldKey,
         row_index: rowIndex,
         value: value === "" ? null : value,
         expected_version: versionRef.current ?? workspace.data?.task.version ?? 0,
-      }),
+        evidence_selection: evidenceSelection ?? null,
+      });
+    },
     onMutate: ({ fieldKey, rowIndex }) =>
       setSaveStates((prev) => ({ ...prev, [stateKey(fieldKey, rowIndex)]: { status: "saving" } })),
     onSuccess: (result: CorrectionResult, { fieldKey, rowIndex }) => {

@@ -417,10 +417,27 @@ async def release_review_task(
 _HISTORY_LIMIT = 50
 
 
-def _field_payload(field: ExtractedField) -> dict[str, Any]:
+def _field_payload(
+    field: ExtractedField, correction_evidence: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """One extracted field for the review workspace: values, provenance,
     validation, candidates, and evidence — by page/polygon/quote only,
-    never by object key."""
+    never by object key. When the reviewer's latest correction carries a
+    located/drawn region, it SUPERSEDES the model's evidence (a human
+    pointing at the source is more authoritative than the extractor's)."""
+    evidence = [span.to_json() for span in field.evidence_spans()]
+    if correction_evidence is not None:
+        page = correction_evidence.get("page_number")
+        if isinstance(page, int):
+            polygon = correction_evidence.get("polygon")
+            evidence = [
+                {
+                    "page_number": page,
+                    "certainty": "region" if polygon else "page",
+                    "polygon": polygon if polygon else None,
+                    "quote": correction_evidence.get("quote"),
+                }
+            ]
     return {
         "field_key": field.field_key,
         "row_index": field.row_index,
@@ -431,9 +448,17 @@ def _field_payload(field: ExtractedField) -> dict[str, Any]:
         "validation_status": field.validation_status,
         "provider": field.provider,
         "provider_model": field.provider_model,
-        "evidence": [span.to_json() for span in field.evidence_spans()],
+        "evidence": evidence,
         "candidates": [candidate.to_json() for candidate in field.candidate_readings()],
     }
+
+
+def _correction_evidence(
+    corrections: dict[tuple[str, int | None], Any], field: ExtractedField
+) -> dict[str, Any] | None:
+    correction = corrections.get((field.field_key, field.row_index))
+    selection = correction.evidence_selection if correction is not None else None
+    return selection if isinstance(selection, dict) else None
 
 
 @router.get("/orgs/{organization_slug}/review-tasks/{task_id}/workspace")
@@ -473,14 +498,18 @@ async def review_workspace(
     corrections = latest_corrections(
         await FieldCorrectionRepository(session, authorized.org_context).list_for_run(task.run_id)
     )
-    header = [_field_payload(field) for field in fields if field.row_index is None]
+    header = [
+        _field_payload(field, _correction_evidence(corrections, field))
+        for field in fields
+        if field.row_index is None
+    ]
     line_items: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for field in fields:
         if field.row_index is None:
             continue
         table = field.field_key.partition(".")[0]
         line_items.setdefault(table, {}).setdefault(field.row_index, []).append(
-            _field_payload(field)
+            _field_payload(field, _correction_evidence(corrections, field))
         )
     tables = {
         table: [cells for _, cells in sorted(rows.items())] for table, rows in line_items.items()

@@ -73,6 +73,50 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(posted[1]).toMatchObject({ expected_version: 5 });
   });
 
+  it("auto-locates a typed value and saves its region as evidence", async () => {
+    const user = userEvent.setup();
+    const posted: Record<string, unknown>[] = [];
+    const box = [
+      [130, 20],
+      [260, 20],
+      [260, 40],
+      [130, 40],
+    ];
+    server.use(
+      http.post("/api/orgs/northstar/review-tasks/:taskId/locate", () =>
+        HttpResponse.json({ found: true, page_number: 1, polygon: box }),
+      ),
+      http.post("/api/orgs/northstar/review-tasks/:taskId/corrections", async ({ request }) => {
+        posted.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({
+          correction: {
+            id: "cor-1",
+            field_key: "po_number",
+            row_index: null,
+            previous_raw_value: null,
+            corrected_raw_value: "8077219",
+            corrected_normalized_value: "8077219",
+            normalization_error: null,
+            corrected_by: "user:u-1",
+          },
+          task_version: 4,
+          revalidation: null,
+        });
+      }),
+    );
+    await renderApp(PATH);
+    const input = await screen.findByLabelText("po number");
+    await user.clear(input);
+    await user.type(input, "8077219{Enter}");
+    await waitFor(() => expect(posted).toHaveLength(1));
+    // The correction carries the located region so the viewer highlights it.
+    expect(posted[0]).toMatchObject({
+      field_key: "po_number",
+      value: "8077219",
+      evidence_selection: { page_number: 1, polygon: box, quote: "8077219" },
+    });
+  });
+
   it("adopting a candidate saves it as the corrected value", async () => {
     const user = userEvent.setup();
     const posted: unknown[] = [];
