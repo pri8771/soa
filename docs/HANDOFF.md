@@ -19,7 +19,7 @@ evidence listed below.
 
 ## Validation checkpoint
 
-- Python: Ruff, formatting, mypy, and the complete 1,869-test collection
+- Python: Ruff, formatting, mypy, and the complete 1,871-test collection
   exited successfully.
 - Web: formatting, lint, typecheck, production build, all 372 unit tests, and
   all three accessibility E2E tests passed; E2E passed twice consecutively.
