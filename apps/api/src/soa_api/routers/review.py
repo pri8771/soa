@@ -525,6 +525,17 @@ async def review_workspace(
         for event in reversed(events)
     ]
 
+    # A reprocess supersedes the old review task (cancels it) and opens a
+    # fresh one for the new run. If THIS task is no longer the document's
+    # active task, point the caller at the one that is, so a stale/bookmarked
+    # task URL redirects to the live review instead of showing dead data.
+    active_task = await ReviewTaskRepository(
+        session, authorized.org_context
+    ).get_active_for_document(document.id)
+    superseded_by_task_id = (
+        str(active_task.id) if active_task is not None and active_task.id != task.id else None
+    )
+
     stream = await StreamRepository(session, authorized.org_context).get(document.stream_id)
     context: dict[str, Any] = {
         "stream_id": str(document.stream_id),
@@ -547,6 +558,7 @@ async def review_workspace(
 
     return {
         "task": _serialize(task, document),
+        "superseded_by_task_id": superseded_by_task_id,
         "document": {
             "id": str(document.id),
             "state": document.state,

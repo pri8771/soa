@@ -338,6 +338,7 @@ async def test_workspace_returns_the_full_bounded_read_model(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["task"]["id"] == task_id
+    assert payload["superseded_by_task_id"] is None  # this IS the active task
     assert payload["document"]["original_filename"] == "po-workspace.pdf"
     assert payload["run"]["run_number"] == 1
     assert payload["context"]["config_fingerprint"] == "b" * 64
@@ -370,6 +371,77 @@ async def test_workspace_returns_the_full_bounded_read_model(
         client.get(f"/orgs/northstar/review-tasks/{task_id}/workspace", headers=AUDITOR).status_code
         == 403
     )
+
+
+async def test_workspace_of_a_superseded_task_points_at_the_current_active_task(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """A reprocess cancels the old task and opens a fresh one for the new
+    run; the old task's workspace names the current active task so a stale
+    URL can redirect to the live review."""
+    from soa_db.runs import start_run
+
+    client, db = harness
+    org_id = uuid.UUID(client.get("/orgs/northstar", headers=ADMIN).json()["id"])
+    stream_id = uuid.UUID(client.get("/orgs/northstar/streams", headers=ADMIN).json()[0]["id"])
+    context = OrganizationContext(organization_id=org_id)
+
+    async def route(run_id: uuid.UUID) -> uuid.UUID:
+        task = await route_document_to_review(
+            session,
+            context,
+            document_id=document.id,
+            run_id=run_id,
+            reasons=[_reason()],
+            priority=10,
+        )
+        return task.id
+
+    async with db.session_scope() as session:
+        document = await create_document(
+            session,
+            context,
+            stream_id=stream_id,
+            source_channel=SourceChannel.UPLOAD,
+            original_filename="po-super.pdf",
+            content_sha256="e" * 64,
+            size_bytes=100,
+            content_type="application/pdf",
+            actor_id="user:test",
+        )
+        run1 = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256="e" * 64,
+            stream_version_id=None,
+            config_fingerprint="b" * 64,
+            triggered_by="system:test",
+        )
+        old_task_id = await route(run1.id)
+        # A reprocess: a second run supersedes the first task with a fresh one.
+        run2 = await start_run(
+            session,
+            context,
+            document_id=document.id,
+            input_sha256="e" * 64,
+            stream_version_id=None,
+            config_fingerprint="b" * 64,
+            triggered_by="user:reprocess",
+        )
+        new_task_id = await route(run2.id)
+
+    old = client.get(
+        f"/orgs/northstar/review-tasks/{old_task_id}/workspace", headers=SUPERVISOR
+    ).json()
+    assert old["task"]["state"] == "cancelled"
+    assert old["superseded_by_task_id"] == str(new_task_id)
+
+    new = client.get(
+        f"/orgs/northstar/review-tasks/{new_task_id}/workspace", headers=SUPERVISOR
+    ).json()
+    assert new["task"]["state"] == "open"
+    assert new["superseded_by_task_id"] is None
 
 
 async def seed_correctable_task(client: TestClient, db: DatabaseSessions) -> tuple[str, int]:

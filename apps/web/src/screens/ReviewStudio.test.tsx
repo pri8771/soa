@@ -175,6 +175,27 @@ describe("Review Studio header field editor (REV-007)", () => {
     expect(screen.getByLabelText("po number")).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "Approve order…" })).toBeDisabled();
   });
+
+  it("redirects a superseded task URL to the document's current active task", async () => {
+    // A reprocess cancels the old task and opens a fresh one; the stale URL
+    // must land the reviewer on the live task, not on dead data.
+    const nextTaskId = "c3333333-3333-4333-8333-333333333333";
+    server.use(
+      http.get("/api/orgs/northstar/review-tasks/:taskId/workspace", ({ params }) => {
+        const id = String(params["taskId"]);
+        const superseded = id !== nextTaskId;
+        return HttpResponse.json({
+          ...DEFAULT_WORKSPACE,
+          task: { ...DEFAULT_WORKSPACE.task, id, state: superseded ? "cancelled" : "open" },
+          superseded_by_task_id: superseded ? nextTaskId : null,
+        });
+      }),
+    );
+    const { router } = await renderApp(PATH);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/app/northstar/review/${nextTaskId}`),
+    );
+  });
 });
 
 describe("Review Studio required keyboard shortcuts", () => {

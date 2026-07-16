@@ -538,6 +538,7 @@ export const DEFAULT_WORKSPACE = {
       },
     ],
   },
+  superseded_by_task_id: null,
   document: {
     id: "84444444-4444-4444-8444-444444444444",
     state: "review_required",

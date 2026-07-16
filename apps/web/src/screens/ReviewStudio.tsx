@@ -11,7 +11,7 @@
 
 import { Badge, Banner, Button, Skeleton } from "@soa/design-system";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -138,11 +138,27 @@ export function ReviewStudio() {
   const slug = session.organization.slug;
   const { taskId } = useParams({ strict: false }) as { taskId: string };
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const workspace = useQuery({
     queryKey: ["review-workspace", slug, taskId],
     queryFn: () => fetchReviewWorkspace(slug, taskId),
   });
+
+  //: A reprocess supersedes this task and opens a fresh one for the new
+  //: run; a bookmarked or reused URL then points at dead data. When the
+  //: server names the document's current active task, redirect to it so
+  //: the reviewer always lands on the live review.
+  const supersededBy = workspace.data?.superseded_by_task_id ?? null;
+  useEffect(() => {
+    if (supersededBy && supersededBy !== taskId) {
+      void navigate({
+        to: "/app/$organizationSlug/review/$taskId",
+        params: { organizationSlug: slug, taskId: supersededBy },
+        replace: true,
+      });
+    }
+  }, [supersededBy, taskId, slug, navigate]);
 
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({});

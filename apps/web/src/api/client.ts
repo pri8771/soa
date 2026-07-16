@@ -1412,6 +1412,10 @@ export interface WorkspaceCorrection {
 
 export interface ReviewWorkspace {
   task: ReviewTaskEntry;
+  /** When this task was superseded (e.g. a reprocess opened a fresh task
+   * for the new run), the id of the document's current active task, so a
+   * stale/bookmarked URL can redirect to the live review. */
+  superseded_by_task_id: string | null;
   document: {
     id: string;
     state: string;
