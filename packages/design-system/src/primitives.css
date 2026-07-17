@@ -9,9 +9,11 @@
   height: var(--soa-input-default);
   padding: 0 var(--soa-space-4);
   border-radius: var(--soa-radius-control);
-  border: 1px solid transparent;
-  font: var(--soa-font-body-md);
-  font-weight: 600;
+  border: 1.5px solid transparent;
+  font: var(--soa-font-body-sm);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
   transition:
     background var(--soa-motion-fast) ease,
@@ -20,8 +22,9 @@
 .soa-button[data-size="sm"] {
   height: var(--soa-input-compact);
   padding: 0 var(--soa-space-3);
-  font: var(--soa-font-body-sm);
-  font-weight: 600;
+  font: var(--soa-font-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 .soa-button[data-variant="primary"] {
   background: var(--soa-accent);
@@ -78,7 +81,7 @@
   height: var(--soa-input-default);
   padding: 0 var(--soa-space-3);
   border-radius: var(--soa-radius-control);
-  border: 1px solid var(--soa-border-strong);
+  border: 1.5px solid var(--soa-border-strong);
   background: var(--soa-surface);
   color: var(--soa-text-primary);
   font: var(--soa-font-body-md);
@@ -114,7 +117,7 @@ textarea.soa-field-input {
   height: var(--soa-input-default);
   padding: 0 var(--soa-space-3);
   border-radius: var(--soa-radius-control);
-  border: 1px solid var(--soa-border-strong);
+  border: 1.5px solid var(--soa-border-strong);
   background: var(--soa-surface);
   color: var(--soa-text-primary);
   font: var(--soa-font-body-md);
@@ -182,8 +185,8 @@ textarea.soa-field-input {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 4px;
-  border: 1px solid var(--soa-border-strong);
+  border-radius: 0;
+  border: 1.5px solid var(--soa-border-strong);
   background: var(--soa-surface);
   font-size: 11px;
   color: var(--soa-surface);
@@ -218,7 +221,7 @@ textarea.soa-field-input {
   width: 34px;
   height: 20px;
   padding: 2px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--soa-border-strong);
   transition: background var(--soa-motion-fast) ease;
 }
@@ -228,7 +231,7 @@ textarea.soa-field-input {
 .soa-switch-thumb {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--soa-surface);
   transition: transform var(--soa-motion-fast) ease;
 }
@@ -273,7 +276,7 @@ textarea.soa-field-input {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 20, 32, 0.45);
+  background: rgba(20, 22, 26, 0.5);
 }
 .soa-modal {
   max-width: 480px;
@@ -311,8 +314,10 @@ textarea.soa-field-input {
 }
 .soa-tab {
   padding: var(--soa-space-2) var(--soa-space-1);
-  font: var(--soa-font-body-md);
-  font-weight: 600;
+  font: var(--soa-font-body-sm);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--soa-text-secondary);
   border-bottom: 2px solid transparent;
   cursor: pointer;
@@ -335,11 +340,13 @@ textarea.soa-field-input {
   display: inline-flex;
   align-items: center;
   gap: var(--soa-space-1);
-  height: 22px;
+  height: 20px;
   padding: 0 var(--soa-space-2);
-  border-radius: 999px;
+  border-radius: 0;
   font: var(--soa-font-caption);
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .soa-badge[data-tone="neutral"] {
   background: var(--soa-surface-subtle);
@@ -373,7 +380,7 @@ textarea.soa-field-input {
   gap: var(--soa-space-4);
   padding: var(--soa-space-3) var(--soa-space-4);
   border-radius: var(--soa-radius-panel);
-  border: 1px solid var(--soa-border);
+  border: 1.5px solid var(--soa-border-strong);
   background: var(--soa-surface-subtle);
 }
 .soa-banner[data-tone="critical"] {
@@ -395,7 +402,7 @@ textarea.soa-field-input {
 .soa-banner-title {
   margin: 0;
   font: var(--soa-font-body-md);
-  font-weight: 650;
+  font-weight: 700;
   color: var(--soa-text-primary);
 }
 .soa-banner-content {
@@ -404,15 +411,16 @@ textarea.soa-field-input {
 }
 .soa-progress-track {
   display: block;
-  height: 6px;
-  border-radius: 999px;
+  height: 8px;
+  border-radius: 0;
+  border: 1px solid var(--soa-border);
   background: var(--soa-surface-subtle);
   overflow: hidden;
 }
 .soa-progress-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--soa-accent);
   transition: width var(--soa-motion-base) ease;
 }
@@ -511,7 +519,7 @@ textarea.soa-field-input {
 }
 .soa-stage[data-status="active"] {
   color: var(--soa-text-primary);
-  font-weight: 650;
+  font-weight: 700;
 }
 .soa-stage[data-status="active"] .soa-stage-marker {
   color: var(--soa-accent);
@@ -520,7 +528,7 @@ textarea.soa-field-input {
   color: var(--soa-critical);
 }
 .soa-connection-card {
-  border: 1px solid var(--soa-border);
+  border: 1.5px solid var(--soa-border-strong);
   border-radius: var(--soa-radius-panel);
   padding: var(--soa-space-4);
   background: var(--soa-surface);
