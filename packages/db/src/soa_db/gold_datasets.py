@@ -105,9 +105,9 @@ def _validate_regions(regions: Any) -> None:
 
 
 def validate_ground_truth(ground_truth: dict[str, Any]) -> None:
-    fields = ground_truth.get("fields")
-    if not isinstance(fields, dict) or not fields:
-        raise GoldDatasetError("ground truth needs a non-empty 'fields' object")
+    fields = ground_truth.get("fields", {})
+    if not isinstance(fields, dict):
+        raise GoldDatasetError("'fields' must be an object of expected values")
     for key, value in fields.items():
         if value is not None and not isinstance(value, str):
             raise GoldDatasetError(
@@ -116,6 +116,10 @@ def validate_ground_truth(ground_truth: dict[str, Any]) -> None:
     lines = ground_truth.get("lines", [])
     if not isinstance(lines, list):
         raise GoldDatasetError("'lines' must be a list of row objects")
+    # A sample must teach SOMETHING — header fields or line items (labelling
+    # line items alone, e.g. a packing list, is a first-class case).
+    if not fields and not lines:
+        raise GoldDatasetError("ground truth needs at least one field or line item")
     for index, row in enumerate(lines):
         if not isinstance(row, dict):
             raise GoldDatasetError(f"lines[{index}] must be an object")

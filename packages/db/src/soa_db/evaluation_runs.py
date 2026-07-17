@@ -54,6 +54,10 @@ class EvaluationRun(
     execution_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     allow_external_provider: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    #: Allow-list of gold-document splits this run scores; NULL scores every
+    #: document. Training evaluations set it to the held-out splits so the
+    #: train documents memorised into few-shot never contaminate the score.
+    scored_splits: Mapped[list[str] | None] = mapped_column(PORTABLE_JSON, nullable=True)
     predictions: Mapped[dict[str, Any]] = mapped_column(PORTABLE_JSON, nullable=False, default=dict)
     checkpoint: Mapped[dict[str, Any]] = mapped_column(PORTABLE_JSON, nullable=False, default=dict)
     report: Mapped[dict[str, Any] | None] = mapped_column(PORTABLE_JSON, nullable=True)
@@ -266,6 +270,7 @@ async def create_evaluation_run(
     runtime_pins: dict[str, Any] | None = None,
     execution_fingerprint: str | None = None,
     allow_external_provider: bool = False,
+    scored_splits: list[str] | None = None,
 ) -> EvaluationRun:
     if not _SHA256_HEX.fullmatch(candidate_fingerprint):
         raise ValueError("candidate fingerprint must be a SHA-256 digest")
@@ -303,6 +308,7 @@ async def create_evaluation_run(
             runtime_pins=dict(runtime_pins) if runtime_pins is not None else None,
             execution_fingerprint=execution_fingerprint,
             allow_external_provider=allow_external_provider,
+            scored_splits=list(scored_splits) if scored_splits is not None else None,
         )
     )
     await session.flush()

@@ -397,7 +397,10 @@ async def list_document_pages(
 
 class TextInRegionRequest(BaseModel):
     page_number: int = Field(ge=1)
-    polygon: list[list[float]] = Field(min_length=3)
+    #: A polygon of at least three [x, y] vertices (raster pixels).
+    polygon: list[Annotated[list[float], Field(min_length=2, max_length=2)]] = Field(
+        min_length=3, max_length=512
+    )
 
 
 @router.post("/orgs/{organization_slug}/documents/{document_id}/text-in-region")

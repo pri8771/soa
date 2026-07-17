@@ -557,3 +557,63 @@ def test_incompatible_cohort_and_field_schema_are_rejected() -> None:
     baseline.report["by_field"] = {"different_field": {"total": 1, "exact": 1, "normalized": 1}}
     with pytest.raises(BaselineCompatibilityError, match="field metric schema"):
         _compatible_baseline_report(run, baseline, report)
+
+
+async def test_scored_splits_filters_to_the_held_out_slice(db: DatabaseSessions) -> None:
+    """A run's scored_splits restricts scoring to those splits — the train
+    documents (memorised into few-shot) are never scored, so the metrics the
+    gate reads are computed only over the held-out slice."""
+    train_sha, test_sha = "a" * 64, "b" * 64
+    async with db.session_scope() as session:
+        dataset = await create_gold_dataset(
+            session,
+            CONTEXT,
+            name="Split benchmark",
+            slug="split-benchmark",
+            privacy_classification=PrivacyClassification.SYNTHETIC,
+            actor_id="user:test",
+        )
+        version = await create_dataset_version(
+            session, CONTEXT, dataset=dataset, actor_id="user:test"
+        )
+        for sha, split in ((train_sha, "train"), (test_sha, "test")):
+            await add_gold_document(
+                session,
+                CONTEXT,
+                version=version,
+                document_sha256=sha,
+                split=split,
+                ground_truth={"fields": {"po_number": "PO-1"}, "lines": []},
+                actor_id="user:test",
+            )
+        await publish_dataset_version(
+            session, CONTEXT, dataset=dataset, version=version, actor_id="user:test"
+        )
+        run = await create_evaluation_run(
+            session,
+            CONTEXT,
+            stream_id=STREAM,
+            candidate_fingerprint="c" * 64,
+            dataset_version_id=version.id,
+            predictions={
+                sha: {"fields": {"po_number": "PO-1"}, "lines": [], "would_auto_approve": False}
+                for sha in (train_sha, test_sha)
+            },
+            baseline_run_id=None,
+            actor_id="user:test",
+            scored_splits=["validation", "test"],
+        )
+        run_id = run.id
+
+    async with db.session_scope() as session:
+        await execute_evaluation(session, CONTEXT, run_id)
+
+    async with db.session_scope() as session:
+        stored = await EvaluationRunRepository(session, CONTEXT).get(run_id)
+        assert stored is not None and stored.state == "succeeded"
+        assert stored.report is not None
+        # Only the single held-out (test) document is scored; train is excluded.
+        assert stored.report["documents_scored"] == 1
+        assert stored.report["by_split"] == {"test": 1}
+        assert train_sha not in stored.checkpoint["scores"]
+        assert test_sha in stored.checkpoint["scores"]

@@ -88,8 +88,10 @@ export function TrainingAnnotate() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
-  // Seed state from schema + any existing labels, exactly once.
-  if (!ready && headerFields.length > 0 && !trainingSet.isLoading) {
+  // Seed state from schema + any existing labels, exactly once. Gated on the
+  // schema having ANY labellable field — header OR line-item — so a table-only
+  // (line-item-only) schema still seeds and never silently drops saved labels.
+  if (!ready && (headerFields.length > 0 || lineColumns.length > 0) && !trainingSet.isLoading) {
     const gt = existing?.ground_truth;
     const regions = gt?.regions ?? {};
     const seedHeader: Record<string, FieldState> = {};
@@ -200,19 +202,28 @@ export function TrainingAnnotate() {
       else if (state.region) fields[field.key] = null;
       if (state.region) regions[field.key] = state.region;
     }
-    const lines = rows.map((row, index) => {
+    // Build the compacted lines and their region keys together so a line-cell
+    // region is keyed by the row's FINAL (compacted) index — dropping empty
+    // rows must not leave region keys pointing at shifted or absent lines.
+    const lines: Record<string, string | null>[] = [];
+    for (const row of rows) {
       const line: Record<string, string | null> = {};
+      let hasValue = false;
       for (const col of lineColumns) {
-        const state = row[col.key];
-        const value = state?.value.trim() ?? "";
+        const value = row[col.key]?.value.trim() ?? "";
         line[col.key] = value || null;
-        if (state?.region) regions[lineTarget(index, col.key)] = state.region;
+        if (value) hasValue = true;
       }
-      return line;
-    });
-    const nonEmptyLines = lines.filter((line) => Object.values(line).some((v) => v !== null));
+      if (!hasValue) continue; // drop empty rows — and, with them, their regions
+      const compactIndex = lines.length;
+      lines.push(line);
+      for (const col of lineColumns) {
+        const region = row[col.key]?.region;
+        if (region) regions[lineTarget(compactIndex, col.key)] = region;
+      }
+    }
     const gt: TrainingGroundTruth = { fields, validations: [] };
-    if (nonEmptyLines.length > 0) gt.lines = nonEmptyLines;
+    if (lines.length > 0) gt.lines = lines;
     if (Object.keys(regions).length > 0) gt.regions = regions;
     return gt;
   };

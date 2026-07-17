@@ -165,4 +165,105 @@ describe("Training annotation (draw + label incl. line items)", () => {
     expect(gt.lines?.[0]?.sku).toBe("PO-4711");
     expect(gt.regions["lines.0.sku"].page_number).toBe(1);
   });
+
+  it("keys a line region by the COMPACTED index when an earlier row is empty", async () => {
+    const captured: { body?: { ground_truth: Record<string, unknown> } } = {};
+    setup(captured);
+    const user = userEvent.setup();
+    await renderApp(ROUTE);
+    await screen.findByRole("button", { name: /PO number/ });
+
+    // Two rows; leave row 0 empty and label only row 1's SKU.
+    await user.click(screen.getByRole("button", { name: "Add row" }));
+    await user.click(screen.getByRole("button", { name: "Add row" }));
+    const skuSelectors = screen.getAllByRole("button", { name: /SKU/ });
+    expect(skuSelectors).toHaveLength(2);
+    await user.click(skuSelectors[1]);
+    expect(screen.getByTestId("draw-target")).toHaveTextContent("lines.1.sku");
+    await user.click(screen.getByRole("button", { name: "simulate draw" }));
+
+    await user.click(screen.getByRole("button", { name: "Save labels" }));
+    await waitFor(() => expect(captured.body).toBeTruthy());
+    const gt = captured.body!.ground_truth as {
+      lines?: Record<string, string | null>[];
+      regions: Record<string, { page_number: number }>;
+    };
+    // The empty row 0 is dropped; the surviving line is at index 0 and its
+    // region is keyed to match — not the pre-compaction "lines.1.sku".
+    expect(gt.lines).toHaveLength(1);
+    expect(gt.lines?.[0]?.sku).toBe("PO-4711");
+    expect(gt.regions["lines.0.sku"].page_number).toBe(1);
+    expect(gt.regions["lines.1.sku"]).toBeUndefined();
+  });
+
+  it("seeds existing line items for a table-only schema (no header fields)", async () => {
+    // A packing-list stream: the published schema has ONLY a line-item table.
+    const tableOnly = {
+      versions: [
+        {
+          id: "sv-1",
+          version_number: 1,
+          state: "published",
+          version: 1,
+          change_summary: null,
+          definition: {
+            fields: [
+              {
+                key: "lines",
+                label: "Lines",
+                type: "table",
+                columns: [{ key: "sku", label: "SKU", type: "text" }],
+              },
+            ],
+          },
+        },
+      ],
+      published_json_schema: { type: "object" },
+    };
+    server.use(
+      http.get("/api/orgs/:slug/processes/:processSlug/schema", () => HttpResponse.json(tableOnly)),
+      http.get("/api/orgs/:slug/streams/:stream/training-sets/:ts", () =>
+        HttpResponse.json({
+          id: "ts-1",
+          slug: "my-set",
+          name: "My set",
+          description: null,
+          stream_id: "41111111-1111-4111-8111-111111111111",
+          privacy_classification: "customer_confidential",
+          working_draft_version_id: "v-1",
+          published_version_id: null,
+          document_count: 1,
+          versions: [
+            {
+              id: "v-1",
+              version_number: 1,
+              state: "draft",
+              published_at: null,
+              counts: { train: 1, validation: 0, test: 0, total: 1 },
+            },
+          ],
+          documents: [
+            {
+              id: "gd-1",
+              dataset_version_id: "v-1",
+              source_document_id: "doc-1",
+              document_sha256: "a".repeat(64),
+              split: "train",
+              expected_class: null,
+              ground_truth: { fields: {}, lines: [{ sku: "WIDGET-9" }] },
+            },
+          ],
+        }),
+      ),
+    );
+    await renderApp(ROUTE);
+    // The existing line item is seeded into the editor rather than being lost.
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByPlaceholderText("value")
+          .some((i) => (i as HTMLInputElement).value === "WIDGET-9"),
+      ).toBe(true),
+    );
+  });
 });

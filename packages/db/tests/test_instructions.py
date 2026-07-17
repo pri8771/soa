@@ -107,9 +107,15 @@ class TestContentValidation:
             )
 
     def test_example_field_values_must_be_strings(self) -> None:
-        with pytest.raises(InstructionValidationError, match="fields"):
+        with pytest.raises(InstructionValidationError, match="must be a string or null"):
             validate_instruction_content(
                 {"instructions": "ok", "examples": [{"fields": {"po_number": 7}}]}
+            )
+
+    def test_example_values_are_length_bounded(self) -> None:
+        with pytest.raises(InstructionValidationError, match="exceeds"):
+            validate_instruction_content(
+                {"instructions": "ok", "examples": [{"fields": {"po_number": "x" * 501}}]}
             )
 
 

@@ -230,6 +230,11 @@ async def execute_evaluation(
     documents = await GoldDocumentRepository(session, context).list_for_version(
         run.dataset_version_id
     )
+    # Score only the run's allow-listed splits (the held-out slice for training
+    # evaluations); NULL scores every document.
+    if run.scored_splits is not None:
+        allowed = set(run.scored_splits)
+        documents = [document for document in documents if document.split in allowed]
     eval_documents = [
         EvalDocument(
             document_sha256=document.document_sha256,

@@ -338,9 +338,95 @@ async def test_evaluate_training_set_scores_against_its_published_slice(
     body = evaluated.json()
     assert body["dataset_version_id"] == published_version_id
     assert "by_field" in body and "field_diffs" in body
+    # Only the held-out splits are scored — never the memorised train split.
+    assert body["scored_splits"] == ["validation", "test"]
 
     listed = client.get(f"{base}/uk/evaluations", headers=ADMIN).json()["items"]
     assert any(run["id"] == body["id"] for run in listed)
+
+
+async def test_evaluate_requires_a_held_out_sample(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    doc_id = await _make_document(db, org_id, filename="s.pdf", sha="f" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    # Only a TRAIN sample — nothing held out to score without contamination.
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "train",
+            "ground_truth": {"fields": {"po_number": "PO-1"}},
+        },
+    )
+    assert client.post(f"{base}/uk/publish", headers=ADMIN).status_code == 200
+    refused = client.post(
+        f"{base}/uk/evaluate",
+        headers=ADMIN,
+        json={"execution_mode": "simulation", "predictions": {"f" * 64: {"po_number": "PO-1"}}},
+    )
+    assert refused.status_code == 409
+    assert "validation or test" in refused.text
+
+
+async def test_evaluate_simulation_rejects_external_provider(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    doc_id = await _make_document(db, org_id, filename="s.pdf", sha="1" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "validation",
+            "ground_truth": {"fields": {"po_number": "PO-1"}},
+        },
+    )
+    client.post(f"{base}/uk/publish", headers=ADMIN)
+    # A simulation cannot consent to external execution — rejected at validation
+    # (422), not a 500 from deep in the service.
+    rejected = client.post(
+        f"{base}/uk/evaluate",
+        headers=ADMIN,
+        json={
+            "execution_mode": "simulation",
+            "predictions": {"1" * 64: {"po_number": "PO-1"}},
+            "allow_external_provider": True,
+        },
+    )
+    assert rejected.status_code == 422
+
+
+async def test_line_item_only_sample_saves(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    doc_id = await _make_document(db, org_id, filename="packing.pdf", sha="2" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    # A packing-list sample labelled with only line items (no header field).
+    saved = client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "train",
+            "ground_truth": {"fields": {}, "lines": [{"sku": "WIDGET-9", "quantity": "5"}]},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["ground_truth"]["lines"][0]["sku"] == "WIDGET-9"
 
 
 async def test_evaluate_requires_a_published_set(

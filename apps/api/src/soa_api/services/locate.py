@@ -49,8 +49,8 @@ def text_in_region(geometry: dict[str, Any], page_number: int, polygon: Polygon)
     then left-to-right) joined by single spaces. Returns "" when the box
     encloses no positioned text — the labeller then types the value by hand,
     never a fabricated one."""
-    xs = [point[0] for point in polygon]
-    ys = [point[1] for point in polygon]
+    xs = [point[0] for point in polygon if isinstance(point, (list, tuple)) and len(point) == 2]
+    ys = [point[1] for point in polygon if isinstance(point, (list, tuple)) and len(point) == 2]
     if not xs or not ys:
         return ""
     min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)

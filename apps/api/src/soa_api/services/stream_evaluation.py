@@ -45,6 +45,7 @@ async def create_stream_evaluation(
     baseline_run_id: uuid.UUID | None,
     allow_external_provider: bool,
     actor_id: str,
+    scored_splits: list[str] | None = None,
 ) -> EvaluationRun:
     """Create and enqueue an evaluation of ``candidate`` against ``dataset``.
 
@@ -105,8 +106,15 @@ async def create_stream_evaluation(
     execution_fingerprint: str | None = None
     if execution_mode is EvaluationExecutionMode.SERVER:
         documents = await GoldDocumentRepository(session, context).list_for_version(dataset.id)
+        # Only the scored splits need a verifiable source document + artifact —
+        # the worker will score exactly this filtered set.
+        if scored_splits is not None:
+            allowed = set(scored_splits)
+            documents = [document for document in documents if document.split in allowed]
         if not documents:
-            raise HTTPException(status_code=409, detail="The immutable dataset is empty.")
+            raise HTTPException(
+                status_code=409, detail="No scored documents in this dataset/split selection."
+            )
         for gold in documents:
             if gold.source_document_id is None:
                 raise HTTPException(
@@ -166,6 +174,7 @@ async def create_stream_evaluation(
         runtime_pins=runtime_pins,
         execution_fingerprint=execution_fingerprint,
         allow_external_provider=allow_external_provider,
+        scored_splits=scored_splits,
     )
     await enqueue_job(
         session,

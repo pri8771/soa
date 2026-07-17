@@ -10,11 +10,16 @@ Everything here is a pure transform over already-loaded data so it is easy to
 test and deterministic: same published set → same exemplars → same prompt.
 """
 
+import json
 import re
 from typing import Any
 
 from soa_db.gold_datasets import GoldDocument
-from soa_db.instructions import MAX_EXAMPLE_TEXT_CHARS, MAX_EXAMPLES
+from soa_db.instructions import (
+    MAX_EXAMPLE_TEXT_CHARS,
+    MAX_EXAMPLE_VALUE_CHARS,
+    MAX_EXAMPLES,
+)
 
 #: A stream may have no authored instructions yet; few-shot still needs a
 #: non-empty preamble to attach to (the content shape requires one).
@@ -23,7 +28,13 @@ DEFAULT_INSTRUCTIONS = (
     "verbatim from the text."
 )
 
-_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+#: ``\S*`` (not ``\S+``) so a *bare* scheme fragment like ``https://`` — which
+#: a line-wrapped URL leaves behind once the host lands on the next span — is
+#: also removed. The worker refuses ANY ``http://``/``https://`` substring in
+#: instruction content, so scrubbing must be at least as aggressive or a
+#: surviving fragment breaks extraction for the whole stream.
+_URL = re.compile(r"https?://\S*", re.IGNORECASE)
+_SCHEMES = ("http://", "https://")
 
 
 def strip_urls(text: str) -> str:
@@ -34,7 +45,10 @@ def strip_urls(text: str) -> str:
 
 
 def _url_free(value: str) -> bool:
-    return _URL.search(value) is None
+    # The EXACT check the worker's request builder applies, so anything this
+    # accepts is guaranteed not to trip _validate_instructions at extraction.
+    lowered = value.lower()
+    return all(scheme not in lowered for scheme in _SCHEMES)
 
 
 def document_text_excerpt(geometry: dict[str, Any], max_chars: int) -> str:
@@ -78,12 +92,17 @@ def build_examples(
             break
         ground_truth = gold.ground_truth or {}
         raw_fields = ground_truth.get("fields", {})
-        # A URL-valued field would make the request builder refuse the whole
-        # instruction content, so such values are dropped from the exemplar.
+        # A URL anywhere — a value OR a field key — would make the request
+        # builder refuse the whole instruction content, so such entries are
+        # dropped from the exemplar.
         fields = {
             str(key): value
             for key, value in raw_fields.items()
-            if isinstance(value, str) and value.strip() and _url_free(value)
+            if isinstance(value, str)
+            and value.strip()
+            and len(value) <= MAX_EXAMPLE_VALUE_CHARS
+            and _url_free(value)
+            and _url_free(str(key))
         }
         text = ""
         if gold.source_document_id is not None:
@@ -101,12 +120,25 @@ def build_examples(
                 {
                     str(k): v
                     for k, v in row.items()
-                    if v is None or (isinstance(v, str) and _url_free(v))
+                    if _url_free(str(k))
+                    and (
+                        v is None
+                        or (
+                            isinstance(v, str)
+                            and len(v) <= MAX_EXAMPLE_VALUE_CHARS
+                            and _url_free(v)
+                        )
+                    )
                 }
                 for row in raw_lines
                 if isinstance(row, dict) and any(v for v in row.values())
             ]
             if rows:
                 example["lines"] = rows
+        # Final belt-and-suspenders guard: drop any exemplar that would still
+        # trip the worker's substring URL check, so compiled examples can never
+        # cause a stream-wide extraction outage.
+        if not _url_free(json.dumps(example, ensure_ascii=False)):
+            continue
         examples.append(example)
     return examples

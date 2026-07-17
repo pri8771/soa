@@ -46,10 +46,28 @@ MAX_FIELD_GUIDANCE_ENTRIES = 200
 #: text length keep the prompt from ballooning and stay reproducible.
 MAX_EXAMPLES = 8
 MAX_EXAMPLE_TEXT_CHARS = 4_000
+#: Every field/line value in an exemplar is also injected verbatim into each
+#: request, so they are bounded too — a labeller pasting a huge value into a
+#: sample field must not be able to balloon the prompt past the model's limit.
+MAX_EXAMPLE_VALUE_CHARS = 500
+MAX_EXAMPLE_ENTRIES = 200
 
 
 class InstructionValidationError(ValueError):
     pass
+
+
+def _validate_example_value(index: int, key: object, value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise InstructionValidationError(
+            f"examples[{index}] value for {key!r} must be a string or null"
+        )
+    if len(value) > MAX_EXAMPLE_VALUE_CHARS:
+        raise InstructionValidationError(
+            f"examples[{index}] value for {key!r} exceeds {MAX_EXAMPLE_VALUE_CHARS} characters"
+        )
 
 
 def _validate_examples(examples: Any) -> None:
@@ -72,21 +90,26 @@ def _validate_examples(examples: Any) -> None:
         fields = example.get("fields", {})
         if not isinstance(fields, dict):
             raise InstructionValidationError(f"examples[{index}].fields must be an object")
+        if len(fields) > MAX_EXAMPLE_ENTRIES:
+            raise InstructionValidationError(
+                f"examples[{index}].fields exceeds {MAX_EXAMPLE_ENTRIES} entries"
+            )
         for key, value in fields.items():
-            if value is not None and not isinstance(value, str):
-                raise InstructionValidationError(
-                    f"examples[{index}].fields[{key!r}] must be a string or null"
-                )
+            _validate_example_value(index, key, value)
         lines = example.get("lines", [])
         if not isinstance(lines, list):
             raise InstructionValidationError(f"examples[{index}].lines must be a list of rows")
+        if len(lines) > MAX_EXAMPLE_ENTRIES:
+            raise InstructionValidationError(
+                f"examples[{index}].lines exceeds {MAX_EXAMPLE_ENTRIES} rows"
+            )
         for row in lines:
-            if not isinstance(row, dict) or any(
-                v is not None and not isinstance(v, str) for v in row.values()
-            ):
+            if not isinstance(row, dict):
                 raise InstructionValidationError(
                     f"examples[{index}].lines rows must map columns to strings or null"
                 )
+            for key, value in row.items():
+                _validate_example_value(index, key, value)
         if not fields and not text.strip():
             raise InstructionValidationError(
                 f"examples[{index}] needs expected fields or example text"
@@ -316,7 +339,9 @@ async def published_instruction(
 
 __all__ = [
     "MAX_EXAMPLES",
+    "MAX_EXAMPLE_ENTRIES",
     "MAX_EXAMPLE_TEXT_CHARS",
+    "MAX_EXAMPLE_VALUE_CHARS",
     "MAX_FIELD_GUIDANCE_ENTRIES",
     "MAX_INSTRUCTIONS_CHARS",
     "InstructionValidationError",

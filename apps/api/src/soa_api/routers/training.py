@@ -72,6 +72,9 @@ from soa_db.versioning import InvalidVersionStateError, VersionState
 router = APIRouter(tags=["training"])
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
+#: The splits a training evaluation scores — never `train`, whose documents are
+#: compiled into the live few-shot examples (scoring them measures memorisation).
+HELD_OUT_SPLITS = ("validation", "test")
 
 
 # --------------------------------------------------------------------------- #
@@ -476,7 +479,12 @@ class CompiledExamplesResponse(BaseModel):
 async def compile_training_examples(
     stream_slug: str,
     ts_slug: str,
-    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.manage"))],
+    # Compiling WRITES instruction-version content, which is sensitive config
+    # behind its own grant, so it requires instructions.manage (not just
+    # streams.manage) — the same separation of duties the instructions router
+    # enforces. streams.manage is additionally required for the training-set
+    # context it reads from.
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("instructions.manage"))],
     session: DbSession,
     store: ObjectStoreDep,
 ) -> CompiledExamplesResponse:
@@ -490,6 +498,11 @@ async def compile_training_examples(
     live (the existing instructions publish flow), so extraction stays pinned
     and attributable.
     """
+    if "streams.manage" not in authorized.permissions:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Compiling few-shot examples also requires the streams.manage permission.",
+        )
     context = authorized.org_context
     stream = await _load_stream(session, authorized, stream_slug)
     dataset = await _load_training_set(session, authorized, stream, ts_slug)
@@ -615,8 +628,11 @@ class TrainingEvaluateRequest(BaseModel):
         if self.execution_mode is EvaluationExecutionMode.SERVER:
             if self.predictions:
                 raise ValueError("server evaluations cannot accept caller predictions")
-        elif not self.predictions:
-            raise ValueError("simulation evaluations require caller predictions")
+        else:
+            if not self.predictions:
+                raise ValueError("simulation evaluations require caller predictions")
+            if self.allow_external_provider:
+                raise ValueError("simulation evaluations do not execute an external provider")
         return self
 
 
@@ -632,6 +648,7 @@ def _evaluation_view(run: EvaluationRun) -> dict[str, Any]:
         "baseline_run_id": str(run.baseline_run_id) if run.baseline_run_id else None,
         "execution_mode": run.execution_mode,
         "state": run.state,
+        "scored_splits": run.scored_splits,
         "promotion_eligible": gate.get("promotion_eligible") is True,
         "by_field": report.get("by_field", {}),
         "by_cohort": report.get("by_cohort", {}),
@@ -671,6 +688,16 @@ async def evaluate_training_set(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Publish the training set before evaluating against it."
         )
+    # Score only the held-out slice: the train split is compiled verbatim into
+    # the live few-shot examples, so re-scoring it would just measure
+    # memorisation and contaminate the gate.
+    documents = await GoldDocumentRepository(session, context).list_for_version(published.id)
+    if not any(document.split in HELD_OUT_SPLITS for document in documents):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Label at least one validation or test sample — the train split is used for "
+            "few-shot and cannot score itself.",
+        )
     candidate_id = body.stream_version_id or stream.active_version_id
     if candidate_id is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "The stream has no version to evaluate.")
@@ -683,6 +710,7 @@ async def evaluate_training_set(
         stream=stream,
         candidate=candidate,
         dataset=published,
+        scored_splits=list(HELD_OUT_SPLITS),
         execution_mode=body.execution_mode,
         predictions=body.predictions,
         baseline_run_id=body.baseline_run_id,

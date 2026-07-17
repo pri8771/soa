@@ -37,5 +37,5 @@ def test_upgrade_downgrade_upgrade_cycle(alembic_config: tuple[Config, str]) -> 
         from sqlalchemy import text
 
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0054"
+    assert version == "0055"
     engine.dispose()

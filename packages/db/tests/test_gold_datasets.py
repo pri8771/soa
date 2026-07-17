@@ -104,9 +104,13 @@ class TestPrivacyClassification:
 
 
 class TestGroundTruthShape:
-    def test_fields_are_required(self) -> None:
-        with pytest.raises(GoldDatasetError, match="fields"):
-            validate_ground_truth({"lines": []})
+    def test_fields_or_lines_are_required(self) -> None:
+        with pytest.raises(GoldDatasetError, match="at least one field or line item"):
+            validate_ground_truth({"fields": {}, "lines": []})
+
+    def test_line_items_alone_are_a_valid_sample(self) -> None:
+        # A packing-list style sample labelled with only line items is valid.
+        validate_ground_truth({"fields": {}, "lines": [{"sku": "A", "qty": "2"}]})
 
     def test_field_values_are_strings_or_null(self) -> None:
         with pytest.raises(GoldDatasetError, match="po_number"):

@@ -64,3 +64,31 @@ def test_build_examples_skips_empty_and_bounds_count() -> None:
     assert build_examples(empties, {}) == []
     many = [_gold({"fields": {"po_number": f"PO-{i}"}}, None) for i in range(20)]
     assert len(build_examples(many, {}, max_examples=4)) == 4
+
+
+def test_strip_urls_removes_bare_scheme_fragments() -> None:
+    # A line-wrapped URL leaves a bare scheme once the host lands elsewhere.
+    assert strip_urls("see https:// then host.example later") == "see  then host.example later"
+    assert strip_urls("trailing http://") == "trailing"
+
+
+def test_build_examples_drops_url_in_key_and_bare_scheme_values() -> None:
+    doc_id = uuid.uuid4()
+    gold = _gold(
+        {"fields": {"po_number": "PO-1", "http://x": "y", "link": "http://"}},
+        doc_id,
+    )
+    examples = build_examples([gold], {doc_id: ""})
+    assert examples == [{"fields": {"po_number": "PO-1"}}]
+
+
+def test_build_examples_final_guard_drops_residual_scheme() -> None:
+    # Even if a scheme sneaks through the text (excerpt already scrubbed here),
+    # the compiled example must never carry a scheme the worker would refuse.
+    doc_id = uuid.uuid4()
+    gold = _gold({"fields": {"po_number": "PO-1"}}, doc_id)
+    examples = build_examples([gold], {doc_id: "clean text"})
+    import json as _json
+
+    assert "http://" not in _json.dumps(examples).lower()
+    assert "https://" not in _json.dumps(examples).lower()
