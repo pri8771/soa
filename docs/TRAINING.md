@@ -99,7 +99,9 @@ its expected `fields`/`lines` (an input→output pair, so the model learns the
 mapping instead of parroting values), and writes them into an instruction draft
 on the stream's active version (preserving any existing prompt text/guidance).
 Publishing that instruction draft (the normal instructions publish flow) makes
-the few-shot live.
+the few-shot live. Because it writes sensitive prompt config, compile requires
+**`instructions.manage`** (plus `streams.manage`), the same separation of duties
+the instructions router enforces.
 
 The request builder (`model_request_builder.py`) injects the exemplars as a
 `worked_examples` array in the **user** message — the data side of the
@@ -111,10 +113,17 @@ values are URL-scrubbed at compile time.
 ## Phase 3 — measure + gate
 
 A published training set **is** the immutable gold dataset the evaluation runner
-scores against; its `validation`/`test` split is the held-out cohort.
+scores against, but it scores **only the held-out (`validation`/`test`) split** —
+never `train`, whose documents were compiled verbatim into the live few-shot
+examples (scoring memorised documents would inflate the very metrics the gate
+reads). This is enforced by `evaluation_runs.scored_splits` (migration `0055`):
+the training evaluation sets it to the held-out splits, and the worker plus the
+server-mode preconditions score exactly that filtered set. **A training set
+therefore needs both a `train` split (for few-shot) and a `validation`/`test`
+split (for evaluation)** — evaluating a train-only set is refused.
 
 - `POST …/training-sets/{slug}/evaluate` scores a stream config (the active
-  version by default) against the set's published slice. Run it once for a
+  version by default) against the set's held-out slice. Run it once for a
   baseline, then on the trained candidate with `baseline_run_id` — the report
   carries per-field accuracy (`by_field`, `by_cohort`) and the gate carries the
   before/after `field_diffs`.
