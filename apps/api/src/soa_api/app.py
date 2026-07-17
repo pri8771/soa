@@ -17,6 +17,7 @@ from soa_api.routers import (
     artifacts,
     audit,
     catalogs,
+    classifiers,
     data_exports,
     deletions,
     documents,
@@ -338,6 +339,7 @@ def create_app(
     app.include_router(instructions.router)
     app.include_router(training.router)
     app.include_router(skills.router)
+    app.include_router(classifiers.router)
     app.include_router(integrations.router)
     app.include_router(exports.router)
     app.include_router(public_ingest.router)
