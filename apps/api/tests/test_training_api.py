@@ -305,3 +305,57 @@ async def test_compile_examples_requires_a_published_set(
     client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
     # A draft-only set has nothing published to learn from.
     assert client.post(f"{base}/uk/compile-examples", headers=ADMIN).status_code == 409
+
+
+async def test_evaluate_training_set_scores_against_its_published_slice(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    doc_id = await _make_document(db, org_id, filename="s.pdf", sha="e" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    # A held-out (validation) sample the trained config is scored against.
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "validation",
+            "ground_truth": {"fields": {"po_number": "PO-1"}},
+        },
+    )
+    assert client.post(f"{base}/uk/publish", headers=ADMIN).status_code == 200
+    published_version_id = client.get(f"{base}/uk", headers=ADMIN).json()["published_version_id"]
+
+    evaluated = client.post(
+        f"{base}/uk/evaluate",
+        headers=ADMIN,
+        json={"execution_mode": "simulation", "predictions": {"e" * 64: {"po_number": "PO-1"}}},
+    )
+    assert evaluated.status_code == 202, evaluated.text
+    body = evaluated.json()
+    assert body["dataset_version_id"] == published_version_id
+    assert "by_field" in body and "field_diffs" in body
+
+    listed = client.get(f"{base}/uk/evaluations", headers=ADMIN).json()["items"]
+    assert any(run["id"] == body["id"] for run in listed)
+
+
+async def test_evaluate_requires_a_published_set(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await _seed_stream(harness)
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    assert (
+        client.post(
+            f"{base}/uk/evaluate",
+            headers=ADMIN,
+            json={"execution_mode": "simulation", "predictions": {"x": {"a": "b"}}},
+        ).status_code
+        == 409
+    )

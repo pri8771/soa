@@ -23,12 +23,13 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, ObjectStoreDep
 from soa_api.domain.streams import Stream, StreamRepository, StreamVersionRepository
+from soa_api.services.stream_evaluation import create_stream_evaluation
 from soa_api.services.training_examples import (
     DEFAULT_INSTRUCTIONS,
     build_examples,
@@ -36,6 +37,11 @@ from soa_api.services.training_examples import (
 )
 from soa_db.artifacts import ArtifactKind, ArtifactRepository
 from soa_db.documents import Document, DocumentRepository
+from soa_db.evaluation_runs import (
+    EvaluationExecutionMode,
+    EvaluationRun,
+    EvaluationRunRepository,
+)
 from soa_db.gold_datasets import (
     SPLITS,
     GoldDataset,
@@ -587,6 +593,123 @@ async def compile_training_examples(
         reference=draft.reference,
         example_count=len(examples),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Measuring the lift (Phase 3): evaluate the trained config on the held-out slice
+# --------------------------------------------------------------------------- #
+
+
+class TrainingEvaluateRequest(BaseModel):
+    execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SERVER
+    #: Candidate stream version to score; defaults to the stream's active one.
+    stream_version_id: uuid.UUID | None = None
+    #: A prior run (typically the pre-training baseline) to diff against, so the
+    #: report carries per-field before/after and the gate can flag regressions.
+    baseline_run_id: uuid.UUID | None = None
+    allow_external_provider: bool = False
+    predictions: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_mode(self) -> "TrainingEvaluateRequest":
+        if self.execution_mode is EvaluationExecutionMode.SERVER:
+            if self.predictions:
+                raise ValueError("server evaluations cannot accept caller predictions")
+        elif not self.predictions:
+            raise ValueError("simulation evaluations require caller predictions")
+        return self
+
+
+def _evaluation_view(run: EvaluationRun) -> dict[str, Any]:
+    """The training-relevant slice of an evaluation run: state, the per-field
+    report, and the gate verdict (which carries the before/after field diffs)."""
+    gate = run.gate_result or {}
+    report = run.report or {}
+    return {
+        "id": str(run.id),
+        "dataset_version_id": str(run.dataset_version_id),
+        "stream_version_id": str(run.stream_version_id) if run.stream_version_id else None,
+        "baseline_run_id": str(run.baseline_run_id) if run.baseline_run_id else None,
+        "execution_mode": run.execution_mode,
+        "state": run.state,
+        "promotion_eligible": gate.get("promotion_eligible") is True,
+        "by_field": report.get("by_field", {}),
+        "by_cohort": report.get("by_cohort", {}),
+        "field_diffs": gate.get("field_diffs", []),
+        "findings": gate.get("findings", []),
+        "safe_error": run.safe_error,
+        "created_at": run.created_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+@router.post(
+    "/orgs/{organization_slug}/streams/{stream_slug}/training-sets/{ts_slug}/evaluate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def evaluate_training_set(
+    stream_slug: str,
+    ts_slug: str,
+    body: TrainingEvaluateRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.manage"))],
+    session: DbSession,
+) -> dict[str, Any]:
+    """Score a stream configuration against this training set's held-out slice.
+
+    The published training set IS the immutable gold dataset the evaluation
+    runs against (its validation/test split is the held-out cohort). Run once
+    on the current config for a baseline, then again on the trained candidate
+    with ``baseline_run_id`` set — the gate then reports per-field before/after
+    and blocks a regressing config from being promoted live.
+    """
+    context = authorized.org_context
+    stream = await _load_stream(session, authorized, stream_slug)
+    dataset = await _load_training_set(session, authorized, stream, ts_slug)
+    versions = await _versions(session, authorized, dataset)
+    published = _published(versions)
+    if published is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Publish the training set before evaluating against it."
+        )
+    candidate_id = body.stream_version_id or stream.active_version_id
+    if candidate_id is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The stream has no version to evaluate.")
+    candidate = await StreamVersionRepository(session, context).get(candidate_id)
+    if candidate is None or candidate.stream_id != stream.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate stream version not found.")
+    run = await create_stream_evaluation(
+        session,
+        context,
+        stream=stream,
+        candidate=candidate,
+        dataset=published,
+        execution_mode=body.execution_mode,
+        predictions=body.predictions,
+        baseline_run_id=body.baseline_run_id,
+        allow_external_provider=body.allow_external_provider,
+        actor_id=_actor(authorized),
+    )
+    return _evaluation_view(run)
+
+
+@router.get("/orgs/{organization_slug}/streams/{stream_slug}/training-sets/{ts_slug}/evaluations")
+async def list_training_evaluations(
+    stream_slug: str,
+    ts_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.read"))],
+    session: DbSession,
+) -> dict[str, list[dict[str, Any]]]:
+    """Evaluation runs scored against this training set's versions — the
+    per-field accuracy (and before/after diffs) the training produced."""
+    stream = await _load_stream(session, authorized, stream_slug)
+    dataset = await _load_training_set(session, authorized, stream, ts_slug)
+    versions = await _versions(session, authorized, dataset)
+    version_ids = {version.id for version in versions}
+    runs = await EvaluationRunRepository(session, authorized.org_context).latest_for_stream(
+        stream.id
+    )
+    matching = [run for run in runs if run.dataset_version_id in version_ids]
+    return {"items": [_evaluation_view(run) for run in matching]}
 
 
 # --------------------------------------------------------------------------- #
