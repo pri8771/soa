@@ -18,7 +18,6 @@ from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.artifacts import ArtifactKind, create_artifact
 from soa_db.audit import AuditEvent
 from soa_db.classifiers import create_classifier_draft, publish_classifier_draft
-from soa_db.instructions import InstructionVersion  # noqa: F401 — registers the table
 from soa_db.documents import (
     DocumentRepository,
     DocumentState,
@@ -26,6 +25,7 @@ from soa_db.documents import (
     create_document,
     transition_document,
 )
+from soa_db.instructions import InstructionVersion  # noqa: F401 — registers the table
 from soa_db.jobs import Job, JobStatus
 from soa_db.repository import OrganizationContext
 from soa_db.runs import ProcessingRunRepository
