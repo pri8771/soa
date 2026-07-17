@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soa_db import DatabaseSessions
+from soa_db.audit import ActorType, record_audit_event
 from soa_db.documents import Document, DocumentRepository, DocumentState, transition_document
 from soa_db.jobs import enqueue_job, retry_backoff
 from soa_db.repository import OrganizationContext
@@ -63,6 +64,7 @@ STAGE_SEQUENCE: tuple[str, ...] = (
 )
 
 STAGE_JOB_TYPE = "document.stage"
+PREPROCESS_JOB_TYPE = "document.preprocess"
 ACTOR = "system:orchestrator"
 
 
@@ -73,6 +75,9 @@ class StageOutcome:
     provider: str | None = None
     #: Only the final stage decides routing: approved or review_required.
     route: str | None = None
+    #: Classify-stage re-route: the document belongs to a different skill.
+    #: ``{"target_stream_id", "label", "matched_signals", "classifier_reference"}``
+    reroute: dict[str, Any] | None = None
 
 
 class StageExecutionError(Exception):
@@ -253,6 +258,9 @@ class Orchestrator:
                 cost_cents=outcome.cost_cents,
                 output_summary=outcome.output_summary,
             )
+            if outcome.reroute is not None:
+                await self._reroute(session, context, run, document, outcome.reroute)
+                return
             await self._advance(session, context, run, document, stage, route=outcome.route)
 
     # -- helpers ---------------------------------------------------------------
@@ -285,6 +293,99 @@ class Orchestrator:
                 actor_id=ACTOR,
             )
         await finish_run(session, context, run=run, state=RunState.SUCCEEDED, actor_id=ACTOR)
+
+    async def _reroute(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        decision: Mapping[str, Any],
+    ) -> None:
+        """Classify-stage routing: hand the document to its target skill.
+
+        The routing run closes (succeeded — its job was the decision), the
+        document re-queues under the TARGET stream, and a fresh preprocess
+        job starts a new run against the target's own immutable pins. The
+        decision is audited with the exact classifier version."""
+        from soa_worker.run_config import RunConfigError, resolve_stream_pins
+
+        target_stream_id = uuid.UUID(str(decision["target_stream_id"]))
+        try:
+            pins = await resolve_stream_pins(session, context, stream_id=target_stream_id)
+        except RunConfigError as error:
+            # Fail-closed: an unroutable target is a terminal, human-visible
+            # condition — never silently continue under the intake stream.
+            await self._fail_document(
+                session,
+                context,
+                run,
+                document,
+                reason=f"routing target unavailable: {error}",
+            )
+            return
+        source_stream_id = document.stream_id
+        document.stream_id = target_stream_id
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.QUEUED,
+            reason=f"routed to skill by {decision.get('classifier_reference', 'classifier')}",
+            actor_id=ACTOR,
+        )
+        await finish_run(session, context, run=run, state=RunState.SUCCEEDED, actor_id=ACTOR)
+        await record_audit_event(
+            session,
+            actor_type=ActorType.SYSTEM,
+            actor_id=ACTOR,
+            action="document.routed",
+            target_type="document",
+            target_id=str(document.id),
+            organization_id=context.organization_id,
+            summary={
+                "from_stream_id": str(source_stream_id),
+                "to_stream_id": str(target_stream_id),
+                "label": decision.get("label"),
+                "matched_signals": decision.get("matched_signals"),
+                "classifier_reference": decision.get("classifier_reference"),
+                "run_id": str(run.id),
+            },
+        )
+        await enqueue_job(
+            session,
+            job_type=PREPROCESS_JOB_TYPE,
+            payload={
+                "document_id": str(document.id),
+                "stream_id": str(target_stream_id),
+                "organization_id": str(context.organization_id),
+                **pins,
+            },
+            organization_id=context.organization_id,
+            # Distinct from the intake enqueue so routing is never swallowed
+            # by the original preprocess dedupe key.
+            dedupe_key=f"document.preprocess:{document.id}:routed:{run.id}",
+            priority=document.priority,
+        )
+
+    async def _fail_document(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        run: ProcessingRun,
+        document: Document,
+        *,
+        reason: str,
+    ) -> None:
+        await transition_document(
+            session,
+            context,
+            document=document,
+            to_state=DocumentState.FAILED_TERMINAL,
+            reason=reason[:500],
+            actor_id=ACTOR,
+        )
+        await finish_run(session, context, run=run, state=RunState.FAILED, actor_id=ACTOR)
 
     async def _enqueue_stage(
         self,

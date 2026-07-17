@@ -127,6 +127,124 @@ def execution_fingerprint(run: ProcessingRun) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+async def resolve_stream_pins(
+    session: AsyncSession,
+    context: OrganizationContext,
+    *,
+    stream_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Resolve the immutable runtime pins for a stream's ACTIVE version,
+    worker-side — the routing counterpart of the API's intake-time
+    ``resolve_runtime_pins``. Used when the classify stage re-routes a
+    document to its target skill and a fresh run must start under that
+    skill's pinned configuration. Fail-closed on anything mutable/missing.
+
+    Returns a ``document.preprocess`` payload fragment with the exact keys
+    ``handle_preprocess`` reads."""
+    stream_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT active_version_id FROM streams "
+                    "WHERE id = :stream_id AND organization_id = :organization_id"
+                ),
+                {
+                    "stream_id": _database_identifier(session, stream_id),
+                    "organization_id": _database_identifier(session, context.organization_id),
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if stream_row is None or not stream_row["active_version_id"]:
+        raise RunConfigError("the routing target stream has no active published version")
+    raw_version = stream_row["active_version_id"]
+    stream_version_id = (
+        raw_version if isinstance(raw_version, uuid.UUID) else uuid.UUID(str(raw_version))
+    )
+
+    version_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT resolved_snapshot, state FROM stream_versions "
+                    "WHERE id = :version_id AND organization_id = :organization_id"
+                ),
+                {
+                    "version_id": _database_identifier(session, stream_version_id),
+                    "organization_id": _database_identifier(session, context.organization_id),
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if version_row is None or version_row["state"] not in ("published", "superseded"):
+        raise RunConfigError("the routing target stream version is missing or mutable")
+    snapshot = _json_object(version_row["resolved_snapshot"])
+    fingerprint = snapshot.get("fingerprint")
+    if not isinstance(fingerprint, str) or snapshot_fingerprint(snapshot) != fingerprint:
+        raise RunConfigError("the routing target stream snapshot fingerprint is invalid")
+    config = snapshot.get("config")
+    if not isinstance(config, dict):
+        raise RunConfigError("the routing target stream snapshot has no config")
+
+    provider_policy_raw = config.get("provider_policy_version_id")
+    if not provider_policy_raw:
+        raise RunConfigError("the routing target stream has no provider policy pin")
+    provider_policy_id = uuid.UUID(str(provider_policy_raw))
+    provider_definition, _ = await _version_definition(
+        session,
+        context,
+        table="policy_versions",
+        version_id=provider_policy_id,
+        policy_type="provider",
+    )
+    credential_raw = provider_definition.get("credential_ref")
+    provider_credential_ref = str(credential_raw) if credential_raw else None
+
+    confidence_raw = config.get("confidence_policy_version_id")
+    confidence_policy_id = uuid.UUID(str(confidence_raw)) if confidence_raw else None
+
+    instruction_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id FROM instruction_versions "
+                    "WHERE stream_version_id = :stream_version_id "
+                    "AND organization_id = :organization_id AND state = 'published'"
+                ),
+                {
+                    "stream_version_id": _database_identifier(session, stream_version_id),
+                    "organization_id": _database_identifier(session, context.organization_id),
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    raw_instruction = instruction_row["id"] if instruction_row else None
+    instruction_version_id = (
+        raw_instruction
+        if isinstance(raw_instruction, uuid.UUID)
+        else (uuid.UUID(str(raw_instruction)) if raw_instruction else None)
+    )
+
+    material = {
+        "stream_version_id": str(stream_version_id),
+        "config_fingerprint": fingerprint,
+        "instruction_version_id": str(instruction_version_id) if instruction_version_id else None,
+        "confidence_policy_version_id": (
+            str(confidence_policy_id) if confidence_policy_id else None
+        ),
+        "provider_policy_version_id": str(provider_policy_id),
+        "provider_credential_ref": provider_credential_ref,
+    }
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
+    return {**material, "execution_fingerprint": hashlib.sha256(encoded.encode()).hexdigest()}
+
+
 def _json_object(value: object) -> dict[str, Any]:
     if isinstance(value, str):
         try:

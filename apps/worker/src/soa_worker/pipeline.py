@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from soa_db import commit_unit_of_work
 from soa_db.artifacts import ArtifactKind, ArtifactRepository, create_artifact
 from soa_db.catalog_business import merge_business_validation, validate_order_business_data
+from soa_db.classifiers import ClassifierVersionRepository, match_route
 from soa_db.documents import Document
 from soa_db.duplicate_policy import (
     DEFAULT_POLICY,
@@ -415,17 +416,93 @@ class _Pipeline:
                 "this deployment supports exactly one sales order per input",
                 retryable=False,
             )
-        return StageOutcome(
-            output_summary={
-                # The inbound customer document is a purchase order. The
-                # pipeline's output is an ERP sales order; conflating those
-                # two types makes audit timelines and later classifier
-                # training labels incorrect.
-                "document_type": "purchase_order",
-                "method": "input_contract",
-                "input_contract": "single_sales_order",
-            }
+        base_summary = {
+            # The inbound customer document is a purchase order. The
+            # pipeline's output is an ERP sales order; conflating those
+            # two types makes audit timelines and later classifier
+            # training labels incorrect.
+            "document_type": "purchase_order",
+            "method": "input_contract",
+            "input_contract": "single_sales_order",
+        }
+        # Routing: a stream with a PUBLISHED classifier is an intake — the
+        # document is matched against the routing table on its own text and
+        # handed to the winning skill before extraction.
+        classifier = await ClassifierVersionRepository(session, context).get_published(
+            document.stream_id
         )
+        if classifier is None:
+            return StageOutcome(output_summary=base_summary)
+        excerpt = await self._classification_text(session, context, document)
+        decision = match_route(classifier.content, excerpt)
+        if decision is None:
+            # Fail-closed to a human: ambiguous or unmatched documents never
+            # guess a skill. The reason string is the "unrouted" marker the
+            # manual routing endpoint queries on.
+            raise StageExecutionError(
+                "unrouted: no classifier route matched this document — route it manually",
+                retryable=False,
+            )
+        summary = {
+            **base_summary,
+            "method": "classifier",
+            "classifier_reference": classifier.reference,
+            "label": decision["label"],
+            "matched_signals": decision["matched_signals"],
+        }
+        target = str(decision["target_stream_id"])
+        if target == str(document.stream_id):
+            return StageOutcome(output_summary={**summary, "routing": "stay"})
+        return StageOutcome(
+            output_summary={**summary, "routing": "reroute", "target_stream_id": target},
+            reroute={
+                "target_stream_id": target,
+                "label": decision["label"],
+                "matched_signals": decision["matched_signals"],
+                "classifier_reference": classifier.reference,
+            },
+        )
+
+    async def _classification_text(
+        self,
+        session: AsyncSession,
+        context: OrganizationContext,
+        document: Document,
+    ) -> str:
+        """Native text of the first two pages, for routing only.
+
+        Scanned or unreadable documents return "" — the decision then falls
+        to a human (unrouted) rather than a guess. Mirrors the extracting
+        stage's native path, without OCR."""
+        if document.content_type != "application/pdf":
+            return ""
+        artifacts = await ArtifactRepository(session, context).list_for_document(document.id)
+        original = next((a for a in artifacts if a.kind == ArtifactKind.ORIGINAL), None)
+        if original is None:
+            return ""
+        # Release SQL before storage + native parsing (same discipline as
+        # the extracting stage).
+        await session.commit()
+        try:
+            data = await self._store.get(original.object_key)
+        except ObjectNotFoundError:
+            raise StageExecutionError("the original object is missing", retryable=True) from None
+        native = create_provider(Capability.NATIVE_TEXT, "pdfium-native-text")
+        if not isinstance(native, NativeTextProvider):
+            return ""
+        try:
+            result = await native.read(
+                NativeTextRequest(
+                    document_id=document.id,
+                    document_sha256=document.content_sha256,
+                    content_type=document.content_type,
+                    data=data,
+                    max_pages=2,
+                )
+            )
+        except NativeTextError:
+            return ""
+        return "\n".join(span.text for page in result.pages for span in page.spans)
 
     async def splitting(
         self,
