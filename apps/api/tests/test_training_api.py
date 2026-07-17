@@ -445,3 +445,47 @@ async def test_evaluate_requires_a_published_set(
         ).status_code
         == 409
     )
+
+
+async def test_general_evaluations_endpoint_forces_held_out_for_a_training_set(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    """The held-out discipline attaches to the dataset: even the general
+    evaluations endpoint scores only validation/test when the dataset is a
+    stream-scoped training set — closing the train-contamination bypass."""
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    candidate = str(await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN))
+    doc_id = await _make_document(db, org_id, filename="s.pdf", sha="3" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "validation",
+            "ground_truth": {"fields": {"po_number": "PO-1"}},
+        },
+    )
+    client.post(f"{base}/uk/publish", headers=ADMIN)
+    dataset_version_id = client.get(f"{base}/uk", headers=ADMIN).json()["published_version_id"]
+
+    # Use the GENERAL evaluations endpoint (not the training one) with the
+    # training set's dataset version.
+    created = client.post(
+        "/orgs/northstar/streams/uk/evaluations",
+        headers=ADMIN,
+        json={
+            "execution_mode": "simulation",
+            "stream_version_id": candidate,
+            "dataset_version_id": dataset_version_id,
+            "predictions": {"3" * 64: {"po_number": "PO-1"}},
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    # The run is scoped to held-out splits despite the general endpoint not
+    # asking for it.
+    runs = client.get(f"{base}/uk/evaluations", headers=ADMIN).json()["items"]
+    assert runs and all(run["scored_splits"] == ["validation", "test"] for run in runs)

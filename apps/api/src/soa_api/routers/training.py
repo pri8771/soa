@@ -29,7 +29,7 @@ from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
 from soa_api.dependencies import DbSession, ObjectStoreDep
 from soa_api.domain.streams import Stream, StreamRepository, StreamVersionRepository
-from soa_api.services.stream_evaluation import create_stream_evaluation
+from soa_api.services.stream_evaluation import HELD_OUT_SPLITS, create_stream_evaluation
 from soa_api.services.training_examples import (
     DEFAULT_INSTRUCTIONS,
     build_examples,
@@ -72,9 +72,6 @@ from soa_db.versioning import InvalidVersionStateError, VersionState
 router = APIRouter(tags=["training"])
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
-#: The splits a training evaluation scores — never `train`, whose documents are
-#: compiled into the live few-shot examples (scoring them measures memorisation).
-HELD_OUT_SPLITS = ("validation", "test")
 
 
 # --------------------------------------------------------------------------- #

@@ -92,3 +92,15 @@ def test_build_examples_final_guard_drops_residual_scheme() -> None:
 
     assert "http://" not in _json.dumps(examples).lower()
     assert "https://" not in _json.dumps(examples).lower()
+
+
+def test_build_examples_caps_line_and_field_counts() -> None:
+    from soa_api.services.training_examples import MAX_EXAMPLE_ENTRIES
+
+    doc_id = uuid.uuid4()
+    many_lines = [{"sku": f"S-{i}"} for i in range(MAX_EXAMPLE_ENTRIES + 50)]
+    gold = _gold({"fields": {"po_number": "PO-1"}, "lines": many_lines}, doc_id)
+    examples = build_examples([gold], {doc_id: ""})
+    # Compile truncates to the same bound validate_instruction_content enforces,
+    # so an oversized-but-valid sample still compiles instead of 422-ing.
+    assert len(examples[0]["lines"]) == MAX_EXAMPLE_ENTRIES

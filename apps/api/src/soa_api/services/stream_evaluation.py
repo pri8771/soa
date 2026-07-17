@@ -28,9 +28,17 @@ from soa_db.evaluation_runs import (
     create_evaluation_run,
     is_promotable_server_evidence,
 )
-from soa_db.gold_datasets import GoldDatasetVersion, GoldDocumentRepository
+from soa_db.gold_datasets import (
+    GoldDatasetRepository,
+    GoldDatasetVersion,
+    GoldDocumentRepository,
+)
 from soa_db.jobs import enqueue_job
 from soa_db.repository import OrganizationContext
+
+#: The splits a training-set evaluation is allowed to score — never `train`,
+#: whose documents are compiled verbatim into the live few-shot examples.
+HELD_OUT_SPLITS = ("validation", "test")
 
 
 async def create_stream_evaluation(
@@ -55,6 +63,17 @@ async def create_stream_evaluation(
     — happens here and raises ``HTTPException`` so both callers surface the same
     409s.
     """
+    # The held-out discipline attaches to the DATASET, not the endpoint: any
+    # evaluation of a training set (a gold dataset scoped to a stream) scores
+    # only the held-out splits, even when reached via the general evaluations
+    # endpoint — otherwise the train documents memorised into the live few-shot
+    # examples would inflate promotable evidence. Org-level datasets (no stream)
+    # are unaffected.
+    if scored_splits is None:
+        parent = await GoldDatasetRepository(session, context).get(dataset.dataset_id)
+        if parent is not None and parent.stream_id is not None:
+            scored_splits = list(HELD_OUT_SPLITS)
+
     process = await ProcessRepository(session, context).get(stream.process_id)
     if process is None or process.active_version_id is None:
         raise HTTPException(status_code=409, detail="The process has no active version.")

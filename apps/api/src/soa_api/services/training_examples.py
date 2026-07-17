@@ -16,6 +16,7 @@ from typing import Any
 
 from soa_db.gold_datasets import GoldDocument
 from soa_db.instructions import (
+    MAX_EXAMPLE_ENTRIES,
     MAX_EXAMPLE_TEXT_CHARS,
     MAX_EXAMPLE_VALUE_CHARS,
     MAX_EXAMPLES,
@@ -97,7 +98,7 @@ def build_examples(
         # dropped from the exemplar.
         fields = {
             str(key): value
-            for key, value in raw_fields.items()
+            for key, value in list(raw_fields.items())[:MAX_EXAMPLE_ENTRIES]
             if isinstance(value, str)
             and value.strip()
             and len(value) <= MAX_EXAMPLE_VALUE_CHARS
@@ -133,8 +134,10 @@ def build_examples(
                 for row in raw_lines
                 if isinstance(row, dict) and any(v for v in row.values())
             ]
+            # Cap the row count to keep compile symmetric with the validation
+            # bound (an oversized sample must still compile, just truncated).
             if rows:
-                example["lines"] = rows
+                example["lines"] = rows[:MAX_EXAMPLE_ENTRIES]
         # Final belt-and-suspenders guard: drop any exemplar that would still
         # trip the worker's substring URL check, so compiled examples can never
         # cause a stream-wide extraction outage.
