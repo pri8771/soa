@@ -32,69 +32,69 @@ export interface ColorTokens {
 }
 
 /**
- * Light theme (UI_UX_BLUEPRINT §4.2). Three values deviate from the
- * blueprint's draft hex list to satisfy its own §8 contrast mandate
- * (verified by tokens.test.ts): text-muted #7B8799->#5B6880 and
- * border-strong #B8C0CC->#848FA1 (plus dark border-strong).
+ * Light theme — "Blueprint" direction (docs/UI_UX_BLUEPRINT §4.2 rev C).
+ * Gypsum canvas, white planes, graphite text/borders, cobalt accent;
+ * safety-derived critical. Every pair is verified AA by tokens.test.ts.
  */
 export const lightColors: ColorTokens = {
-  canvas: "#F6F7F9",
+  canvas: "#ECEDE8",
   surface: "#FFFFFF",
-  surfaceSubtle: "#F0F2F5",
+  surfaceSubtle: "#F2F3EE",
   surfaceRaised: "#FFFFFF",
-  border: "#D8DDE5",
-  borderStrong: "#848FA1",
-  textPrimary: "#172033",
-  textSecondary: "#556176",
-  textMuted: "#5B6880",
-  accent: "#3157D5",
-  accentHover: "#2849B8",
-  accentSoft: "#E9EEFF",
-  focus: "#4C74FF",
-  success: "#147A55",
-  successSoft: "#E6F6EF",
-  warning: "#9A6200",
-  warningSoft: "#FFF3D5",
-  critical: "#B4233A",
-  criticalSoft: "#FDE9ED",
-  info: "#166AA3",
-  infoSoft: "#E6F3FC",
+  border: "#C9CCC2",
+  borderStrong: "#1F2227",
+  textPrimary: "#1F2227",
+  textSecondary: "#40444B",
+  textMuted: "#585D66",
+  accent: "#2440C8",
+  accentHover: "#1B33A8",
+  accentSoft: "#E9ECFB",
+  focus: "#2440C8",
+  success: "#1E7A4D",
+  successSoft: "#E7F2EC",
+  warning: "#8A5A00",
+  warningSoft: "#F6EFDA",
+  critical: "#B93A16",
+  criticalSoft: "#FCEDE8",
+  info: "#1D5F8F",
+  infoSoft: "#E7F1F8",
 };
 
-/** Dark theme: neutral blue-black foundation, not inverted light values. */
+/** Dark theme: the same tokens re-grounded on graphite — washes rebuilt,
+ * cobalt lifted for contrast, never a naive inversion. */
 export const darkColors: ColorTokens = {
-  canvas: "#0F1420",
-  surface: "#161C2C",
-  surfaceSubtle: "#1D2436",
-  surfaceRaised: "#1B2233",
-  border: "#2A3349",
-  borderStrong: "#616D86",
-  textPrimary: "#E7EAF1",
-  textSecondary: "#AEB7C9",
-  textMuted: "#96A1B5",
-  accent: "#7C95FF",
-  accentHover: "#93A9FF",
-  accentSoft: "#202B4D",
-  focus: "#7C95FF",
-  success: "#45CB93",
-  successSoft: "#12291F",
-  warning: "#E8B84B",
-  warningSoft: "#2E2410",
-  critical: "#F0637A",
-  criticalSoft: "#341620",
-  info: "#5EC2F0",
-  infoSoft: "#142633",
+  canvas: "#191B1F",
+  surface: "#212429",
+  surfaceSubtle: "#26292F",
+  surfaceRaised: "#24272D",
+  border: "#3A3E46",
+  borderStrong: "#8A8F98",
+  textPrimary: "#E8E9E4",
+  textSecondary: "#BEC1BB",
+  textMuted: "#9A9FA8",
+  accent: "#8DA0FF",
+  accentHover: "#A3B2FF",
+  accentSoft: "#252B45",
+  focus: "#8DA0FF",
+  success: "#5BC08C",
+  successSoft: "#20352A",
+  warning: "#E0B054",
+  warningSoft: "#322A16",
+  critical: "#F07B57",
+  criticalSoft: "#3A2620",
+  info: "#6FB7E8",
+  infoSoft: "#1B2A36",
 };
 
 /** Type scale (UI_UX_BLUEPRINT §4.1): [fontSizePx, lineHeightPx, weight]. */
 export const typeScale = {
-  displaySm: { fontSize: 30, lineHeight: 38, weight: 650 },
-  headingXl: { fontSize: 24, lineHeight: 32, weight: 650 },
-  headingLg: { fontSize: 20, lineHeight: 28, weight: 650 },
-  headingMd: { fontSize: 16, lineHeight: 24, weight: 650 },
-  bodyLg: { fontSize: 15, lineHeight: 24, weight: 450 },
-  bodyMd: { fontSize: 14, lineHeight: 20, weight: 450 },
-  bodySm: { fontSize: 13, lineHeight: 18, weight: 450 },
+  displaySm: { fontSize: 30, lineHeight: 38, weight: 700 },
+  headingXl: { fontSize: 24, lineHeight: 32, weight: 700 },
+  headingLg: { fontSize: 20, lineHeight: 28, weight: 700 },
+  headingMd: { fontSize: 16, lineHeight: 24, weight: 700 },
+  bodyLg: { fontSize: 15, lineHeight: 24, weight: 400 },
+  bodyMd: { fontSize: 14, lineHeight: 20, weight: 400 },
+  bodySm: { fontSize: 13, lineHeight: 18, weight: 400 },
   label: { fontSize: 12, lineHeight: 16, weight: 600 },
   caption: { fontSize: 11, lineHeight: 16, weight: 500 },
 } as const;
@@ -102,8 +102,8 @@ export const typeScale = {
 /** Spacing scale in px (base unit 4). */
 export const spacing = [4, 8, 12, 16, 20, 24, 32, 40, 48, 64] as const;
 
-/** Radii (§4.4): controls / panels+menus / large dialogs. */
-export const radius = { control: 6, panel: 8, dialog: 12 } as const;
+/** Radii (§4.4 rev C): Blueprint is square — drawn planes, not pills. */
+export const radius = { control: 0, panel: 0, dialog: 0 } as const;
 
 /** Motion (§4.6) in milliseconds. */
 export const motion = { fast: 120, base: 160, panel: 220 } as const;
