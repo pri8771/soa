@@ -81,7 +81,9 @@ def test_text_in_region_excludes_spans_outside_the_box() -> None:
 
 def test_text_in_region_is_page_scoped() -> None:
     # The same coordinates on page 2 hold different text.
-    assert text_in_region(GEOMETRY, 2, [[490, 890], [640, 890], [640, 940], [490, 940]]) == "8077219"
+    assert (
+        text_in_region(GEOMETRY, 2, [[490, 890], [640, 890], [640, 940], [490, 940]]) == "8077219"
+    )
     # An empty area returns "".
     assert text_in_region(GEOMETRY, 1, [[900, 1200], [990, 1200], [990, 1300], [900, 1300]]) == ""
 

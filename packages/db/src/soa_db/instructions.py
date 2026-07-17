@@ -41,10 +41,61 @@ from soa_db.versioning import (
 #: Bounds: instructions travel inside every model request.
 MAX_INSTRUCTIONS_CHARS = 20_000
 MAX_FIELD_GUIDANCE_ENTRIES = 200
+#: Few-shot exemplars (AIO-011 training) ride in the same request, so the
+#: versioned ``examples`` slot is bounded too — capped count and per-example
+#: text length keep the prompt from ballooning and stay reproducible.
+MAX_EXAMPLES = 8
+MAX_EXAMPLE_TEXT_CHARS = 4_000
 
 
 class InstructionValidationError(ValueError):
     pass
+
+
+def _validate_examples(examples: Any) -> None:
+    if not isinstance(examples, list):
+        raise InstructionValidationError("'examples' must be a list of worked exemplars")
+    if len(examples) > MAX_EXAMPLES:
+        raise InstructionValidationError(
+            f"'examples' exceeds {MAX_EXAMPLES} entries — few-shot content is bounded"
+        )
+    for index, example in enumerate(examples):
+        if not isinstance(example, dict):
+            raise InstructionValidationError(f"examples[{index}] must be an object")
+        text = example.get("text", "")
+        if not isinstance(text, str):
+            raise InstructionValidationError(f"examples[{index}].text must be a string")
+        if len(text) > MAX_EXAMPLE_TEXT_CHARS:
+            raise InstructionValidationError(
+                f"examples[{index}].text exceeds {MAX_EXAMPLE_TEXT_CHARS} characters"
+            )
+        fields = example.get("fields", {})
+        if not isinstance(fields, dict):
+            raise InstructionValidationError(f"examples[{index}].fields must be an object")
+        for key, value in fields.items():
+            if value is not None and not isinstance(value, str):
+                raise InstructionValidationError(
+                    f"examples[{index}].fields[{key!r}] must be a string or null"
+                )
+        lines = example.get("lines", [])
+        if not isinstance(lines, list):
+            raise InstructionValidationError(f"examples[{index}].lines must be a list of rows")
+        for row in lines:
+            if not isinstance(row, dict) or any(
+                v is not None and not isinstance(v, str) for v in row.values()
+            ):
+                raise InstructionValidationError(
+                    f"examples[{index}].lines rows must map columns to strings or null"
+                )
+        if not fields and not text.strip():
+            raise InstructionValidationError(
+                f"examples[{index}] needs expected fields or example text"
+            )
+        unknown = set(example) - {"text", "fields", "lines"}
+        if unknown:
+            raise InstructionValidationError(
+                f"examples[{index}] has unknown keys: {sorted(unknown)}"
+            )
 
 
 def validate_instruction_content(content: dict[str, Any]) -> None:
@@ -66,7 +117,9 @@ def validate_instruction_content(content: dict[str, Any]) -> None:
     for key, value in guidance.items():
         if not isinstance(value, str) or not value.strip():
             raise InstructionValidationError(f"field_guidance[{key!r}] must be a non-empty string")
-    unknown = set(content) - {"instructions", "field_guidance"}
+    if "examples" in content:
+        _validate_examples(content["examples"])
+    unknown = set(content) - {"instructions", "field_guidance", "examples"}
     if unknown:
         raise InstructionValidationError(
             f"unknown content keys: {sorted(unknown)} — the shape is closed"
@@ -137,6 +190,7 @@ def _content_summary(content: dict[str, Any]) -> dict[str, Any]:
     return {
         "instructions_chars": len(content.get("instructions", "")),
         "field_guidance_entries": len(content.get("field_guidance", {}) or {}),
+        "examples": len(content.get("examples", []) or []),
     }
 
 
@@ -261,6 +315,8 @@ async def published_instruction(
 
 
 __all__ = [
+    "MAX_EXAMPLES",
+    "MAX_EXAMPLE_TEXT_CHARS",
     "MAX_FIELD_GUIDANCE_ENTRIES",
     "MAX_INSTRUCTIONS_CHARS",
     "InstructionValidationError",

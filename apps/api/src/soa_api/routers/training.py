@@ -18,6 +18,7 @@ same permissions the sibling evaluations router uses — so no new RBAC registry
 entry or per-org backfill is required.
 """
 
+import json
 import uuid
 from typing import Annotated, Any
 
@@ -26,8 +27,14 @@ from pydantic import BaseModel, Field
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession
-from soa_api.domain.streams import Stream, StreamRepository
+from soa_api.dependencies import DbSession, ObjectStoreDep
+from soa_api.domain.streams import Stream, StreamRepository, StreamVersionRepository
+from soa_api.services.training_examples import (
+    DEFAULT_INSTRUCTIONS,
+    build_examples,
+    document_text_excerpt,
+)
+from soa_db.artifacts import ArtifactKind, ArtifactRepository
 from soa_db.documents import Document, DocumentRepository
 from soa_db.gold_datasets import (
     SPLITS,
@@ -46,6 +53,13 @@ from soa_db.gold_datasets import (
     publish_dataset_version,
     update_gold_dataset,
     upsert_gold_document,
+)
+from soa_db.instructions import (
+    MAX_EXAMPLE_TEXT_CHARS,
+    InstructionValidationError,
+    InstructionVersionRepository,
+    create_instruction_draft,
+    update_instruction_draft,
 )
 from soa_db.versioning import InvalidVersionStateError, VersionState
 
@@ -433,6 +447,145 @@ async def publish_training_set(
         state=published.state,
         published_at=published.published_at.isoformat() if published.published_at else None,
         counts=_split_counts(docs),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Few-shot compilation (Phase 2)
+# --------------------------------------------------------------------------- #
+
+
+class CompiledExamplesResponse(BaseModel):
+    instruction_version_id: uuid.UUID
+    stream_version_id: uuid.UUID
+    version_number: int
+    state: str
+    reference: str
+    example_count: int
+
+
+@router.post(
+    "/orgs/{organization_slug}/streams/{stream_slug}/training-sets/{ts_slug}/compile-examples"
+)
+async def compile_training_examples(
+    stream_slug: str,
+    ts_slug: str,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("streams.manage"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+) -> CompiledExamplesResponse:
+    """Compile the training set's published train-split samples into the
+    stream's versioned few-shot ``examples`` slot.
+
+    Draws examples from a PUBLISHED (immutable) training-set version so the
+    result is reproducible, and writes them into an instruction DRAFT on the
+    stream's active version — preserving any existing prompt text and field
+    guidance. The caller publishes that instruction draft to make the few-shot
+    live (the existing instructions publish flow), so extraction stays pinned
+    and attributable.
+    """
+    context = authorized.org_context
+    stream = await _load_stream(session, authorized, stream_slug)
+    dataset = await _load_training_set(session, authorized, stream, ts_slug)
+    versions = await _versions(session, authorized, dataset)
+    published = _published(versions)
+    if published is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Publish the training set before compiling few-shot examples.",
+        )
+    if stream.active_version_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "The stream has no active version to attach examples to."
+        )
+    stream_version = await StreamVersionRepository(session, context).get(stream.active_version_id)
+    if stream_version is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The active stream version is missing.")
+    config = (stream_version.resolved_snapshot or {}).get("config", {})
+    schema_version_id = config.get("schema_version_id")
+    if not schema_version_id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "The active stream version has no resolved schema."
+        )
+
+    all_docs = await GoldDocumentRepository(session, context).list_for_version(published.id)
+    train_docs = [doc for doc in all_docs if doc.split == "train"]
+    if not train_docs:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The published set has no train-split samples to learn from.",
+        )
+
+    source_ids = [doc.source_document_id for doc in train_docs if doc.source_document_id]
+    texts: dict[uuid.UUID, str] = {}
+    if source_ids:
+        artifacts_by_doc = await ArtifactRepository(session, context).list_for_documents(source_ids)
+        for document_id, artifacts in artifacts_by_doc.items():
+            geometry = sorted(
+                (a for a in artifacts if a.kind == ArtifactKind.TEXT_GEOMETRY.value),
+                key=lambda a: a.created_at,
+            )
+            if not geometry:
+                continue
+            try:
+                raw = await store.get(geometry[-1].object_key)
+                texts[document_id] = document_text_excerpt(json.loads(raw), MAX_EXAMPLE_TEXT_CHARS)
+            except Exception:
+                # Text is best-effort — an exemplar still teaches value formats
+                # from its expected fields when the excerpt is unavailable.
+                continue
+
+    examples = build_examples(train_docs, texts)
+    if not examples:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "No usable examples could be compiled — the samples have no expected values.",
+        )
+
+    instruction_repo = InstructionVersionRepository(session, context)
+    instruction_versions = await instruction_repo.list_for_stream_version(stream_version.id)
+    latest = instruction_versions[-1] if instruction_versions else None
+    change_summary = (
+        f"Few-shot from {dataset.slug} v{published.version_number} ({len(examples)} examples)"
+    )
+    try:
+        if latest is not None and latest.state == VersionState.DRAFT:
+            content = dict(latest.content)
+            content["examples"] = examples
+            draft = await update_instruction_draft(
+                session,
+                context,
+                draft=latest,
+                content=content,
+                change_summary=change_summary,
+                actor_id=_actor(authorized),
+            )
+        else:
+            base_content = latest.content if latest is not None else {}
+            content = {
+                "instructions": base_content.get("instructions") or DEFAULT_INSTRUCTIONS,
+                "field_guidance": base_content.get("field_guidance", {}) or {},
+                "examples": examples,
+            }
+            draft = await create_instruction_draft(
+                session,
+                context,
+                stream_version_id=stream_version.id,
+                schema_version_id=uuid.UUID(str(schema_version_id)),
+                content=content,
+                change_summary=change_summary,
+                actor_id=_actor(authorized),
+            )
+    except InstructionValidationError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from None
+
+    return CompiledExamplesResponse(
+        instruction_version_id=draft.id,
+        stream_version_id=stream_version.id,
+        version_number=draft.version_number,
+        state=draft.state,
+        reference=draft.reference,
+        example_count=len(examples),
     )
 
 

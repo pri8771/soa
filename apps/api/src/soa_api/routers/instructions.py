@@ -159,12 +159,19 @@ async def update_draft_endpoint(
     session: DbSession,
 ) -> InstructionVersionResponse:
     record = await _load_instruction(session, authorized, version_id)
+    # The editor round-trips only instructions + field_guidance; preserve any
+    # compiled few-shot examples so editing the prompt text never silently
+    # drops the training exemplars attached to this draft.
+    content = body.content.model_dump()
+    existing_examples = record.content.get("examples")
+    if "examples" not in content and existing_examples:
+        content["examples"] = existing_examples
     try:
         updated = await update_instruction_draft(
             session,
             authorized.org_context,
             draft=record,
-            content=body.content.model_dump(),
+            content=content,
             change_summary=body.change_summary,
             actor_id=_actor(authorized),
         )

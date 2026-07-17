@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from soa_api.app import create_app
 from soa_api.domain.streams import StreamRepository
 from soa_api.settings import ApiSettings, Environment
+from soa_api.test_support.runtime_config import publish_runtime_config
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.documents import SourceChannel, create_document
 from soa_db.repository import OrganizationContext
@@ -252,3 +253,55 @@ async def test_sample_document_must_belong_to_stream(
         },
     )
     assert missing.status_code == 404
+
+
+async def test_compile_examples_builds_a_versioned_instruction_draft(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    # Give the stream an active published config (schema + process/stream versions).
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    doc_id = await _make_document(db, org_id, filename="sample.pdf", sha="d" * 64)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "train",
+            "ground_truth": {"fields": {"po_number": "PO-4711", "currency": "EUR"}},
+        },
+    )
+    assert client.post(f"{base}/uk/publish", headers=ADMIN).status_code == 200
+
+    compiled = client.post(f"{base}/uk/compile-examples", headers=ADMIN)
+    assert compiled.status_code == 200, compiled.text
+    body = compiled.json()
+    assert body["example_count"] == 1
+    assert body["state"] == "draft"
+
+    # The instruction draft on the active stream version carries the examples slot.
+    version = client.get(
+        f"/orgs/northstar/instructions/{body['instruction_version_id']}", headers=ADMIN
+    ).json()
+    examples = version["content"]["examples"]
+    assert examples[0]["fields"]["po_number"] == "PO-4711"
+
+    # Re-compiling updates the same draft rather than stacking new ones.
+    again = client.post(f"{base}/uk/compile-examples", headers=ADMIN)
+    assert again.status_code == 200
+    assert again.json()["instruction_version_id"] == body["instruction_version_id"]
+
+
+async def test_compile_examples_requires_a_published_set(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    await _seed_stream(harness)
+    await publish_runtime_config(client, db, stream_slug="uk", headers=ADMIN)
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    # A draft-only set has nothing published to learn from.
+    assert client.post(f"{base}/uk/compile-examples", headers=ADMIN).status_code == 409

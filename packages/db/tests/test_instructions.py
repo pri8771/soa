@@ -71,6 +71,47 @@ class TestContentValidation:
         with pytest.raises(InstructionValidationError, match="po_number"):
             validate_instruction_content({"instructions": "ok", "field_guidance": {"po_number": 7}})
 
+    def test_examples_slot_is_accepted_and_shaped(self) -> None:
+        validate_instruction_content(
+            {
+                "instructions": "ok",
+                "examples": [
+                    {
+                        "text": "PURCHASE ORDER PO-1",
+                        "fields": {"po_number": "PO-1", "ship_date": None},
+                        "lines": [{"sku": "A", "qty": "2"}],
+                    }
+                ],
+            }
+        )
+
+    def test_examples_are_bounded_in_count(self) -> None:
+        with pytest.raises(InstructionValidationError, match="exceeds"):
+            validate_instruction_content(
+                {
+                    "instructions": "ok",
+                    "examples": [{"fields": {"po_number": f"PO-{i}"}} for i in range(9)],
+                }
+            )
+
+    def test_example_text_is_bounded(self) -> None:
+        with pytest.raises(InstructionValidationError, match="characters"):
+            validate_instruction_content(
+                {"instructions": "ok", "examples": [{"text": "x" * 4001, "fields": {"a": "b"}}]}
+            )
+
+    def test_example_needs_fields_or_text(self) -> None:
+        with pytest.raises(InstructionValidationError, match="expected fields or example text"):
+            validate_instruction_content(
+                {"instructions": "ok", "examples": [{"fields": {}, "text": "   "}]}
+            )
+
+    def test_example_field_values_must_be_strings(self) -> None:
+        with pytest.raises(InstructionValidationError, match="fields"):
+            validate_instruction_content(
+                {"instructions": "ok", "examples": [{"fields": {"po_number": 7}}]}
+            )
+
 
 class TestVersionLifecycle:
     async def test_drafts_number_sequentially_per_stream_version(

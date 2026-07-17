@@ -176,3 +176,72 @@ class TestHooksAndReferences:
         first = build_extraction_messages(request_with(["same"]), instructions=INSTRUCTIONS)
         second = build_extraction_messages(request_with(["same"]), instructions=INSTRUCTIONS)
         assert first == second
+
+
+class TestWorkedExamples:
+    """Few-shot exemplars (AIO-011 training) ride in the user message,
+    bounded and sanitized, and never alter the injection-safety posture."""
+
+    @staticmethod
+    def _user(built: object) -> dict:
+        return json.loads(built.messages[1]["content"])  # type: ignore[attr-defined]
+
+    def test_examples_ride_in_the_user_message_when_present(self) -> None:
+        instructions = {
+            "instructions": "Read carefully.",
+            "field_guidance": {},
+            "examples": [
+                {
+                    "text": "PURCHASE ORDER PO-1",
+                    "fields": {"po_number": "PO-1"},
+                    "lines": [{"sku": "A"}],
+                }
+            ],
+        }
+        built = build_extraction_messages(request_with(["doc text"]), instructions=instructions)
+        assert self._user(built)["worked_examples"] == [
+            {
+                "text": "PURCHASE ORDER PO-1",
+                "fields": {"po_number": "PO-1"},
+                "lines": [{"sku": "A"}],
+            }
+        ]
+
+    def test_no_examples_means_no_key(self) -> None:
+        built = build_extraction_messages(request_with(["doc"]), instructions=INSTRUCTIONS)
+        assert "worked_examples" not in self._user(built)
+        plain = build_extraction_messages(request_with(["doc"]))
+        assert "worked_examples" not in self._user(plain)
+
+    def test_examples_are_bounded_by_count(self) -> None:
+        many = [{"fields": {"po_number": f"PO-{i}"}} for i in range(20)]
+        instructions = {"instructions": "x", "field_guidance": {}, "examples": many}
+        built = build_extraction_messages(
+            request_with(["d"]), instructions=instructions, limits=BuildLimits(max_examples=3)
+        )
+        assert len(self._user(built)["worked_examples"]) == 3
+
+    def test_example_text_is_truncated_and_control_stripped(self) -> None:
+        instructions = {
+            "instructions": "x",
+            "field_guidance": {},
+            "examples": [{"text": "A" * 100 + "\x00", "fields": {"po_number": "P"}}],
+        }
+        built = build_extraction_messages(
+            request_with(["d"]),
+            instructions=instructions,
+            limits=BuildLimits(max_chars_per_example=10),
+        )
+        assert self._user(built)["worked_examples"][0]["text"] == "A" * 10
+
+    def test_example_urls_are_refused_like_instructions(self) -> None:
+        instructions = {
+            "instructions": "x",
+            "field_guidance": {},
+            "examples": [{"text": "see https://evil.example", "fields": {"po_number": "P"}}],
+        }
+        with pytest.raises(RequestBuildError):
+            build_extraction_messages(request_with(["d"]), instructions=instructions)
+
+    def test_the_platform_prompt_explains_worked_examples(self) -> None:
+        assert "worked_examples" in PLATFORM_SYSTEM_PROMPT
