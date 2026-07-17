@@ -15,11 +15,16 @@ import { useState } from "react";
 
 import {
   ApiError,
+  compileTrainingExamples,
+  evaluateTrainingSet,
   fetchDocuments,
+  fetchTrainingEvaluations,
   fetchTrainingSet,
+  publishInstructionVersion,
   publishTrainingSet,
   startTrainingDraft,
   type DocumentSummary,
+  type TrainingEvaluation,
 } from "../api/client";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
@@ -67,6 +72,44 @@ export function TrainingSet() {
       invalidate();
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : "Could not open a draft."),
+  });
+
+  const evaluations = useQuery({
+    queryKey: ["training-evaluations", slug, streamSlug, trainingSlug],
+    queryFn: () => fetchTrainingEvaluations(slug, streamSlug, trainingSlug),
+    // While a run is scoring, poll so the per-field result appears when ready.
+    refetchInterval: 5000,
+  });
+  const [notice, setNotice] = useState<string | null>(null);
+  const compile = useMutation({
+    // Compile few-shot exemplars from the published train-split samples, then
+    // publish the resulting instruction version so it goes live for extraction.
+    mutationFn: async () => {
+      const compiled = await compileTrainingExamples(slug, streamSlug, trainingSlug);
+      await publishInstructionVersion(slug, compiled.instruction_version_id);
+      return compiled;
+    },
+    onSuccess: (compiled) => {
+      setError(null);
+      setNotice(
+        `Compiled ${compiled.example_count} few-shot example${
+          compiled.example_count === 1 ? "" : "s"
+        } and published them live (${compiled.reference}).`,
+      );
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : "Compile failed."),
+  });
+  const evaluate = useMutation({
+    mutationFn: () =>
+      evaluateTrainingSet(slug, streamSlug, trainingSlug, { execution_mode: "server" }),
+    onSuccess: () => {
+      setError(null);
+      setNotice("Evaluation queued — per-field accuracy will appear below when it finishes.");
+      void queryClient.invalidateQueries({
+        queryKey: ["training-evaluations", slug, streamSlug, trainingSlug],
+      });
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : "Could not evaluate."),
   });
 
   if (detail.status === "error") {
@@ -160,6 +203,37 @@ export function TrainingSet() {
           </Banner>
         ) : null}
 
+        {notice ? (
+          <Banner tone="success" title="Done">
+            {notice}
+          </Banner>
+        ) : null}
+
+        {canManage && set?.published_version_id ? (
+          <section style={{ display: "grid", gap: "var(--soa-space-3)" }}>
+            <h2 style={{ margin: 0, font: "var(--soa-font-heading-sm)" }}>Train &amp; measure</h2>
+            <div style={{ display: "flex", gap: "var(--soa-space-3)", flexWrap: "wrap" }}>
+              <Button onPress={() => compile.mutate()} isDisabled={compile.isPending}>
+                Compile few-shot examples &amp; publish
+              </Button>
+              <Button
+                variant="subtle"
+                onPress={() => evaluate.mutate()}
+                isDisabled={evaluate.isPending}
+              >
+                Evaluate on held-out slice
+              </Button>
+            </div>
+            <p style={caption}>
+              Compiling turns the published train-split samples into few-shot exemplars and
+              publishes them live for this stream. Evaluating scores the current config against the
+              set&apos;s held-out (validation/test) samples; run it before and after training to see
+              the per-field lift.
+            </p>
+            <EvaluationList items={evaluations.data?.items ?? []} />
+          </section>
+        ) : null}
+
         <section style={{ display: "grid", gap: "var(--soa-space-3)" }}>
           <h2 style={{ margin: 0, font: "var(--soa-font-heading-sm)" }}>
             Labelled samples ({samples.length})
@@ -236,6 +310,99 @@ export function TrainingSet() {
         ) : null}
       </div>
     </AppShell>
+  );
+}
+
+function pct(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+function EvaluationList({ items }: { items: TrainingEvaluation[] }) {
+  if (items.length === 0) {
+    return <p style={caption}>No evaluations yet.</p>;
+  }
+  return (
+    <ul style={listStyle}>
+      {items.map((run) => {
+        const fields = Object.entries(run.by_field);
+        return (
+          <li
+            key={run.id}
+            style={{ ...rowStyle, alignItems: "flex-start", flexDirection: "column" }}
+          >
+            <div
+              style={{
+                display: "flex",
+                gap: "var(--soa-space-3)",
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <Badge
+                tone={
+                  run.state === "succeeded"
+                    ? "success"
+                    : run.state === "failed"
+                      ? "critical"
+                      : "neutral"
+                }
+              >
+                {run.state}
+              </Badge>
+              <span style={caption}>{run.execution_mode}</span>
+              {run.state === "succeeded" ? (
+                <Badge tone={run.promotion_eligible ? "success" : "warning"}>
+                  {run.promotion_eligible ? "Gate: promotable" : "Gate: blocked"}
+                </Badge>
+              ) : null}
+              {run.safe_error ? <span style={caption}>{run.safe_error}</span> : null}
+            </div>
+            {fields.length > 0 ? (
+              <div style={{ display: "grid", gap: 2, width: "100%" }}>
+                {fields.map(([key, score]) => (
+                  <div
+                    key={key}
+                    style={{
+                      display: "flex",
+                      gap: "var(--soa-space-2)",
+                      font: "var(--soa-font-caption)",
+                    }}
+                  >
+                    <span style={{ minWidth: "10rem" }}>{key}</span>
+                    <span>
+                      {score.exact}/{score.total} exact (
+                      {pct(score.total ? score.exact / score.total : 0)})
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {run.field_diffs.length > 0 ? (
+              <div style={{ display: "grid", gap: 2, width: "100%" }}>
+                <span style={{ ...caption, fontWeight: 600 }}>Before → after</span>
+                {run.field_diffs.map((diff) => (
+                  <div
+                    key={diff.field}
+                    style={{
+                      display: "flex",
+                      gap: "var(--soa-space-2)",
+                      font: "var(--soa-font-caption)",
+                    }}
+                  >
+                    <span style={{ minWidth: "10rem" }}>{diff.field}</span>
+                    <span>
+                      {pct(diff.current_exact_rate)} → {pct(diff.candidate_exact_rate)} (
+                      {diff.delta >= 0 ? "+" : ""}
+                      {Math.round(diff.delta * 100)} pts)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

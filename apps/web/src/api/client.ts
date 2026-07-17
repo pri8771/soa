@@ -2692,3 +2692,72 @@ export function documentTextInRegion(
     body: JSON.stringify(body),
   });
 }
+
+// --- Extraction training: compile few-shot + evaluate the lift (Phases 2-3) ---
+
+export interface CompiledExamples {
+  instruction_version_id: string;
+  stream_version_id: string;
+  version_number: number;
+  state: string;
+  reference: string;
+  example_count: number;
+}
+
+export function compileTrainingExamples(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<CompiledExamples> {
+  return apiFetch(
+    `${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/compile-examples`,
+    { method: "POST" },
+  );
+}
+
+export interface TrainingEvaluation {
+  id: string;
+  dataset_version_id: string;
+  stream_version_id: string | null;
+  baseline_run_id: string | null;
+  execution_mode: string;
+  state: string;
+  promotion_eligible: boolean;
+  by_field: Record<string, { total: number; exact: number; normalized: number }>;
+  by_cohort: Record<string, Record<string, number>>;
+  field_diffs: {
+    field: string;
+    current_exact_rate: number;
+    candidate_exact_rate: number;
+    delta: number;
+  }[];
+  findings: unknown[];
+  safe_error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export function evaluateTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+  body: {
+    execution_mode?: "server" | "simulation";
+    stream_version_id?: string;
+    baseline_run_id?: string;
+    predictions?: Record<string, Record<string, unknown>>;
+  } = {},
+): Promise<TrainingEvaluation> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/evaluate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchTrainingEvaluations(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<{ items: TrainingEvaluation[] }> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/evaluations`);
+}
