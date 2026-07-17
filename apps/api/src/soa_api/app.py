@@ -245,7 +245,18 @@ def create_app(
             allow_origins=list(resolved.cors_allowed_origins),
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "X-Dev-User", CORRELATION_HEADER],
+            # ``X-SOA-Content-SHA256`` is required for the browser to PUT bytes
+            # to a signed local-blob URL (dev filesystem store): the upload is
+            # cross-origin (web on ``localhost:5173`` → API on ``:8000``), so
+            # the custom checksum header triggers a CORS preflight the middleware
+            # must permit or the PUT is blocked and no document is ever created.
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "X-Dev-User",
+                "X-SOA-Content-SHA256",
+                CORRELATION_HEADER,
+            ],
             max_age=600,
         )
 

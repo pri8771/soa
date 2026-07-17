@@ -71,6 +71,27 @@ async def test_allowlisted_origins_get_credentialed_cors(tmp_path: Path) -> None
     assert preflight.headers["access-control-allow-credentials"] == "true"
 
 
+async def test_signed_blob_upload_preflight_allows_checksum_header(tmp_path: Path) -> None:
+    """A browser PUT to a signed local-blob URL carries a custom
+    ``X-SOA-Content-SHA256`` header, which triggers a CORS preflight. The
+    middleware must permit that header or the upload is blocked at the
+    preflight and no document is ever created — the browser-upload
+    regression (fixed by adding the header to the CORS allowlist). Pinned
+    here so the header can never silently drop off the allowlist again."""
+    client = await make_client(tmp_path, cors_allowed_origins=("http://localhost:5173",))
+    preflight = client.options(
+        "/_local-blobs/orgs/o/documents/d/original/file.pdf",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "content-type,x-soa-content-sha256",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "x-soa-content-sha256" in preflight.headers["access-control-allow-headers"].lower()
+
+
 async def test_unlisted_origins_get_nothing(tmp_path: Path) -> None:
     client = await make_client(tmp_path, cors_allowed_origins=("https://app.example",))
     response = client.get("/healthz", headers={"Origin": "https://evil.example"})
