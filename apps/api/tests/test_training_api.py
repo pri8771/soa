@@ -489,3 +489,34 @@ async def test_general_evaluations_endpoint_forces_held_out_for_a_training_set(
     # asking for it.
     runs = client.get(f"{base}/uk/evaluations", headers=ADMIN).json()["items"]
     assert runs and all(run["scored_splits"] == ["validation", "test"] for run in runs)
+
+
+async def test_skills_overview_reports_per_stream_numbers(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = await _seed_stream(harness)
+    doc_id = await _make_document(db, org_id, filename="s.pdf", sha="9" * 64)
+    # One labelled + published training set marks the skill as trained.
+    base = "/orgs/northstar/streams/uk/training-sets"
+    client.post(base, headers=ADMIN, json={"name": "UK", "slug": "uk"})
+    client.put(
+        f"{base}/uk/documents",
+        headers=ADMIN,
+        json={
+            "source_document_id": str(doc_id),
+            "split": "train",
+            "ground_truth": {"fields": {"po_number": "PO-1"}},
+        },
+    )
+    client.post(f"{base}/uk/publish", headers=ADMIN)
+
+    overview = client.get("/orgs/northstar/skills", headers=ADMIN)
+    assert overview.status_code == 200, overview.text
+    items = overview.json()["items"]
+    assert [s["slug"] for s in items] == ["uk"]
+    skill = items[0]
+    assert skill["process_slug"] == "purchase-orders"
+    assert skill["received_30d"] == 1
+    assert skill["in_review"] == 0
+    assert skill["trained_version"] == 1

@@ -103,7 +103,7 @@ describe("Organization switching (TEN-012)", () => {
     await user.click(screen.getByTestId("current-organization"));
     await user.click(await screen.findByRole("menuitem", { name: "Meridian Foods" }));
 
-    await waitFor(() => expect(router.state.location.pathname).toBe("/app/meridian/overview"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/app/meridian/skills"));
     expect(removeSpy).toHaveBeenCalled();
     await waitFor(() =>
       expect(screen.getByTestId("current-organization")).toHaveTextContent("Meridian Foods"),

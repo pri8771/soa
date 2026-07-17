@@ -134,6 +134,9 @@ const Simulation = lazyScreen(() =>
 const Settings = lazyScreen(() =>
   import("../screens/Settings").then(({ Settings }) => ({ default: Settings })),
 );
+const SkillsHome = lazyScreen(() =>
+  import("../screens/SkillsHome").then(({ SkillsHome }) => ({ default: SkillsHome })),
+);
 const Training = lazyScreen(() =>
   import("../screens/Training").then(({ Training }) => ({ default: Training })),
 );
@@ -327,6 +330,12 @@ const simulationRoute = createRoute({
   component: Simulation,
 });
 
+const skillsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "skills",
+  component: SkillsHome,
+});
+
 const trainingRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "streams/$streamSlug/training",
@@ -395,6 +404,7 @@ const routeTree = rootRoute.addChildren([
   createOrganizationRoute,
   acceptInvitationRoute,
   appRoute.addChildren([
+    skillsRoute,
     operationsRoute,
     gettingStartedRoute,
     supportRoute,

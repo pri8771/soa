@@ -2761,3 +2761,22 @@ export function fetchTrainingEvaluations(
 ): Promise<{ items: TrainingEvaluation[] }> {
   return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/evaluations`);
 }
+
+// --- Skills home (skill = stream; grouped by process until intakes land) ---
+
+export interface SkillSummary {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  process_slug: string | null;
+  process_name: string | null;
+  in_review: number;
+  received_30d: number;
+  field_accuracy: number | null;
+  trained_version: number | null;
+}
+
+export function fetchSkillsOverview(organizationSlug: string): Promise<{ items: SkillSummary[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/skills`);
+}

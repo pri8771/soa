@@ -15,7 +15,7 @@ export function AcceptInvitation() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["me"] });
       await navigate({
-        to: "/app/$organizationSlug/overview",
+        to: "/app/$organizationSlug/skills",
         params: { organizationSlug: organization.trim() },
         replace: true,
       });

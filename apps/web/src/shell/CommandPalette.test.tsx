@@ -47,7 +47,7 @@ describe("CommandPalette", () => {
     const active = screen
       .getAllByRole("option")
       .find((option) => option.getAttribute("aria-selected") === "true");
-    expect(active).toHaveTextContent("Go to Documents");
+    expect(active).toHaveTextContent("Go to Overview");
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();

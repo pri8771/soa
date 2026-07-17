@@ -39,7 +39,7 @@ export function OrganizationSwitcher() {
           // so nothing from the previous organization can flash.
           queryClient.removeQueries();
           void navigate({
-            to: "/app/$organizationSlug/overview",
+            to: "/app/$organizationSlug/skills",
             params: { organizationSlug: String(key) },
           });
         }}

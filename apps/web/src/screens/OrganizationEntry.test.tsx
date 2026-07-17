@@ -48,6 +48,6 @@ describe("organization entry flows", () => {
     await user.click(await screen.findByRole("button", { name: "Accept invitation" }));
 
     await waitFor(() => expect(body).toEqual({ organization_slug: "pilot-east" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/app/pilot-east/overview"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/app/pilot-east/skills"));
   });
 });

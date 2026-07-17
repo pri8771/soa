@@ -28,6 +28,12 @@ export const NAV_ITEMS = [
     icon: "✦",
   },
   {
+    label: "Skills",
+    to: "/app/$organizationSlug/skills",
+    permission: "streams.read",
+    icon: "▦",
+  },
+  {
     label: "Overview",
     to: "/app/$organizationSlug/overview",
     permission: "organization.read",
