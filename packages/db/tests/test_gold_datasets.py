@@ -275,3 +275,67 @@ class TestAuditDiscipline:
                 dumped = str(event.summary)
                 assert "PO-4711" not in dumped
                 assert "WIDGET-9" not in dumped
+
+
+class TestRegionsAndUpsert:
+    def test_regions_are_validated(self) -> None:
+        # Valid: value maps plus optional positional hints.
+        validate_ground_truth(
+            {
+                "fields": {"po_number": "PO-1"},
+                "regions": {
+                    "po_number": {
+                        "page_number": 1,
+                        "polygon": [[0, 0], [10, 0], [10, 5], [0, 5]],
+                    }
+                },
+            }
+        )
+        with pytest.raises(GoldDatasetError, match="page_number"):
+            validate_ground_truth(
+                {"fields": {"a": "b"}, "regions": {"a": {"page_number": 0, "polygon": [[0, 0]]}}}
+            )
+        with pytest.raises(GoldDatasetError, match="polygon"):
+            validate_ground_truth(
+                {"fields": {"a": "b"}, "regions": {"a": {"page_number": 1, "polygon": [[0, 0]]}}}
+            )
+        with pytest.raises(GoldDatasetError, match="unknown keys"):
+            validate_ground_truth(
+                {
+                    "fields": {"a": "b"},
+                    "regions": {
+                        "a": {"page_number": 1, "polygon": [[0, 0], [1, 0], [1, 1]], "z": 1}
+                    },
+                }
+            )
+
+    async def test_upsert_creates_then_replaces_in_a_draft(self, db: DatabaseSessions) -> None:
+        from soa_db.gold_datasets import upsert_gold_document
+
+        _, draft_id = await make_dataset_with_draft(db)
+        async with db.session_scope() as session:
+            draft = await GoldDatasetVersionRepository(session, CONTEXT).get(draft_id)
+            assert draft is not None
+            first = await upsert_gold_document(
+                session,
+                CONTEXT,
+                version=draft,
+                document_sha256="d" * 64,
+                split="train",
+                ground_truth={"fields": {"po_number": "PO-1"}},
+                actor_id="user:u-1",
+            )
+            replaced = await upsert_gold_document(
+                session,
+                CONTEXT,
+                version=draft,
+                document_sha256="d" * 64,
+                split="validation",
+                ground_truth={"fields": {"po_number": "PO-2"}},
+                actor_id="user:u-1",
+            )
+            assert first.id == replaced.id  # same row, replaced in place
+            rows = await GoldDocumentRepository(session, CONTEXT).list_for_version(draft.id)
+            assert len(rows) == 1
+            assert rows[0].split == "validation"
+            assert rows[0].ground_truth["fields"]["po_number"] == "PO-2"

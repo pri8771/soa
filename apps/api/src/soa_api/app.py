@@ -35,6 +35,7 @@ from soa_api.routers import (
     public_ingest,
     review,
     service_credentials,
+    training,
     uploads,
 )
 from soa_api.services.malware import ClamAvScanner, MalwareScanner, NoopScanner
@@ -334,6 +335,7 @@ def create_app(
     app.include_router(deletions.router)
     app.include_router(evaluations.router)
     app.include_router(instructions.router)
+    app.include_router(training.router)
     app.include_router(integrations.router)
     app.include_router(exports.router)
     app.include_router(public_ingest.router)
