@@ -158,7 +158,7 @@ class Orchestrator:
                     if payload.get("config_fingerprint")
                     else None
                 ),
-                triggered_by=ACTOR,
+                triggered_by=str(payload.get("triggered_by") or ACTOR),
                 instruction_version_id=optional_uuid("instruction_version_id"),
                 confidence_policy_version_id=optional_uuid("confidence_policy_version_id"),
                 provider_policy_version_id=optional_uuid("provider_policy_version_id"),

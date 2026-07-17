@@ -1529,6 +1529,7 @@ export const handlers = [
     HttpResponse.json({ valid: true, message: null }),
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
+  http.get("/api/orgs/:slug/routing/unrouted", () => HttpResponse.json({ items: [] })),
   // Upload flow (ING-008): session -> signed PUT -> complete.
   http.post("/api/orgs/:slug/streams/:streamSlug/uploads", () =>
     HttpResponse.json(

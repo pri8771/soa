@@ -425,6 +425,12 @@ class _Pipeline:
             "method": "input_contract",
             "input_contract": "single_sales_order",
         }
+        # A human routing decision is authoritative: a run triggered by the
+        # manual route endpoint processes HERE, never re-classifies (a
+        # re-classification could bounce the document straight back to
+        # unrouted, looping forever).
+        if run.triggered_by == "manual-route":
+            return StageOutcome(output_summary={**base_summary, "routing": "manual"})
         # Routing: a stream with a PUBLISHED classifier is an intake — the
         # document is matched against the routing table on its own text and
         # handed to the winning skill before extraction.

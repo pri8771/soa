@@ -258,3 +258,31 @@ async def test_stream_without_classifier_is_untouched(db: DatabaseSessions) -> N
             DocumentState.APPROVED.value,
             DocumentState.REVIEW_REQUIRED.value,
         )
+
+
+async def test_manual_route_is_authoritative_and_never_reclassifies(
+    db: DatabaseSessions,
+) -> None:
+    """A run triggered by the manual route endpoint processes on its stream
+    even when that stream has a published classifier that would not match —
+    the human decision wins, and the document can never bounce back to
+    unrouted."""
+    store = MemoryObjectStore()
+    await seed_classifier(db)
+    # BLANK_PAGE matches no route; without the manual trigger it would land
+    # unrouted (proven above).
+    document_id = await seed_document(db, store, BLANK_PAGE)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    payload = {**preprocess_payload(document_id), "triggered_by": "manual-route"}
+    await orchestrator.handle_preprocess(payload)
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        # Never unrouted; processed to a normal pipeline outcome on INTAKE.
+        assert document.stream_id == INTAKE
+        assert not (document.state_reason or "").count("unrouted")
+        assert document.state != DocumentState.FAILED_TERMINAL.value or (
+            "unrouted" not in (document.state_reason or "")
+        )

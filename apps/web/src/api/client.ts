@@ -2780,3 +2780,30 @@ export interface SkillSummary {
 export function fetchSkillsOverview(organizationSlug: string): Promise<{ items: SkillSummary[] }> {
   return apiFetch(`/orgs/${organizationSlug}/skills`);
 }
+
+// --- Routing: unrouted queue + manual route (classifier backend) ---
+
+export interface UnroutedDocument {
+  id: string;
+  stream_id: string;
+  original_filename: string;
+  received_at: string;
+  state_reason: string | null;
+}
+
+export function fetchUnroutedDocuments(
+  organizationSlug: string,
+): Promise<{ items: UnroutedDocument[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/routing/unrouted`);
+}
+
+export function routeDocument(
+  organizationSlug: string,
+  documentId: string,
+  streamSlug: string,
+): Promise<{ document_id: string; stream_slug: string; state: string }> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/route`, {
+    method: "POST",
+    body: JSON.stringify({ stream_slug: streamSlug }),
+  });
+}

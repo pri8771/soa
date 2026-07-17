@@ -8,11 +8,18 @@
  * accuracy, training state. Selecting a skill opens its dashboard.
  */
 
-import { Badge, Banner, Button } from "@soa/design-system";
-import { useQuery } from "@tanstack/react-query";
+import { Badge, Banner, Button, Select } from "@soa/design-system";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
 
-import { fetchSkillsOverview, type SkillSummary } from "../api/client";
+import {
+  fetchSkillsOverview,
+  fetchUnroutedDocuments,
+  routeDocument,
+  type SkillSummary,
+  type UnroutedDocument,
+} from "../api/client";
 import { AppShell } from "../shell/AppShell";
 import { useShellSession } from "../shell/ShellContext";
 
@@ -74,6 +81,8 @@ export function SkillsHome() {
             Try again.
           </Banner>
         ) : null}
+
+        <UnroutedBand organizationSlug={slug} skills={items} />
 
         {[...groups.entries()].map(([processName, skills]) => (
           <section key={processName} style={{ display: "grid", gap: "var(--soa-space-3)" }}>
@@ -216,5 +225,110 @@ export function SkillsHome() {
         ) : null}
       </div>
     </AppShell>
+  );
+}
+
+function UnroutedBand({
+  organizationSlug,
+  skills,
+}: {
+  organizationSlug: string;
+  skills: SkillSummary[];
+}) {
+  const queryClient = useQueryClient();
+  const unrouted = useQuery({
+    queryKey: ["unrouted", organizationSlug],
+    queryFn: () => fetchUnroutedDocuments(organizationSlug),
+    refetchInterval: 15000,
+  });
+  const [targets, setTargets] = useState<Record<string, string>>({});
+  const route = useMutation({
+    mutationFn: ({ documentId, streamSlug }: { documentId: string; streamSlug: string }) =>
+      routeDocument(organizationSlug, documentId, streamSlug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["unrouted", organizationSlug] });
+      void queryClient.invalidateQueries({ queryKey: ["skills", organizationSlug] });
+    },
+  });
+
+  const items = unrouted.data?.items ?? [];
+  if (items.length === 0) return null;
+
+  return (
+    <div
+      role="alert"
+      style={{
+        border: "1.5px solid var(--soa-critical)",
+        background: "var(--soa-critical-soft)",
+        display: "grid",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <span
+          style={{
+            background: "var(--soa-critical)",
+            color: "var(--soa-surface)",
+            font: "700 10px/14px var(--soa-font-family)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            padding: "10px 14px",
+            alignSelf: "stretch",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          Unrouted · {items.length}
+        </span>
+        <p style={{ margin: 0, padding: "0 14px", font: "var(--soa-font-body-sm)", flex: 1 }}>
+          The classifier couldn’t place these documents. Each manual decision becomes a training
+          example for the next classifier version.
+        </p>
+      </div>
+      <ul
+        style={{
+          listStyle: "none",
+          margin: 0,
+          padding: "0 14px 12px",
+          display: "grid",
+          gap: "var(--soa-space-2)",
+        }}
+      >
+        {items.slice(0, 5).map((doc: UnroutedDocument) => (
+          <li
+            key={doc.id}
+            style={{
+              display: "flex",
+              gap: "var(--soa-space-3)",
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <span style={{ font: "600 12px/16px var(--soa-font-mono)" }}>
+              {doc.original_filename}
+            </span>
+            <span style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
+              {doc.state_reason}
+            </span>
+            <span style={{ marginLeft: "auto", minWidth: "14rem" }}>
+              <Select
+                label="Route to skill"
+                items={skills.map((skill) => ({ id: skill.slug, label: skill.name }))}
+                selectedKey={targets[doc.id] ?? null}
+                onSelectionChange={(key) =>
+                  setTargets((current) => ({ ...current, [doc.id]: String(key) }))
+                }
+              />
+            </span>
+            <Button
+              size="sm"
+              isDisabled={!targets[doc.id] || route.isPending}
+              onPress={() => route.mutate({ documentId: doc.id, streamSlug: targets[doc.id] })}
+            >
+              Route
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

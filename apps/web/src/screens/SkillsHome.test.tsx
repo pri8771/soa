@@ -1,5 +1,6 @@
 import { HttpResponse, http } from "msw";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { server } from "../test/msw";
 import { renderApp } from "../test/render";
@@ -48,5 +49,42 @@ describe("Skills home (Blueprint IA)", () => {
     // Cards link to the skill dashboard (stream detail).
     const link = screen.getByRole("link", { name: /Pharma Wholesale/ });
     expect(link).toHaveAttribute("href", "/app/northstar/streams/uk");
+  });
+});
+
+describe("Unrouted band", () => {
+  it("lists unrouted documents and routes one to a chosen skill", async () => {
+    let routed: unknown = null;
+    server.use(
+      http.get("/api/orgs/:slug/skills", () => HttpResponse.json(SKILLS)),
+      http.get("/api/orgs/:slug/routing/unrouted", () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "doc-9",
+              stream_id: "s-1",
+              original_filename: "mystery.pdf",
+              received_at: "2026-07-17T10:00:00+00:00",
+              state_reason: "stage classifying failed: unrouted: no route matched",
+            },
+          ],
+        }),
+      ),
+      http.post("/api/orgs/:slug/documents/:documentId/route", async ({ request, params }) => {
+        routed = { documentId: params.documentId, ...((await request.json()) as object) };
+        return HttpResponse.json({ document_id: "doc-9", stream_slug: "uk", state: "queued" });
+      }),
+    );
+    const user = userEvent.setup();
+    await renderApp("/app/northstar/skills");
+
+    expect(await screen.findByText("mystery.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unrouted · 1");
+
+    // Pick a target skill and route it.
+    await user.click(screen.getByRole("button", { name: /Route to skill/ }));
+    await user.click(await screen.findByRole("option", { name: "Pharma Wholesale" }));
+    await user.click(screen.getByRole("button", { name: "Route" }));
+    await waitFor(() => expect(routed).toEqual({ documentId: "doc-9", stream_slug: "uk" }));
   });
 });

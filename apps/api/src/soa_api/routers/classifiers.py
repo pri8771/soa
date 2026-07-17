@@ -299,6 +299,10 @@ async def route_document(
             "document_id": str(document.id),
             "stream_id": str(target.id),
             "organization_id": str(context.organization_id),
+            # The human decision is authoritative: the classify stage must
+            # honor it, never re-classify (which could bounce the document
+            # straight back to unrouted).
+            "triggered_by": "manual-route",
             **pins.job_payload(),
         },
         organization_id=context.organization_id,
