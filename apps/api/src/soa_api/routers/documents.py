@@ -13,6 +13,7 @@ import base64
 import binascii
 import copy
 import hashlib
+import json
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -22,11 +23,12 @@ from sqlalchemy import or_, select
 
 from soa_api.auth.authorization import AuthorizedContext
 from soa_api.auth.dependency import require_permission
-from soa_api.dependencies import DbSession, Dependencies, get_dependencies
+from soa_api.dependencies import DbSession, Dependencies, ObjectStoreDep, get_dependencies
 from soa_api.domain.streams import StreamRepository, StreamVersionRepository
+from soa_api.services.locate import text_in_region
 from soa_api.services.runtime_pins import RuntimePinError, resolve_runtime_pins
 from soa_db.advisory import transaction_advisory_lock
-from soa_db.artifacts import ArtifactRepository
+from soa_db.artifacts import ArtifactKind, ArtifactRepository
 from soa_db.audit import ActorType, AuditEvent, record_audit_event
 from soa_db.canonical_payloads import CanonicalPayloadRepository
 from soa_db.data_deletion import DeletionTombstone, TombstoneState
@@ -391,6 +393,52 @@ async def list_document_pages(
                 ],
             }
     return {"document_id": str(document.id), "run_id": None, "run_number": None, "pages": []}
+
+
+class TextInRegionRequest(BaseModel):
+    page_number: int = Field(ge=1)
+    polygon: list[list[float]] = Field(min_length=3)
+
+
+@router.post("/orgs/{organization_slug}/documents/{document_id}/text-in-region")
+async def document_text_in_region(
+    document_id: uuid.UUID,
+    body: TextInRegionRequest,
+    authorized: Annotated[AuthorizedContext, Depends(require_permission("documents.read"))],
+    session: DbSession,
+    store: ObjectStoreDep,
+) -> dict[str, Any]:
+    """The positioned text a training labeller's drawn box encloses.
+
+    Reads the document's most recent ``text_geometry`` artifact and returns the
+    real text under the box so the annotation UI can pre-fill the field value —
+    the inverse of the review-time ``locate`` (box → text, not value → box).
+    Returns empty text when the box holds no positioned text (scanned/mock
+    pages, or an empty area); the labeller then types the value by hand.
+    """
+    from soa_storage import ObjectNotFoundError
+
+    document = await DocumentRepository(session, authorized.org_context).get(document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    artifacts = await ArtifactRepository(session, authorized.org_context).list_for_document(
+        document.id
+    )
+    geometry = sorted(
+        (a for a in artifacts if a.kind == ArtifactKind.TEXT_GEOMETRY.value),
+        key=lambda a: a.created_at,
+    )
+    if not geometry:
+        return {"text": "", "reason": "no positioned text was captured for this document"}
+    try:
+        raw = await store.get(geometry[-1].object_key)
+    except ObjectNotFoundError:
+        return {"text": "", "reason": "the positioned text is unavailable"}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"text": "", "reason": "the positioned text is unreadable"}
+    return {"text": text_in_region(parsed, body.page_number, body.polygon)}
 
 
 #: States where the record is (or is becoming) a business commitment —

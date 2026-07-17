@@ -40,6 +40,47 @@ def _bounding_box(polygons: list[Polygon]) -> Polygon:
     return [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
 
 
+def text_in_region(geometry: dict[str, Any], page_number: int, polygon: Polygon) -> str:
+    """The positioned text a labeller's drawn box encloses (the inverse of
+    :func:`locate_value`: box → text instead of value → box).
+
+    A span is included when its centre falls inside the drawn box's bounding
+    rectangle; matched spans are returned in reading order (top-to-bottom,
+    then left-to-right) joined by single spaces. Returns "" when the box
+    encloses no positioned text — the labeller then types the value by hand,
+    never a fabricated one."""
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    if not xs or not ys:
+        return ""
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    raw_pages = geometry.get("pages")
+    if not isinstance(raw_pages, list):
+        return ""
+    matched: list[tuple[float, float, str]] = []
+    for page in raw_pages:
+        if not isinstance(page, dict) or page.get("page_number") != page_number:
+            continue
+        spans = page.get("spans")
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            span_polygon = span.get("polygon")
+            text = span.get("text")
+            if not isinstance(span_polygon, list) or not isinstance(text, str) or not span_polygon:
+                continue
+            sxs = [pt[0] for pt in span_polygon if isinstance(pt, (list, tuple)) and len(pt) == 2]
+            sys_ = [pt[1] for pt in span_polygon if isinstance(pt, (list, tuple)) and len(pt) == 2]
+            if not sxs or not sys_:
+                continue
+            centre_x = sum(sxs) / len(sxs)
+            centre_y = sum(sys_) / len(sys_)
+            if min_x <= centre_x <= max_x and min_y <= centre_y <= max_y:
+                matched.append((min(sys_), min(sxs), text.strip()))
+    matched.sort()
+    return " ".join(text for _, _, text in matched if text).strip()
+
+
 def locate_value(
     geometry: dict[str, Any], value: str, *, page_hint: int | None = None
 ) -> dict[str, Any] | None:

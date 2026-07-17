@@ -2518,3 +2518,177 @@ export function activateCatalogVersion(
     { method: "POST" },
   );
 }
+
+// --- Extraction training: stream-scoped training sets + annotation (Phase 1) ---
+
+export interface TrainingRegion {
+  page_number: number;
+  polygon: number[][];
+}
+
+export interface TrainingGroundTruth {
+  fields: Record<string, string | null>;
+  lines?: Record<string, string | null>[];
+  validations?: string[];
+  regions?: Record<string, TrainingRegion>;
+}
+
+export interface TrainingSetSummary {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  stream_id: string | null;
+  privacy_classification: string;
+  working_draft_version_id: string | null;
+  published_version_id: string | null;
+  document_count: number;
+}
+
+export interface TrainingVersionSummary {
+  id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  published_at: string | null;
+  counts: Record<string, number>;
+}
+
+export interface TrainingGoldDocument {
+  id: string;
+  dataset_version_id: string;
+  source_document_id: string | null;
+  document_sha256: string;
+  split: "train" | "validation" | "test";
+  expected_class: string | null;
+  ground_truth: TrainingGroundTruth;
+}
+
+export interface TrainingSetDetail extends TrainingSetSummary {
+  versions: TrainingVersionSummary[];
+  documents: TrainingGoldDocument[];
+}
+
+function trainingBase(organizationSlug: string, streamSlug: string): string {
+  return `/orgs/${organizationSlug}/streams/${streamSlug}/training-sets`;
+}
+
+export function fetchTrainingSets(
+  organizationSlug: string,
+  streamSlug: string,
+): Promise<{ items: TrainingSetSummary[] }> {
+  return apiFetch(trainingBase(organizationSlug, streamSlug));
+}
+
+export function createTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  body: { name: string; slug: string; description?: string | null },
+): Promise<TrainingSetSummary> {
+  return apiFetch(trainingBase(organizationSlug, streamSlug), {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<TrainingSetDetail> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}`);
+}
+
+export function updateTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+  body: { name?: string; description?: string | null },
+): Promise<TrainingSetSummary> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<void> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}`, {
+    method: "DELETE",
+  });
+}
+
+export function startTrainingDraft(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<TrainingVersionSummary> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/versions`, {
+    method: "POST",
+  });
+}
+
+export function publishTrainingSet(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<TrainingVersionSummary> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/publish`, {
+    method: "POST",
+  });
+}
+
+export function fetchTrainingDocuments(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+): Promise<{ items: TrainingGoldDocument[] }> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/documents`);
+}
+
+export function upsertTrainingDocument(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+  body: {
+    source_document_id: string;
+    split: "train" | "validation" | "test";
+    expected_class?: string | null;
+    ground_truth: TrainingGroundTruth;
+  },
+): Promise<TrainingGoldDocument> {
+  return apiFetch(`${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/documents`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTrainingDocument(
+  organizationSlug: string,
+  streamSlug: string,
+  trainingSlug: string,
+  goldDocumentId: string,
+): Promise<void> {
+  return apiFetch(
+    `${trainingBase(organizationSlug, streamSlug)}/${trainingSlug}/documents/${goldDocumentId}`,
+    { method: "DELETE" },
+  );
+}
+
+export interface TextInRegionResult {
+  text: string;
+  reason?: string;
+}
+
+export function documentTextInRegion(
+  organizationSlug: string,
+  documentId: string,
+  body: { page_number: number; polygon: number[][] },
+): Promise<TextInRegionResult> {
+  return apiFetch(`/orgs/${organizationSlug}/documents/${documentId}/text-in-region`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

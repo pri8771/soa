@@ -3,7 +3,7 @@ resolves to the bounding box of the REAL positioned text that matches, a
 value not on the page returns None (never a fabricated box), and a page
 hint is searched first."""
 
-from soa_api.services.locate import locate_value
+from soa_api.services.locate import locate_value, text_in_region
 
 # Two pages of positioned words. Polygons are [x,y] vertices in raster px.
 GEOMETRY = {
@@ -65,3 +65,27 @@ def test_malformed_geometry_is_safe() -> None:
     assert locate_value({}, "x") is None
     assert locate_value({"pages": "nope"}, "x") is None
     assert locate_value({"pages": [{"spans": [{"text": 5, "polygon": "bad"}]}]}, "x") is None
+
+
+def test_text_in_region_returns_enclosed_words_in_reading_order() -> None:
+    # A box over the top row (y 0..60) on page 1 catches the three header words.
+    box = [[0, 0], [400, 0], [400, 60], [0, 60]]
+    assert text_in_region(GEOMETRY, 1, box) == "PO Number: 8077219"
+
+
+def test_text_in_region_excludes_spans_outside_the_box() -> None:
+    # A tight box around only the second row's words.
+    box = [[0, 70], [400, 70], [400, 120], [0, 120]]
+    assert text_in_region(GEOMETRY, 1, box) == "Mawdsley-Brooks Ltd"
+
+
+def test_text_in_region_is_page_scoped() -> None:
+    # The same coordinates on page 2 hold different text.
+    assert text_in_region(GEOMETRY, 2, [[490, 890], [640, 890], [640, 940], [490, 940]]) == "8077219"
+    # An empty area returns "".
+    assert text_in_region(GEOMETRY, 1, [[900, 1200], [990, 1200], [990, 1300], [900, 1300]]) == ""
+
+
+def test_text_in_region_is_safe_on_malformed_geometry() -> None:
+    assert text_in_region({}, 1, [[0, 0], [1, 0], [1, 1]]) == ""
+    assert text_in_region({"pages": "nope"}, 1, [[0, 0], [1, 0], [1, 1]]) == ""

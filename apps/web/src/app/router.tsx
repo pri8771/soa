@@ -134,6 +134,17 @@ const Simulation = lazyScreen(() =>
 const Settings = lazyScreen(() =>
   import("../screens/Settings").then(({ Settings }) => ({ default: Settings })),
 );
+const Training = lazyScreen(() =>
+  import("../screens/Training").then(({ Training }) => ({ default: Training })),
+);
+const TrainingSet = lazyScreen(() =>
+  import("../screens/TrainingSet").then(({ TrainingSet }) => ({ default: TrainingSet })),
+);
+const TrainingAnnotate = lazyScreen(() =>
+  import("../screens/TrainingAnnotate").then(({ TrainingAnnotate }) => ({
+    default: TrainingAnnotate,
+  })),
+);
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -316,6 +327,24 @@ const simulationRoute = createRoute({
   component: Simulation,
 });
 
+const trainingRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug/training",
+  component: Training,
+});
+
+const trainingSetRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug/training/$trainingSlug",
+  component: TrainingSet,
+});
+
+const trainingAnnotateRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug/training/$trainingSlug/documents/$documentId",
+  component: TrainingAnnotate,
+});
+
 const operationsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "overview",
@@ -382,6 +411,9 @@ const routeTree = rootRoute.addChildren([
     streamDetailRoute,
     streamConfigureRoute,
     simulationRoute,
+    trainingRoute,
+    trainingSetRoute,
+    trainingAnnotateRoute,
     providersRoute,
     catalogsRoute,
     catalogManagerRoute,
