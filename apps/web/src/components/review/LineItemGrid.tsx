@@ -270,11 +270,13 @@ export function LineItemGrid({
                           font: "inherit",
                           width: "100%",
                           minWidth: "5rem",
-                          padding: "0.25rem",
+                          padding: "0.25rem 0.375rem",
                           border: cell?.corrected
-                            ? "1px solid var(--soa-accent, #4c6ef5)"
+                            ? "1.5px solid var(--soa-accent)"
                             : "1px solid var(--soa-border)",
-                          borderRadius: 4,
+                          borderRadius: "var(--soa-radius-control)",
+                          background: "var(--soa-surface)",
+                          color: "var(--soa-text-primary)",
                         }}
                       />
                       <span aria-live="polite" style={{ font: "var(--soa-font-caption)" }}>

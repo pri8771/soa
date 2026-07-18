@@ -909,9 +909,173 @@ export function ReviewStudio() {
 
         <SplitLayout
           storageKey="soa.review.split"
-          leftLabel="Document"
-          rightLabel="Fields"
+          leftLabel="Fields"
+          rightLabel="Document"
           left={
+            <div style={{ display: "grid", gap: "var(--soa-space-4)" }}>
+              <HeaderFieldEditor
+                fields={headerFields}
+                reasons={data.task.reasons}
+                drafts={drafts}
+                saveStates={saveStates}
+                activeFieldKey={activeFieldKey}
+                onFieldFocus={focusField}
+                onDraftChange={(fieldKey, value) =>
+                  setDrafts((prev) => ({ ...prev, [fieldKey]: value }))
+                }
+                onSave={(fieldKey, value) => void enqueueSave(fieldKey, null, value)}
+                readOnly={!editable}
+              />
+
+              {editable && activeFieldKey !== null && activeFieldKey in CATALOG_FIELD_LABELS ? (
+                <div style={{ display: "grid", gap: "var(--soa-space-2)" }}>
+                  <CatalogCandidatePicker
+                    key={stateKey(activeFieldKey, activeRowIndex)}
+                    fieldLabel={CATALOG_FIELD_LABELS[activeFieldKey] ?? activeFieldKey}
+                    initialQuery={
+                      (activeRowIndex === null ? drafts[activeFieldKey] : undefined) ??
+                      serverValueFor(activeFieldKey, activeRowIndex).value ??
+                      ""
+                    }
+                    loadCandidates={async (query) => {
+                      catalogQueryRef.current = query;
+                      const response = await fetchCatalogCandidates(
+                        slug,
+                        taskId,
+                        activeFieldKey,
+                        query,
+                      );
+                      if (!response.available) {
+                        throw new Error(response.reason ?? "No catalog is bound to this stream.");
+                      }
+                      return response.candidates;
+                    }}
+                    onPick={(candidate, reason) => enqueuePick(candidate, reason)}
+                  />
+                  {catalogMessage ? (
+                    <p role="status" style={{ margin: 0, font: "var(--soa-font-caption)" }}>
+                      {catalogMessage}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {Object.keys({
+                ...data.line_items,
+                ...(pendingRows.length ? { lines: [] } : {}),
+              }).map((table) => {
+                const { columns, rows } = buildGridRows(data, table, pendingRows);
+                const nextRowIndex = rows.reduce((max, row) => Math.max(max, row.rowIndex + 1), 0);
+                const effective = (fieldKey: string, rowIndex: number) =>
+                  rows.find((row) => row.rowIndex === rowIndex)?.cells[fieldKey]?.value ?? null;
+                return (
+                  <LineItemGrid
+                    key={table}
+                    table={table}
+                    columns={columns}
+                    rows={rows}
+                    saveStates={saveStates}
+                    readOnly={!editable}
+                    onCellFocus={(fieldKey, rowIndex) => focusField(fieldKey, rowIndex)}
+                    onSaveCell={(fieldKey, rowIndex, value) => {
+                      setUndoStack((prev) => [
+                        ...prev,
+                        [{ fieldKey, rowIndex, previous: effective(fieldKey, rowIndex) }],
+                      ]);
+                      void enqueueSave(fieldKey, rowIndex, value);
+                    }}
+                    onAddRow={() => setPendingRows((prev) => [...prev, nextRowIndex])}
+                    onRemoveRow={(rowIndex) => {
+                      const row = rows.find((candidate) => candidate.rowIndex === rowIndex);
+                      if (!row) return;
+                      const filled = columns.filter((key) => row.cells[key]?.value != null);
+                      saveBatch(
+                        filled.map((key) => ({ fieldKey: key, rowIndex, value: "" })),
+                        filled.map((key) => ({
+                          fieldKey: key,
+                          rowIndex,
+                          previous: row.cells[key]?.value ?? null,
+                        })),
+                      );
+                      setPendingRows((prev) => prev.filter((index) => index !== rowIndex));
+                    }}
+                    onSplitRow={(rowIndex) => {
+                      const row = rows.find((candidate) => candidate.rowIndex === rowIndex);
+                      if (!row) return;
+                      const filled = columns.filter((key) => row.cells[key]?.value != null);
+                      saveBatch(
+                        filled.map((key) => ({
+                          fieldKey: key,
+                          rowIndex: nextRowIndex,
+                          value: row.cells[key]?.value ?? "",
+                        })),
+                        filled.map((key) => ({
+                          fieldKey: key,
+                          rowIndex: nextRowIndex,
+                          previous: null,
+                        })),
+                      );
+                    }}
+                    onMergeUp={(rowIndex) => {
+                      const position = rows.findIndex(
+                        (candidate) => candidate.rowIndex === rowIndex,
+                      );
+                      const source = rows[position];
+                      const above = rows[position - 1];
+                      if (!source || !above) return;
+                      const numeric = (value: string | null) => {
+                        const parsed = Number((value ?? "").replace(/,/g, ""));
+                        return Number.isFinite(parsed) ? parsed : null;
+                      };
+                      const edits: { fieldKey: string; rowIndex: number; value: string }[] = [];
+                      const undoEntries: {
+                        fieldKey: string;
+                        rowIndex: number | null;
+                        previous: string | null;
+                      }[] = [];
+                      for (const key of [`${table}.quantity`, `${table}.line_total`]) {
+                        const a = numeric(above.cells[key]?.value ?? null);
+                        const b = numeric(source.cells[key]?.value ?? null);
+                        if (a !== null && b !== null) {
+                          edits.push({
+                            fieldKey: key,
+                            rowIndex: above.rowIndex,
+                            value: String(a + b),
+                          });
+                          undoEntries.push({
+                            fieldKey: key,
+                            rowIndex: above.rowIndex,
+                            previous: above.cells[key]?.value ?? null,
+                          });
+                        }
+                      }
+                      for (const key of columns) {
+                        if (source.cells[key]?.value != null) {
+                          edits.push({ fieldKey: key, rowIndex: source.rowIndex, value: "" });
+                          undoEntries.push({
+                            fieldKey: key,
+                            rowIndex: source.rowIndex,
+                            previous: source.cells[key]?.value ?? null,
+                          });
+                        }
+                      }
+                      saveBatch(edits, undoEntries);
+                    }}
+                    canUndo={undoStack.length > 0}
+                    onUndo={() => {
+                      const entries = undoStack[undoStack.length - 1];
+                      if (!entries) return;
+                      setUndoStack((prev) => prev.slice(0, -1));
+                      for (const entry of entries) {
+                        void enqueueSave(entry.fieldKey, entry.rowIndex, entry.previous ?? "");
+                      }
+                    }}
+                  />
+                );
+              })}
+            </div>
+          }
+          right={
             <DocumentViewer
               organizationSlug={slug}
               documentId={data.document.id}
@@ -922,161 +1086,7 @@ export function ReviewStudio() {
               onRegionDrawn={onRegionDrawn}
             />
           }
-          right={
-            <HeaderFieldEditor
-              fields={headerFields}
-              reasons={data.task.reasons}
-              drafts={drafts}
-              saveStates={saveStates}
-              activeFieldKey={activeFieldKey}
-              onFieldFocus={focusField}
-              onDraftChange={(fieldKey, value) =>
-                setDrafts((prev) => ({ ...prev, [fieldKey]: value }))
-              }
-              onSave={(fieldKey, value) => void enqueueSave(fieldKey, null, value)}
-              readOnly={!editable}
-            />
-          }
         />
-
-        {editable && activeFieldKey !== null && activeFieldKey in CATALOG_FIELD_LABELS ? (
-          <div style={{ display: "grid", gap: "var(--soa-space-2)" }}>
-            <CatalogCandidatePicker
-              key={stateKey(activeFieldKey, activeRowIndex)}
-              fieldLabel={CATALOG_FIELD_LABELS[activeFieldKey] ?? activeFieldKey}
-              initialQuery={
-                (activeRowIndex === null ? drafts[activeFieldKey] : undefined) ??
-                serverValueFor(activeFieldKey, activeRowIndex).value ??
-                ""
-              }
-              loadCandidates={async (query) => {
-                catalogQueryRef.current = query;
-                const response = await fetchCatalogCandidates(slug, taskId, activeFieldKey, query);
-                if (!response.available) {
-                  throw new Error(response.reason ?? "No catalog is bound to this stream.");
-                }
-                return response.candidates;
-              }}
-              onPick={(candidate, reason) => enqueuePick(candidate, reason)}
-            />
-            {catalogMessage ? (
-              <p role="status" style={{ margin: 0, font: "var(--soa-font-caption)" }}>
-                {catalogMessage}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        {Object.keys({ ...data.line_items, ...(pendingRows.length ? { lines: [] } : {}) }).map(
-          (table) => {
-            const { columns, rows } = buildGridRows(data, table, pendingRows);
-            const nextRowIndex = rows.reduce((max, row) => Math.max(max, row.rowIndex + 1), 0);
-            const effective = (fieldKey: string, rowIndex: number) =>
-              rows.find((row) => row.rowIndex === rowIndex)?.cells[fieldKey]?.value ?? null;
-            return (
-              <LineItemGrid
-                key={table}
-                table={table}
-                columns={columns}
-                rows={rows}
-                saveStates={saveStates}
-                readOnly={!editable}
-                onCellFocus={(fieldKey, rowIndex) => focusField(fieldKey, rowIndex)}
-                onSaveCell={(fieldKey, rowIndex, value) => {
-                  setUndoStack((prev) => [
-                    ...prev,
-                    [{ fieldKey, rowIndex, previous: effective(fieldKey, rowIndex) }],
-                  ]);
-                  void enqueueSave(fieldKey, rowIndex, value);
-                }}
-                onAddRow={() => setPendingRows((prev) => [...prev, nextRowIndex])}
-                onRemoveRow={(rowIndex) => {
-                  const row = rows.find((candidate) => candidate.rowIndex === rowIndex);
-                  if (!row) return;
-                  const filled = columns.filter((key) => row.cells[key]?.value != null);
-                  saveBatch(
-                    filled.map((key) => ({ fieldKey: key, rowIndex, value: "" })),
-                    filled.map((key) => ({
-                      fieldKey: key,
-                      rowIndex,
-                      previous: row.cells[key]?.value ?? null,
-                    })),
-                  );
-                  setPendingRows((prev) => prev.filter((index) => index !== rowIndex));
-                }}
-                onSplitRow={(rowIndex) => {
-                  const row = rows.find((candidate) => candidate.rowIndex === rowIndex);
-                  if (!row) return;
-                  const filled = columns.filter((key) => row.cells[key]?.value != null);
-                  saveBatch(
-                    filled.map((key) => ({
-                      fieldKey: key,
-                      rowIndex: nextRowIndex,
-                      value: row.cells[key]?.value ?? "",
-                    })),
-                    filled.map((key) => ({
-                      fieldKey: key,
-                      rowIndex: nextRowIndex,
-                      previous: null,
-                    })),
-                  );
-                }}
-                onMergeUp={(rowIndex) => {
-                  const position = rows.findIndex((candidate) => candidate.rowIndex === rowIndex);
-                  const source = rows[position];
-                  const above = rows[position - 1];
-                  if (!source || !above) return;
-                  const numeric = (value: string | null) => {
-                    const parsed = Number((value ?? "").replace(/,/g, ""));
-                    return Number.isFinite(parsed) ? parsed : null;
-                  };
-                  const edits: { fieldKey: string; rowIndex: number; value: string }[] = [];
-                  const undoEntries: {
-                    fieldKey: string;
-                    rowIndex: number | null;
-                    previous: string | null;
-                  }[] = [];
-                  for (const key of [`${table}.quantity`, `${table}.line_total`]) {
-                    const a = numeric(above.cells[key]?.value ?? null);
-                    const b = numeric(source.cells[key]?.value ?? null);
-                    if (a !== null && b !== null) {
-                      edits.push({
-                        fieldKey: key,
-                        rowIndex: above.rowIndex,
-                        value: String(a + b),
-                      });
-                      undoEntries.push({
-                        fieldKey: key,
-                        rowIndex: above.rowIndex,
-                        previous: above.cells[key]?.value ?? null,
-                      });
-                    }
-                  }
-                  for (const key of columns) {
-                    if (source.cells[key]?.value != null) {
-                      edits.push({ fieldKey: key, rowIndex: source.rowIndex, value: "" });
-                      undoEntries.push({
-                        fieldKey: key,
-                        rowIndex: source.rowIndex,
-                        previous: source.cells[key]?.value ?? null,
-                      });
-                    }
-                  }
-                  saveBatch(edits, undoEntries);
-                }}
-                canUndo={undoStack.length > 0}
-                onUndo={() => {
-                  const entries = undoStack[undoStack.length - 1];
-                  if (!entries) return;
-                  setUndoStack((prev) => prev.slice(0, -1));
-                  for (const entry of entries) {
-                    void enqueueSave(entry.fieldKey, entry.rowIndex, entry.previous ?? "");
-                  }
-                }}
-              />
-            );
-          },
-        )}
 
         <ReviewComments organizationSlug={slug} taskId={taskId} />
 

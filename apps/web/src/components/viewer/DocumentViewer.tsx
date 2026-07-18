@@ -544,9 +544,9 @@ export function DocumentViewer({
               style={{
                 border:
                   page.page_number === pageNumber
-                    ? "2px solid var(--soa-accent, #4c6ef5)"
+                    ? "2px solid var(--soa-accent)"
                     : "1px solid var(--soa-border)",
-                borderRadius: "4px",
+                borderRadius: "var(--soa-radius-control)",
                 padding: 2,
                 background: "none",
                 cursor: "pointer",
@@ -631,8 +631,8 @@ export function DocumentViewer({
                           top: `${preview.top}%`,
                           width: `${preview.width}%`,
                           height: `${preview.height}%`,
-                          border: "2px solid var(--soa-accent, #4c6ef5)",
-                          background: "rgba(76, 110, 245, 0.18)",
+                          border: "2px solid var(--soa-accent)",
+                          background: "color-mix(in srgb, var(--soa-accent) 18%, transparent)",
                           pointerEvents: "none",
                         }}
                       />
@@ -661,10 +661,12 @@ export function DocumentViewer({
                           position: "absolute",
                           top: 4,
                           left: 4,
-                          border: active ? "2px solid #d97706" : "1px dashed #d97706",
-                          background: "rgba(217, 119, 6, 0.9)",
-                          color: "#fff",
-                          borderRadius: 4,
+                          border: active
+                            ? "2px solid var(--soa-warning)"
+                            : "1px dashed var(--soa-warning)",
+                          background: "var(--soa-warning)",
+                          color: "var(--soa-surface)",
+                          borderRadius: "var(--soa-radius-control)",
                           padding: "2px 6px",
                           font: "var(--soa-font-caption)",
                           cursor: "pointer",
@@ -702,12 +704,12 @@ export function DocumentViewer({
                           width: `${box.width}%`,
                           height: `${box.height}%`,
                           border: active
-                            ? "2px solid var(--soa-accent, #4c6ef5)"
-                            : "2px dashed rgba(76, 110, 245, 0.5)",
+                            ? "2px solid var(--soa-accent)"
+                            : "2px dashed color-mix(in srgb, var(--soa-accent) 50%, transparent)",
                           background: active
-                            ? "rgba(76, 110, 245, 0.18)"
-                            : "rgba(76, 110, 245, 0.08)",
-                          borderRadius: 2,
+                            ? "color-mix(in srgb, var(--soa-accent) 18%, transparent)"
+                            : "color-mix(in srgb, var(--soa-accent) 8%, transparent)",
+                          borderRadius: "var(--soa-radius-control)",
                           padding: 0,
                           cursor: "pointer",
                         }}
@@ -730,9 +732,9 @@ export function DocumentViewer({
                                 height: 10,
                                 marginLeft: -5,
                                 marginTop: -5,
-                                background: "#fff",
-                                border: "2px solid var(--soa-accent, #4c6ef5)",
-                                borderRadius: 2,
+                                background: "var(--soa-surface)",
+                                border: "2px solid var(--soa-accent)",
+                                borderRadius: "var(--soa-radius-control)",
                                 cursor: "nwse-resize",
                                 touchAction: "none",
                               }}

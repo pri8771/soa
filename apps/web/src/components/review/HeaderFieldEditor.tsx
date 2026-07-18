@@ -131,60 +131,77 @@ export function HeaderFieldEditor({
         </div>
       ) : null}
 
-      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.75rem" }}>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "1px" }}>
         {fields.map((field) => {
           const draft = drafts[field.field_key];
           const currentValue = draft ?? field.raw_value ?? "";
           const save = saveStates[field.field_key] ?? { status: "idle" };
           const flagged = fieldReasons.some((reason) => reason.field_key === field.field_key);
+          const active = activeFieldKey === field.field_key;
           const inputId = `field-${field.field_key}`;
           return (
             <li
               key={field.field_key}
               style={{
-                border:
-                  activeFieldKey === field.field_key
-                    ? "2px solid var(--soa-accent, #4c6ef5)"
-                    : "1px solid var(--soa-border)",
-                borderRadius: "var(--soa-radius-panel)",
-                padding: "var(--soa-space-3)",
+                borderLeft: active ? "3px solid var(--soa-accent)" : "3px solid var(--soa-border)",
+                borderBottom: "1px solid var(--soa-border)",
+                background: active ? "var(--soa-accent-soft)" : "var(--soa-surface)",
+                padding: "var(--soa-space-3) var(--soa-space-4)",
                 display: "grid",
-                gap: "0.375rem",
+                gap: "var(--soa-space-2)",
               }}
             >
               <div
                 style={{
                   display: "flex",
                   gap: "var(--soa-space-2)",
-                  alignItems: "baseline",
+                  alignItems: "center",
                   flexWrap: "wrap",
+                  justifyContent: "space-between",
                 }}
               >
-                <label htmlFor={inputId} style={{ fontWeight: 600 }}>
+                <label
+                  htmlFor={inputId}
+                  style={{
+                    font: "700 11px/16px var(--soa-font-family)",
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "var(--soa-text-secondary)",
+                  }}
+                >
                   {field.field_key.replace(/_/g, " ")}
                 </label>
-                {flagged ? <Badge tone="warning">needs attention</Badge> : null}
-                <Badge tone={STATUS_TONES[field.validation_status] ?? "neutral"}>
-                  {field.validation_status}
-                </Badge>
-                <span style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}>
-                  confidence {Math.round(field.confidence * 100)}% · {field.provider}
-                  {field.provider_model ? `@${field.provider_model}` : ""}
-                </span>
-                {/* Autosave state, announced to screen readers. */}
-                <span aria-live="polite" style={{ font: "var(--soa-font-caption)" }}>
-                  {save.status === "saving"
-                    ? "Saving…"
-                    : save.status === "saved"
-                      ? "Saved"
-                      : save.status === "error"
-                        ? `Not saved: ${save.message}`
-                        : ""}
-                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "var(--soa-space-2)",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {flagged ? <Badge tone="warning">needs attention</Badge> : null}
+                  <Badge tone={STATUS_TONES[field.validation_status] ?? "neutral"}>
+                    {field.validation_status}
+                  </Badge>
+                  {/* Autosave state, announced to screen readers. */}
+                  <span
+                    aria-live="polite"
+                    style={{ font: "var(--soa-font-caption)", color: "var(--soa-text-muted)" }}
+                  >
+                    {save.status === "saving"
+                      ? "Saving…"
+                      : save.status === "saved"
+                        ? "Saved"
+                        : save.status === "error"
+                          ? `Not saved: ${save.message}`
+                          : ""}
+                  </span>
+                </div>
               </div>
 
               <input
                 id={inputId}
+                className="soa-field-input"
                 data-review-field-key={field.field_key}
                 data-review-row-index="header"
                 ref={(element) => {
@@ -217,12 +234,7 @@ export function HeaderFieldEditor({
                     goToReason(reasonIndex + 1);
                   }
                 }}
-                style={{
-                  font: "inherit",
-                  padding: "0.375rem 0.5rem",
-                  border: "1px solid var(--soa-border)",
-                  borderRadius: 4,
-                }}
+                style={{ width: "100%" }}
               />
 
               <div
@@ -230,14 +242,18 @@ export function HeaderFieldEditor({
                   display: "flex",
                   gap: "var(--soa-space-3)",
                   flexWrap: "wrap",
-                  font: "var(--soa-font-caption)",
+                  font: "500 11px/16px var(--soa-font-mono, monospace)",
                   color: "var(--soa-text-muted)",
                 }}
               >
+                <span>
+                  confidence {Math.round(field.confidence * 100)}% · {field.provider}
+                  {field.provider_model ? `@${field.provider_model}` : ""}
+                </span>
                 <span>raw: {field.raw_value ?? "—"}</span>
                 <span>canonical: {formatValue(field.normalized_value)}</span>
                 {field.normalization_error ? (
-                  <span role="alert" style={{ color: "var(--soa-critical, #c0392b)" }}>
+                  <span role="alert" style={{ color: "var(--soa-critical)" }}>
                     {field.normalization_error}
                   </span>
                 ) : null}
