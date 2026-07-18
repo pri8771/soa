@@ -1530,6 +1530,24 @@ export const handlers = [
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
   http.get("/api/orgs/:slug/routing/unrouted", () => HttpResponse.json({ items: [] })),
+  http.get("/api/orgs/:slug/skills", () =>
+    HttpResponse.json({
+      items: [
+        {
+          id: "41111111-1111-4111-8111-111111111111",
+          slug: "email",
+          name: "Email intake",
+          status: "active",
+          process_slug: "purchase-orders",
+          process_name: "Purchase orders",
+          in_review: 3,
+          received_30d: 128,
+          field_accuracy: 0.941,
+          trained_version: 2,
+        },
+      ],
+    }),
+  ),
   // Upload flow (ING-008): session -> signed PUT -> complete.
   http.post("/api/orgs/:slug/streams/:streamSlug/uploads", () =>
     HttpResponse.json(

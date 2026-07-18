@@ -23,6 +23,7 @@ import { useState } from "react";
 
 import {
   archiveStream,
+  fetchSkillsOverview,
   fetchStreamDetail,
   fetchStreams,
   type StreamVersionSummary,
@@ -191,12 +192,14 @@ export function StreamDetail() {
         </div>
       }
     >
-      <div style={{ display: "grid", gap: "var(--soa-space-5)", maxWidth: "56rem" }}>
+      <div style={{ display: "grid", gap: "var(--soa-space-5)", maxWidth: "64rem" }}>
         {archive.isError ? (
           <Banner tone="critical" title="Archive failed">
             {archive.error?.message ?? "The stream was not changed."}
           </Banner>
         ) : null}
+
+        <SkillMetricRail organizationSlug={slug} streamSlug={streamSlug} />
 
         <Panel title="Overview">
           <dl
@@ -286,5 +289,144 @@ export function StreamDetail() {
         </Panel>
       </div>
     </AppShell>
+  );
+}
+
+/** The skill's operating numbers, in the Blueprint metric-rail register. */
+function SkillMetricRail({
+  organizationSlug,
+  streamSlug,
+}: {
+  organizationSlug: string;
+  streamSlug: string;
+}) {
+  const overview = useQuery({
+    queryKey: ["skills", organizationSlug],
+    queryFn: () => fetchSkillsOverview(organizationSlug),
+  });
+  const skill = overview.data?.items.find((item) => item.slug === streamSlug);
+  if (!skill) return null;
+  const cells = [
+    {
+      k: "IN REVIEW",
+      v: String(skill.in_review),
+      s: "open review tasks",
+      link: true,
+      training: false,
+      warn: false,
+      hero: false,
+    },
+    {
+      k: "30-DAY VOLUME",
+      v: String(skill.received_30d),
+      s: "documents received",
+      link: false,
+      training: false,
+      warn: false,
+      hero: false,
+    },
+    {
+      k: "FIELD ACCURACY",
+      v: skill.field_accuracy === null ? "—" : `${(skill.field_accuracy * 100).toFixed(1)}%`,
+      s: skill.field_accuracy === null ? "not yet measured" : "latest evaluation",
+      link: false,
+      training: false,
+      warn: false,
+      hero: true,
+    },
+    {
+      k: "TRAINING",
+      v: skill.trained_version ? `v${skill.trained_version}` : "—",
+      s: skill.trained_version ? "published training set" : "label samples to train",
+      link: false,
+      training: true,
+      warn: !skill.trained_version,
+      hero: false,
+    },
+  ];
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(4, 1fr)",
+        border: "1.5px solid var(--soa-border-strong)",
+        background: "var(--soa-border-strong)",
+        gap: "1px",
+      }}
+    >
+      {cells.map((cell) => {
+        const body = (
+          <>
+            <div
+              style={{
+                font: "700 9.5px/12px var(--soa-font-family)",
+                letterSpacing: "0.12em",
+                color: cell.hero ? "var(--soa-accent-soft)" : "var(--soa-text-muted)",
+              }}
+            >
+              {cell.k}
+            </div>
+            <div
+              style={{
+                font: "var(--soa-font-heading-xl)",
+                fontVariantNumeric: "tabular-nums",
+                marginTop: "var(--soa-space-1)",
+                color: cell.hero
+                  ? "var(--soa-surface)"
+                  : cell.warn
+                    ? "var(--soa-warning)"
+                    : "var(--soa-text-primary)",
+              }}
+            >
+              {cell.v}
+            </div>
+            <div
+              style={{
+                font: "var(--soa-font-caption)",
+                color: cell.hero ? "var(--soa-accent-soft)" : "var(--soa-text-muted)",
+                marginTop: "2px",
+              }}
+            >
+              {cell.s}
+            </div>
+          </>
+        );
+        const cellStyle: React.CSSProperties = {
+          padding: "var(--soa-space-3) var(--soa-space-4)",
+          background: cell.hero ? "var(--soa-accent)" : "var(--soa-surface)",
+          textDecoration: "none",
+          display: "block",
+        };
+        if (cell.link) {
+          return (
+            <Link
+              key={cell.k}
+              to="/app/$organizationSlug/review"
+              params={{ organizationSlug }}
+              style={cellStyle}
+            >
+              {body}
+            </Link>
+          );
+        }
+        if (cell.training) {
+          return (
+            <Link
+              key={cell.k}
+              to="/app/$organizationSlug/streams/$streamSlug/training"
+              params={{ organizationSlug, streamSlug }}
+              style={cellStyle}
+            >
+              {body}
+            </Link>
+          );
+        }
+        return (
+          <div key={cell.k} style={cellStyle}>
+            {body}
+          </div>
+        );
+      })}
+    </div>
   );
 }
