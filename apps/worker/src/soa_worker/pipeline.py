@@ -437,7 +437,11 @@ class _Pipeline:
         classifier = await ClassifierVersionRepository(session, context).get_published(
             document.stream_id
         )
-        if classifier is None:
+        # An empty routing table is the same degenerate case as no published
+        # classifier at all (docs/ROUTING.md: "a single-skill bucket is just
+        # an intake with no classifier") -- it must never mean "nothing can
+        # ever match", which would fail every document closed as unrouted.
+        if classifier is None or not classifier.content.get("routes"):
             return StageOutcome(output_summary=base_summary)
         excerpt = await self._classification_text(session, context, document)
         decision = match_route(classifier.content, excerpt)

@@ -5,7 +5,11 @@ document is processed by. An **intake (bucket)** is a stream documents arrive
 at. A stream with a **published classifier** acts as a router: arriving
 documents are matched against the routing table on their own text and handed
 to the winning skill before extraction. A single-skill bucket is just an
-intake with no classifier — same pipeline, no special case.
+intake with no classifier — same pipeline, no special case. A published
+classifier with an **empty** routing table is the same degenerate case,
+deliberately — publishing `{"routes": []}` is the supported way to disable
+routing on an intake without deleting its version history: the classify
+stage skips straight through exactly as if nothing were published.
 
 ```
 intake (bucket) ──0..1── classifier ──routes──▶ skills (streams)

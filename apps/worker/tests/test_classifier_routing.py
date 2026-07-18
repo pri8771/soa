@@ -260,6 +260,32 @@ async def test_stream_without_classifier_is_untouched(db: DatabaseSessions) -> N
         )
 
 
+async def test_published_classifier_with_no_routes_is_disabled_not_blocking(
+    db: DatabaseSessions,
+) -> None:
+    """An empty routing table is the same degenerate case as no published
+    classifier -- it must never mean every document is unroutable."""
+    store = MemoryObjectStore()
+    async with db.session_scope() as session:
+        draft = await create_classifier_draft(
+            session, CONTEXT, stream_id=INTAKE, content={"routes": []}, actor_id="user:test"
+        )
+        await publish_classifier_draft(session, CONTEXT, draft=draft, actor_id="user:test")
+    document_id = await seed_document(db, store, DIGITAL_PO)
+    orchestrator = Orchestrator(db, build_executors(store, MockExtractionProvider()))
+    await orchestrator.handle_preprocess(preprocess_payload(document_id))
+    await pump(db, orchestrator)
+
+    async with db.session_scope() as session:
+        document = await DocumentRepository(session, CONTEXT).get(document_id)
+        assert document is not None
+        assert document.stream_id == INTAKE
+        assert document.state in (
+            DocumentState.APPROVED.value,
+            DocumentState.REVIEW_REQUIRED.value,
+        )
+
+
 async def test_manual_route_is_authoritative_and_never_reclassifies(
     db: DatabaseSessions,
 ) -> None:

@@ -44,9 +44,17 @@ class TestContentValidation:
     def test_valid_routing_table_passes(self) -> None:
         validate_classifier_content(CONTENT)
 
-    def test_routes_are_required(self) -> None:
+    def test_empty_routes_list_is_valid_and_means_disabled(self) -> None:
+        # The degenerate "disabled" case (docs/ROUTING.md): a single-skill
+        # bucket is just an intake with no classifier, so an empty routing
+        # table must publish cleanly rather than being rejected.
+        validate_classifier_content({"routes": []})
+
+    def test_routes_must_be_a_list(self) -> None:
         with pytest.raises(ClassifierValidationError, match="routes"):
-            validate_classifier_content({"routes": []})
+            validate_classifier_content({"routes": "not-a-list"})
+        with pytest.raises(ClassifierValidationError, match="routes"):
+            validate_classifier_content({})
 
     def test_duplicate_labels_are_refused(self) -> None:
         with pytest.raises(ClassifierValidationError, match="twice"):

@@ -46,8 +46,11 @@ class ClassifierValidationError(ValueError):
 
 def validate_classifier_content(content: dict[str, Any]) -> None:
     routes = content.get("routes")
-    if not isinstance(routes, list) or not routes:
-        raise ClassifierValidationError("content needs a non-empty 'routes' list")
+    if not isinstance(routes, list):
+        raise ClassifierValidationError("content needs a 'routes' list")
+    # An empty list is valid and publishable: it is the degenerate "disabled"
+    # case (docs/ROUTING.md) -- the classify stage treats it identically to
+    # no published classifier at all, not "nothing can ever match".
     if len(routes) > MAX_ROUTES:
         raise ClassifierValidationError(f"'routes' exceeds {MAX_ROUTES} entries")
     labels: set[str] = set()
