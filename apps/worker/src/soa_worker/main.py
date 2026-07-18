@@ -29,6 +29,7 @@ from soa_worker.job_metrics import JobMetrics
 from soa_worker.model_usage import TokenPricing
 from soa_worker.orchestrator import STAGE_JOB_TYPE, Orchestrator
 from soa_worker.registry import HandlerRegistry, JobEnvelope
+from soa_worker.retention_scheduler import RetentionCoordinator
 from soa_worker.run_config import ResolvedExecutorFactory
 from soa_worker.secret_revoke import register_secret_revoke_handler
 from soa_worker.settings import WorkerSettings, load_settings
@@ -361,11 +362,13 @@ async def _run() -> None:
     worker_id = f"{socket.gethostname()}:{uuid.uuid4()}"
     domain_failures = DomainJobFailureCoordinator(db)
     external_cleanups = ExternalCleanupCoordinator(db)
+    retention_sweeps = RetentionCoordinator(db)
 
     async def reconcile_terminal_failures() -> int:
         domain_count = await domain_failures.reconcile()
         cleanup_count = await external_cleanups.reconcile()
-        return domain_count + cleanup_count
+        retention_count = await retention_sweeps.reconcile()
+        return domain_count + cleanup_count + retention_count
 
     queue = DatabaseJobQueue(
         db,

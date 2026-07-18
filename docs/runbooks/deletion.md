@@ -120,3 +120,35 @@
   and tombstone id) for the compliance file. Verify the retention policy
   would have eventually deleted this data anyway (SEC-008) — a manual
   request should be the exception, not the mechanism.
+
+## The automatic retention sweep
+
+Until this shipped, "the retention policy would have eventually deleted this
+data anyway" was aspirational — nothing aged data automatically; every
+deletion above was operator-triggered. `RetentionCoordinator`
+(`apps/worker/src/soa_worker/retention_scheduler.py`) closes that gap the same
+conservative way the rest of this runbook works: **it only ever creates a
+deletion request**, landing a settled document in `pending_approval` once its
+organization's published retention policy window elapses. It never approves
+and never deletes — the two-person approval gate above (a distinct approver,
+`POST .../deletion-requests/{id}/approve`) still stands between an automatic
+request and actual erasure. A legal hold or a non-standard artifact retention
+class (`extended`/`legal_hold`) is a human decision the sweep never overrides;
+it skips those documents for a person to handle via the flow above.
+
+It runs on the worker's existing periodic reconcile tick (`main.py`, the same
+mechanism `ExternalCleanupCoordinator` uses) — no new job type, queue payload,
+or migration. Organizations with no published `retention` policy are skipped
+entirely (nothing to enforce). Two documented simplifications versus the
+engine's ideal (`soa_db.retention`'s docstring calls policy-pinning "load
+bearing"): settlement time is approximated as the document's `updated_at`
+(nothing pins a `settled_at` today), and the policy applied is the org's
+CURRENTLY published retention policy rather than one pinned at settlement — a
+shorter policy published later can make older documents eligible sooner than a
+true pin would. Both are safe because the worst case is an EARLIER deletion
+**request**, still gated by the same human approval as everything else in this
+runbook.
+
+If a document shows up in the review queue with `requested_by:
+system:retention-scheduler`, that's this sweep — treat it exactly like any
+other pending request above.
