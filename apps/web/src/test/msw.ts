@@ -82,6 +82,17 @@ export const DEFAULT_STREAMS = [
     process_slug: "purchase-orders",
     active_version_number: 2,
   },
+  {
+    id: "44444444-4444-4444-8444-444444444444",
+    process_id: "31111111-1111-4111-8111-111111111111",
+    name: "Acme Skill",
+    slug: "acme-skill",
+    status: "active",
+    active_version_id: "44555555-5555-4555-8555-555555555555",
+    process_name: "Purchase orders",
+    process_slug: "purchase-orders",
+    active_version_number: 1,
+  },
 ];
 
 export const DEFAULT_STREAM_DRAFT = {
@@ -284,6 +295,28 @@ export const DEFAULT_RULES_LISTING = {
   versions: [DEFAULT_RULES_DRAFT],
   field_types: { po_number: "text", total: "money" },
 };
+
+export const DEFAULT_CLASSIFIER_DRAFT = {
+  id: "45111111-1111-4111-8111-111111111111",
+  stream_id: "41111111-1111-4111-8111-111111111111",
+  version_number: 1,
+  state: "draft",
+  reference: "classifier:45111111-1111-4111-8111-111111111111:v1",
+  content: {
+    routes: [
+      {
+        label: "acme",
+        target_stream_id: "44444444-4444-4444-8444-444444444444",
+        signals: ["Acme GmbH"],
+      },
+    ],
+  },
+  change_summary: null,
+  published_at: null,
+  published_by: null,
+};
+
+export const DEFAULT_CLASSIFIER_LISTING = { items: [DEFAULT_CLASSIFIER_DRAFT] };
 
 export const DEFAULT_DOCUMENTS = [
   {
@@ -1529,6 +1562,9 @@ export const handlers = [
     HttpResponse.json({ valid: true, message: null }),
   ),
   http.get("/api/orgs/:slug/streams", () => HttpResponse.json(DEFAULT_STREAMS)),
+  http.get("/api/orgs/:slug/streams/:streamSlug/classifier", () =>
+    HttpResponse.json(DEFAULT_CLASSIFIER_LISTING),
+  ),
   http.get("/api/orgs/:slug/routing/unrouted", () => HttpResponse.json({ items: [] })),
   http.get("/api/orgs/:slug/skills", () =>
     HttpResponse.json({

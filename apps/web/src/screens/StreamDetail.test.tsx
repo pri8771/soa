@@ -8,9 +8,11 @@ import { renderApp } from "../test/render";
 describe("Streams list (CFG-010)", () => {
   it("lists streams with parent process and published version", async () => {
     await renderApp("/app/northstar/streams");
-    expect(await screen.findByRole("link", { name: "Email intake" })).toBeInTheDocument();
-    expect(screen.getByText("Purchase orders")).toBeInTheDocument();
-    expect(screen.getByText("v2")).toBeInTheDocument();
+    const emailLink = await screen.findByRole("link", { name: "Email intake" });
+    const row = emailLink.closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText("Purchase orders")).toBeInTheDocument();
+    expect(within(row!).getByText("v2")).toBeInTheDocument();
   });
 });
 

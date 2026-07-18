@@ -66,6 +66,11 @@ const StreamConfigure = lazyScreen(() =>
     default: StreamConfigure,
   })),
 );
+const ClassifierBuilder = lazyScreen(() =>
+  import("../screens/ClassifierBuilder").then(({ ClassifierBuilder }) => ({
+    default: ClassifierBuilder,
+  })),
+);
 const StreamDetail = lazyScreen(() =>
   import("../screens/StreamDetail").then(({ StreamDetail }) => ({ default: StreamDetail })),
 );
@@ -306,6 +311,12 @@ const streamConfigureRoute = createRoute({
   component: StreamConfigure,
 });
 
+const classifierRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "streams/$streamSlug/classifier",
+  component: ClassifierBuilder,
+});
+
 const catalogsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "catalogs",
@@ -420,6 +431,7 @@ const routeTree = rootRoute.addChildren([
     streamsRoute,
     streamDetailRoute,
     streamConfigureRoute,
+    classifierRoute,
     simulationRoute,
     trainingRoute,
     trainingSetRoute,

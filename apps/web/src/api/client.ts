@@ -487,6 +487,70 @@ export function archiveStream(
   });
 }
 
+// --- Classifier routing tables (intake → skill routing) ---
+
+export interface ClassifierRoute {
+  label: string;
+  target_stream_id: string;
+  signals: string[];
+}
+
+export interface ClassifierContent {
+  routes: ClassifierRoute[];
+}
+
+export interface ClassifierVersion {
+  id: string;
+  stream_id: string;
+  version_number: number;
+  state: "draft" | "published" | "superseded";
+  reference: string;
+  content: ClassifierContent;
+  change_summary: string | null;
+  published_at: string | null;
+  published_by: string | null;
+}
+
+export function fetchClassifier(
+  organizationSlug: string,
+  streamSlug: string,
+): Promise<{ items: ClassifierVersion[] }> {
+  return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/classifier`);
+}
+
+export function createClassifierDraft(
+  organizationSlug: string,
+  streamSlug: string,
+  content: ClassifierContent,
+  changeSummary?: string | null,
+): Promise<ClassifierVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/streams/${streamSlug}/classifier`, {
+    method: "POST",
+    body: JSON.stringify({ content, change_summary: changeSummary ?? null }),
+  });
+}
+
+export function updateClassifierDraft(
+  organizationSlug: string,
+  versionId: string,
+  content: ClassifierContent,
+  changeSummary?: string | null,
+): Promise<ClassifierVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/classifier-versions/${versionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content, change_summary: changeSummary ?? null }),
+  });
+}
+
+export function publishClassifierVersion(
+  organizationSlug: string,
+  versionId: string,
+): Promise<ClassifierVersion> {
+  return apiFetch(`/orgs/${organizationSlug}/classifier-versions/${versionId}/publish`, {
+    method: "POST",
+  });
+}
+
 // --- Versioned extraction instructions (AIO-010) ---
 
 export interface InstructionVersion {

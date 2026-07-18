@@ -178,6 +178,12 @@ export function StreamDetail() {
       actions={
         <div style={{ display: "flex", gap: "var(--soa-space-2)", alignItems: "center" }}>
           <Link
+            to="/app/$organizationSlug/streams/$streamSlug/classifier"
+            params={{ organizationSlug: session.organization.slug, streamSlug }}
+          >
+            Configure routing
+          </Link>
+          <Link
             to="/app/$organizationSlug/streams/$streamSlug/configure"
             params={{ organizationSlug: session.organization.slug, streamSlug }}
           >
