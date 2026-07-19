@@ -35,7 +35,12 @@ SERVICES = (
     Service(
         "worker",
         ("uv", "run", "soa-worker"),
-        (("SOA_WORKER_STORAGE_BACKEND", "filesystem"),),
+        (
+            ("SOA_WORKER_STORAGE_BACKEND", "filesystem"),
+            ("SOA_WORKER_LOCAL_LLM_ENDPOINT", "http://localhost:11434/v1/chat/completions"),
+            ("SOA_WORKER_LOCAL_LLM_MODEL", "qwen2.5-coder:14b"),
+            ("SOA_WORKER_LOCAL_LLM_TIMEOUT_SECONDS", "480"),
+        ),
     ),
     Service(
         "web",

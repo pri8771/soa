@@ -41,12 +41,24 @@ make seed               # Northstar org + published process + active "uploads" s
 and the development seed read their `SOA_API_DATABASE_URL` /
 `SOA_WORKER_DATABASE_URL` runtime URLs from `.env`.
 
-## Run the stack (three terminals)
+## Run the stack (one command)
 
 The API and worker use the same **filesystem** object store by default, so you
-do not need MinIO. `make dev` loads `.env`, applies those development defaults,
-starts all three services, and stops the group if a child exits. The three
-terminal form below is useful for debugging one service.
+do not need MinIO. `make dev` (`python3 scripts/dev.py`) loads `.env`, applies
+the no-Docker development defaults for all three services — including
+`SOA_WORKER_LOCAL_LLM_ENDPOINT=http://localhost:11434/v1/chat/completions`,
+`SOA_WORKER_LOCAL_LLM_MODEL=qwen2.5-coder:14b`, and
+`SOA_WORKER_LOCAL_LLM_TIMEOUT_SECONDS=480` so the worker registers the local
+Ollama adapter out of the box — starts all three services, and stops the
+group if a child exits. An explicit shell export (or a value already set in
+`.env`) always overrides these defaults, so pointing at a different model or
+storage backend still works. Run `ollama serve` and `ollama pull
+qwen2.5-coder:14b` first (see below) if you want documents to actually
+extract with the local model instead of the deterministic mock; `make dev`
+itself never requires Ollama to be running.
+
+The three-terminal form below is useful for debugging one service in
+isolation.
 
 **Terminal 1 — API:**
 ```bash
