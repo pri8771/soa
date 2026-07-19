@@ -5,6 +5,7 @@ import hmac
 import json
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -12,12 +13,49 @@ from sqlalchemy import select
 
 from soa_db import DatabaseSessions
 from soa_db.outbox import OutboxEvent, OutboxStatus, mark_failed, mark_published
+from soa_db.outbox_destinations import get_destination
+from soa_db.tenant_guard import bind_tenant
+from soa_integrations import DestinationRefusedError, validate_destination
 
 
 @dataclass(frozen=True)
 class PublishResult:
     outcome: str  # published | retryable_error | dead_letter | no_op
     status_code: int | None = None
+
+
+async def resolve_outbox_destination(
+    db: DatabaseSessions,
+    *,
+    organization_id: uuid.UUID | None,
+    global_url: str | None,
+    allowlist: Sequence[str],
+    resolve: Callable[[str], list[str]] | None = None,
+) -> str | None:
+    """Per-org destination (EXP-012) wins over the deployment-wide global
+    URL when one is configured and active. System events
+    (``organization_id`` is ``None``) have no tenant to look one up for and
+    always use the global URL. ``resolve`` overrides DNS resolution (tests
+    only) — see ``soa_integrations.validate_destination``.
+
+    Re-validates the stored URL against the CURRENT allowlist/SSRF policy
+    and fails closed — raises rather than silently falling back to the
+    global receiver — if it no longer passes: a different tenant's events
+    must never reach a URL nobody currently approved.
+    """
+    if organization_id is not None:
+        async with db.session_scope() as session:
+            await bind_tenant(session, organization_id)
+            override = await get_destination(session, organization_id)
+        if override is not None and override.is_active:
+            try:
+                validate_destination(override.destination_url, allowlist=allowlist, resolve=resolve)
+            except DestinationRefusedError as refused:
+                raise RuntimeError(
+                    f"organization outbox destination failed validation: {refused}"
+                ) from refused
+            return override.destination_url
+    return global_url
 
 
 async def publish_outbox_event(

@@ -284,9 +284,20 @@ async def _run() -> None:
 
     @registry.register(OUTBOX_JOB_TYPE)
     async def publish_outbox(job: JobEnvelope) -> None:
-        from soa_worker.outbox_publisher import publish_outbox_event
+        from soa_worker.outbox_publisher import publish_outbox_event, resolve_outbox_destination
 
-        if not settings.outbox_publish_url:
+        # EXP-012: a per-org destination wins over the deployment-wide
+        # global URL when one is configured, active, and still passes
+        # validation; see resolve_outbox_destination for the fail-closed
+        # rule when a stored destination no longer validates.
+        destination_url = await resolve_outbox_destination(
+            db,
+            organization_id=job.organization_id,
+            global_url=settings.outbox_publish_url,
+            allowlist=settings.export_delivery_allowlist,
+        )
+
+        if not destination_url:
             if not settings.is_development_like:
                 raise RuntimeError("outbox publication destination is not configured")
             # Local development intentionally has no external event receiver.
@@ -304,7 +315,7 @@ async def _run() -> None:
                 db,
                 event_id=uuid.UUID(str(job.payload["outbox_event_id"])),
                 expected_organization_id=job.organization_id,
-                destination_url=settings.outbox_publish_url,
+                destination_url=destination_url,
                 client=client,
                 signing_secret=(
                     settings.outbox_signing_secret.get_secret_value()

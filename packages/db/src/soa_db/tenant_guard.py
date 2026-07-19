@@ -78,6 +78,7 @@ RLS_PROTECTED_TABLES = (
     "provider_runtime_metrics",  # 0048
     "provider_credentials",  # 0049
     "external_cleanup_intents",  # 0053
+    "outbox_destinations",  # 0057
 )
 
 

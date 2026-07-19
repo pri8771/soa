@@ -9,7 +9,14 @@ from sqlalchemy import select
 
 from soa_db import Base, DatabaseSessions, create_database_engine
 from soa_db.outbox import OutboxEvent, enqueue_event
-from soa_worker.outbox_publisher import publish_outbox_event
+from soa_db.outbox_destinations import upsert_destination
+from soa_worker.outbox_publisher import publish_outbox_event, resolve_outbox_destination
+
+PUBLIC_ADDRESS = ["93.184.216.34"]
+
+
+def public_resolver(_host: str) -> list[str]:
+    return PUBLIC_ADDRESS
 
 
 @pytest.fixture
@@ -128,3 +135,98 @@ async def test_publisher_refuses_queue_tenant_mismatch_before_network(
                 client=client,
             )
     assert calls == 0
+
+
+# --- per-org outbox destination routing (EXP-012) ---------------------------
+
+
+async def test_resolve_falls_back_to_global_when_no_org_override_exists(
+    db: DatabaseSessions,
+) -> None:
+    resolved = await resolve_outbox_destination(
+        db,
+        organization_id=uuid.uuid4(),
+        global_url="https://global.example.test/hook",
+        allowlist=["a.hooks.example"],
+        resolve=public_resolver,
+    )
+    assert resolved == "https://global.example.test/hook"
+
+
+async def test_resolve_falls_back_to_global_for_system_events(db: DatabaseSessions) -> None:
+    resolved = await resolve_outbox_destination(
+        db,
+        organization_id=None,
+        global_url="https://global.example.test/hook",
+        allowlist=["a.hooks.example"],
+        resolve=public_resolver,
+    )
+    assert resolved == "https://global.example.test/hook"
+
+
+async def test_resolve_prefers_an_active_org_destination_over_global(
+    db: DatabaseSessions,
+) -> None:
+    organization_id = uuid.uuid4()
+    async with db.session_scope() as session:
+        await upsert_destination(
+            session,
+            organization_id,
+            destination_url="https://a.hooks.example/org-hook",
+            actor_id="user:admin",
+        )
+
+    resolved = await resolve_outbox_destination(
+        db,
+        organization_id=organization_id,
+        global_url="https://global.example.test/hook",
+        allowlist=["a.hooks.example"],
+        resolve=public_resolver,
+    )
+    assert resolved == "https://a.hooks.example/org-hook"
+
+
+async def test_resolve_ignores_an_inactive_org_destination(db: DatabaseSessions) -> None:
+    organization_id = uuid.uuid4()
+    async with db.session_scope() as session:
+        await upsert_destination(
+            session,
+            organization_id,
+            destination_url="https://a.hooks.example/org-hook",
+            is_active=False,
+            actor_id="user:admin",
+        )
+
+    resolved = await resolve_outbox_destination(
+        db,
+        organization_id=organization_id,
+        global_url="https://global.example.test/hook",
+        allowlist=["a.hooks.example"],
+        resolve=public_resolver,
+    )
+    assert resolved == "https://global.example.test/hook"
+
+
+async def test_resolve_fails_closed_instead_of_falling_back_when_stored_url_no_longer_validates(
+    db: DatabaseSessions,
+) -> None:
+    """The allowlist narrowed after the destination was configured (or the
+    URL now resolves privately) — this must refuse, not silently deliver
+    the tenant's events to the deployment-wide global receiver."""
+    organization_id = uuid.uuid4()
+    async with db.session_scope() as session:
+        await upsert_destination(
+            session,
+            organization_id,
+            destination_url="https://no-longer-allowed.example/hook",
+            actor_id="user:admin",
+        )
+
+    with pytest.raises(RuntimeError, match="failed validation"):
+        await resolve_outbox_destination(
+            db,
+            organization_id=organization_id,
+            global_url="https://global.example.test/hook",
+            allowlist=["a.hooks.example"],  # the stored host is not in it
+            resolve=public_resolver,
+        )
