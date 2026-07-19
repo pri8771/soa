@@ -12,6 +12,7 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 
 import { ApiError, fetchMe } from "../api/client";
 import { PermissionDenied } from "../auth/PermissionDenied";
+import { useEventStream } from "../app/eventStream";
 import { DevConsole } from "../components/dev/DevConsole";
 import { ShellSessionProvider, type ShellSession } from "../shell/ShellContext";
 
@@ -63,6 +64,11 @@ function requiredPermissionForPath(pathname: string, organizationSlug: string): 
 export function AppLayout() {
   const { organizationSlug } = useParams({ strict: false }) as { organizationSlug: string };
   const location = useLocation();
+  // Mounted once for the whole authenticated shell (not per-screen) so
+  // navigating between queue/dashboard screens doesn't reconnect the
+  // stream. The endpoint itself enforces authorization; an unauthorized
+  // or not-yet-loaded org just reconnects harmlessly with backoff.
+  useEventStream(organizationSlug);
   const { data, error, status, refetch } = useQuery({
     queryKey: ["me"],
     queryFn: fetchMe,

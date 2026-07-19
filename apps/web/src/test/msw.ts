@@ -2300,6 +2300,11 @@ export const handlers = [
     });
   }),
   http.get("/api/me", () => HttpResponse.json(DEFAULT_ME)),
+  // The SSE push channel (useEventStream, mounted once for the whole
+  // authenticated shell) connects on every rendered screen; an empty body
+  // just closes the "stream" immediately so it reconnects quietly rather
+  // than spamming unhandled-request errors in every unrelated test.
+  http.get("/api/orgs/:slug/events/stream", () => new HttpResponse(null, { status: 200 })),
   http.get("/api/orgs/:slug/jobs/stats", () => HttpResponse.json(DEFAULT_JOB_STATS)),
   http.get("/api/orgs/:slug/jobs", ({ request }) => {
     const url = new URL(request.url);

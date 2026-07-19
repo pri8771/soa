@@ -117,7 +117,10 @@ async function apiErrorFromResponse(response: Response): Promise<ApiError> {
   );
 }
 
-function requestHeaders(init: RequestInit | undefined, bearerToken: string | null): Headers {
+/** Exported for the SSE stream (eventStream.ts): fetch-based streaming
+ * needs the exact same auth headers as apiFetch, but EventSource cannot
+ * carry them at all, so it builds its own fetch() call by hand. */
+export function requestHeaders(init: RequestInit | undefined, bearerToken: string | null): Headers {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
   if (init?.body && typeof init.body === "string" && !headers.has("Content-Type")) {
