@@ -45,6 +45,10 @@ seed: ## Load deterministic demo tenant and sample data
 dev: ## Run web, API, and worker with reload
 	python3 scripts/dev.py
 
+.PHONY: shim
+shim: ## Dev-only OpenAI-compatible shim backed by claude/codex CLI subscriptions
+	uv run python scripts/cli_llm_shim.py
+
 .PHONY: lint
 lint: ## Lint Python and TypeScript
 	uv run ruff check .

@@ -171,3 +171,30 @@ psql "$SOA_DATABASE_URL" -c \
 ```
 
 See [`LLM_PROVIDERS.md`](LLM_PROVIDERS.md) for hosted BYO-key providers.
+
+## Testing hosted-model extraction via CLI subscriptions
+
+You may have a Claude Code or ChatGPT subscription but no Anthropic/OpenAI
+API key. `scripts/cli_llm_shim.py` (`make shim`) is a **dev-only** local
+server that translates `POST /v1/chat/completions` into a `claude -p`
+(or `codex exec`) subprocess call, so real Claude/GPT extraction runs
+through the existing `local-openai-compatible` provider path with zero key
+handling — no new provider type is registered.
+
+```bash
+make shim            # starts on http://127.0.0.1:8095
+```
+
+Then point a stream's provider policy at it the same way you would Ollama
+(see step 3 above), using model `claude-cli` or `codex-cli`:
+
+```bash
+SOA_WORKER_LOCAL_LLM_ENDPOINT=http://localhost:8095/v1/chat/completions \
+SOA_WORKER_LOCAL_LLM_MODEL=claude-cli \
+uv run soa-worker
+```
+
+**Dev-only. Never deploy.** Subscription rate limits apply, and usage is
+recorded as explicitly zero/unknown (the CLI subprocess reports no token
+counts). Binds to `127.0.0.1` only with no auth. If the `codex` binary is
+absent, the shim answers `503` for `codex-*` models rather than hanging.
