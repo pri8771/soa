@@ -2,7 +2,7 @@ import { HttpResponse, http } from "msw";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { DEFAULT_ME, server } from "../test/msw";
+import { DEFAULT_JOB_STATS, DEFAULT_ME, server } from "../test/msw";
 import { renderApp } from "../test/render";
 
 describe("JobsQueue (JOB-007)", () => {
@@ -55,6 +55,52 @@ describe("JobsQueue (JOB-007)", () => {
     await user.click(confirm);
 
     await waitFor(() => expect(replayBody).toEqual({ reason: "provider recovered" }));
+  });
+
+  it("shows a Worker stalled badge when pending work has no recent claim", async () => {
+    server.use(
+      http.get("/api/orgs/:slug/jobs/stats", () =>
+        HttpResponse.json({
+          ...DEFAULT_JOB_STATS,
+          last_claim_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+        }),
+      ),
+    );
+    await renderApp("/app/northstar/jobs");
+    expect(await screen.findByText("Worker")).toBeInTheDocument();
+    expect(screen.getByText("Stalled")).toBeInTheDocument();
+  });
+
+  it("shows a Worker stalled badge when no job has ever been claimed", async () => {
+    server.use(
+      http.get("/api/orgs/:slug/jobs/stats", () =>
+        HttpResponse.json({ ...DEFAULT_JOB_STATS, last_claim_at: null }),
+      ),
+    );
+    await renderApp("/app/northstar/jobs");
+    expect(await screen.findByText("Worker")).toBeInTheDocument();
+    expect(screen.getByText("Stalled")).toBeInTheDocument();
+  });
+
+  it("hides the Worker stalled badge when the claim is fresh", async () => {
+    await renderApp("/app/northstar/jobs");
+    await screen.findByText("Queue depth");
+    expect(screen.queryByText("Worker")).not.toBeInTheDocument();
+  });
+
+  it("hides the Worker stalled badge when nothing is pending, even if stale", async () => {
+    server.use(
+      http.get("/api/orgs/:slug/jobs/stats", () =>
+        HttpResponse.json({
+          ...DEFAULT_JOB_STATS,
+          by_status: { pending: 0, running: 0, succeeded: 20, dead_letter: 2, cancelled: 0 },
+          last_claim_at: null,
+        }),
+      ),
+    );
+    await renderApp("/app/northstar/jobs");
+    await screen.findByText("Queue depth");
+    expect(screen.queryByText("Worker")).not.toBeInTheDocument();
   });
 
   it("hides replay/cancel controls without jobs.manage", async () => {

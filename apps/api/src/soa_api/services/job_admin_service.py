@@ -12,7 +12,7 @@ Replay and cancel are audited with the operator's required reason.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +61,18 @@ class QueueStats:
 
     by_status: dict[str, int]
     oldest_pending_run_after: datetime | None
+    last_claim_at: datetime | None
+
+
+def _coerce_aware(value: object) -> datetime | None:
+    """Aggregates bypass the UTCDateTime result processor: SQLite hands
+    back a raw naive-UTC string for MAX() over a datetime column."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    assert isinstance(value, datetime)
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 async def queue_stats(session: AsyncSession, context: OrganizationContext) -> QueueStats:
@@ -85,9 +97,35 @@ async def queue_stats(session: AsyncSession, context: OrganizationContext) -> Qu
             .limit(1)
         )
     ).scalar_one_or_none()
+    # "Last claim" reflects any worker activity on this tenant's jobs: a
+    # currently running job's heartbeat, or the completion time of the most
+    # recently finished job. heartbeat_at is cleared on completion/failure,
+    # so neither column alone captures both "actively claimed" and "recently
+    # drained" — take the newer of the two.
+    last_heartbeat = _coerce_aware(
+        (
+            await session.execute(
+                select(func.max(Job.heartbeat_at)).where(
+                    Job.organization_id == context.organization_id
+                )
+            )
+        ).scalar()
+    )
+    last_finished = _coerce_aware(
+        (
+            await session.execute(
+                select(func.max(Job.finished_at)).where(
+                    Job.organization_id == context.organization_id
+                )
+            )
+        ).scalar()
+    )
+    candidates = [value for value in (last_heartbeat, last_finished) if value is not None]
+    last_claim_at = max(candidates) if candidates else None
     return QueueStats(
         by_status=by_status,
         oldest_pending_run_after=oldest_pending.run_after if oldest_pending else None,
+        last_claim_at=last_claim_at,
     )
 
 

@@ -236,6 +236,14 @@ export function JobsQueue() {
 
   const byStatus = stats.data?.by_status ?? {};
   const depth = (byStatus["pending"] ?? 0) + (byStatus["running"] ?? 0);
+  const pendingCount = byStatus["pending"] ?? 0;
+  // Mirrors the worker.absent alert (300s) — nothing has claimed a job
+  // recently even though work is waiting, i.e. no worker is draining
+  // the queue at all.
+  const workerStalled =
+    pendingCount > 0 &&
+    (stats.data?.last_claim_at == null ||
+      Date.now() - new Date(stats.data.last_claim_at).getTime() > 5 * 60_000);
 
   return (
     <AppShell title="Jobs" breadcrumbs={[{ label: session.organization.name }, { label: "Jobs" }]}>
@@ -275,6 +283,9 @@ export function JobsQueue() {
               label="Succeeded"
               value={stats.data ? String(byStatus["succeeded"] ?? 0) : "…"}
             />
+            {stats.data && workerStalled ? (
+              <StatCard label="Worker" value="Stalled" tone="critical" />
+            ) : null}
           </div>
         )}
 

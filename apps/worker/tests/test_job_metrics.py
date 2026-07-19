@@ -10,7 +10,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from soa_config.telemetry import configure_telemetry
 from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
-from soa_db.jobs import Job, enqueue_job
+from soa_db.jobs import Job, claim_next_jobs, enqueue_job, mark_succeeded
 from soa_worker.job_metrics import MAX_JOB_TYPE_DIMENSIONS, JobMetrics
 
 
@@ -123,3 +123,71 @@ async def test_oldest_age_is_zero_for_an_empty_queue(sessions: DatabaseSessions)
     points = collect_points(reader)
     (age_point,) = points["soa.jobs.oldest_pending_age_seconds"]
     assert age_point[1] == 0.0
+
+
+async def test_seconds_since_last_claim_is_zero_for_an_empty_queue(
+    sessions: DatabaseSessions,
+) -> None:
+    metrics, reader = make_harness()
+    async with sessions.session_scope() as session:
+        await metrics.observe_queue(session)
+    points = collect_points(reader)
+    (point,) = points["soa.jobs.seconds_since_last_claim"]
+    assert point[1] == 0.0
+
+
+async def test_seconds_since_last_claim_falls_back_to_oldest_pending_age(
+    sessions: DatabaseSessions,
+) -> None:
+    """No job has ever been claimed while work is pending: the signal must
+    still surface a "since when" bound instead of reporting a false zero."""
+    metrics, reader = make_harness()
+    moment = utcnow()
+    async with sessions.session_scope() as session:
+        await enqueue_job(
+            session, job_type="a", payload={}, run_after=moment - timedelta(minutes=10)
+        )
+
+    async with sessions.session_scope() as session:
+        await metrics.observe_queue(session, now=moment)
+
+    points = collect_points(reader)
+    (point,) = points["soa.jobs.seconds_since_last_claim"]
+    assert point[1] == pytest.approx(600, abs=1)
+
+
+async def test_seconds_since_last_claim_reflects_a_running_jobs_heartbeat(
+    sessions: DatabaseSessions,
+) -> None:
+    metrics, reader = make_harness()
+    moment = utcnow()
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="a", payload={}, run_after=moment - timedelta(hours=1))
+        await claim_next_jobs(session, worker_id="w1", now=moment - timedelta(minutes=5))
+
+    async with sessions.session_scope() as session:
+        await metrics.observe_queue(session, now=moment)
+
+    points = collect_points(reader)
+    (point,) = points["soa.jobs.seconds_since_last_claim"]
+    assert point[1] == pytest.approx(300, abs=1)
+
+
+async def test_seconds_since_last_claim_reflects_a_recently_finished_job(
+    sessions: DatabaseSessions,
+) -> None:
+    metrics, reader = make_harness()
+    moment = utcnow()
+    async with sessions.session_scope() as session:
+        await enqueue_job(session, job_type="a", payload={}, run_after=moment - timedelta(hours=1))
+        (claimed,) = await claim_next_jobs(
+            session, worker_id="w1", now=moment - timedelta(minutes=2)
+        )
+        mark_succeeded(claimed, worker_id="w1", now=moment - timedelta(minutes=1))
+
+    async with sessions.session_scope() as session:
+        await metrics.observe_queue(session, now=moment)
+
+    points = collect_points(reader)
+    (point,) = points["soa.jobs.seconds_since_last_claim"]
+    assert point[1] == pytest.approx(60, abs=1)

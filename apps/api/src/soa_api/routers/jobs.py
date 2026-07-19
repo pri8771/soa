@@ -104,6 +104,7 @@ async def list_organization_jobs(
 class QueueStatsResponse(BaseModel):
     by_status: dict[str, int]
     oldest_pending_run_after: str | None
+    last_claim_at: str | None
 
 
 # NOTE: declared before /jobs/{job_id} so "stats" is not parsed as a job id.
@@ -118,6 +119,7 @@ async def get_queue_stats(
         oldest_pending_run_after=(
             stats.oldest_pending_run_after.isoformat() if stats.oldest_pending_run_after else None
         ),
+        last_claim_at=(stats.last_claim_at.isoformat() if stats.last_claim_at else None),
     )
 
 

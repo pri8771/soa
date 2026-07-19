@@ -7,6 +7,7 @@ non-grantability of the internal jobs.admin permission.
 """
 
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,9 @@ from sqlalchemy import select
 
 from soa_api.app import create_app
 from soa_api.settings import ApiSettings, Environment
-from soa_db import Base, DatabaseSessions, create_database_engine
+from soa_db import Base, DatabaseSessions, create_database_engine, utcnow
 from soa_db.audit import AuditEvent
-from soa_db.jobs import JobStatus, enqueue_job
+from soa_db.jobs import JobStatus, claim_next_jobs, enqueue_job, mark_succeeded
 
 ADMIN = {"X-Dev-User": "user:reviewer"}  # creator -> org-admin
 MEMBER = {"X-Dev-User": "user:supervisor"}  # invited -> roles assigned per test
@@ -245,3 +246,81 @@ async def test_queue_stats_counts_only_this_tenant(
     assert body["by_status"]["dead_letter"] == 1
     assert body["by_status"]["running"] == 0
     assert body["oldest_pending_run_after"] is not None
+
+
+async def test_queue_stats_last_claim_at_is_null_when_nothing_ever_claimed(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = create_org(client)
+    await seed_job(db, org_id, job_type="a", status=JobStatus.PENDING)
+
+    response = client.get("/orgs/northstar/jobs/stats", headers=ADMIN)
+    assert response.status_code == 200
+    assert response.json()["last_claim_at"] is None
+
+
+async def test_queue_stats_last_claim_at_reflects_a_running_jobs_heartbeat(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = create_org(client)
+    async with db.session_scope() as session:
+        await enqueue_job(
+            session,
+            job_type="a",
+            payload={},
+            organization_id=org_id,
+            run_after=utcnow() - timedelta(minutes=1),
+        )
+        await session.flush()
+        await claim_next_jobs(session, worker_id="w1")
+
+    response = client.get("/orgs/northstar/jobs/stats", headers=ADMIN)
+    assert response.status_code == 200
+    assert response.json()["last_claim_at"] is not None
+
+
+async def test_queue_stats_last_claim_at_reflects_a_finished_job(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = create_org(client)
+    async with db.session_scope() as session:
+        await enqueue_job(
+            session,
+            job_type="a",
+            payload={},
+            organization_id=org_id,
+            run_after=utcnow() - timedelta(minutes=1),
+        )
+        await session.flush()
+        (claimed,) = await claim_next_jobs(session, worker_id="w1")
+        mark_succeeded(claimed, worker_id="w1")
+
+    response = client.get("/orgs/northstar/jobs/stats", headers=ADMIN)
+    assert response.status_code == 200
+    assert response.json()["last_claim_at"] is not None
+
+
+async def test_queue_stats_last_claim_at_is_scoped_to_this_tenant(
+    harness: tuple[TestClient, DatabaseSessions],
+) -> None:
+    client, db = harness
+    org_id = create_org(client)
+    other_org_id = uuid.uuid4()
+    async with db.session_scope() as session:
+        await enqueue_job(
+            session,
+            job_type="theirs",
+            payload={},
+            organization_id=other_org_id,
+            run_after=utcnow() - timedelta(minutes=1),
+        )
+        await session.flush()
+        await claim_next_jobs(session, worker_id="w1", job_types=["theirs"])
+    await seed_job(db, org_id, job_type="mine", status=JobStatus.PENDING)
+
+    response = client.get("/orgs/northstar/jobs/stats", headers=ADMIN)
+    assert response.status_code == 200
+    assert response.json()["last_claim_at"] is None

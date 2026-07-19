@@ -26,6 +26,7 @@ in the deployment, not in code.
 | --- | --- | --- | --- | --- | --- | --- |
 | `queue.backlog_growing` | queue | high | platform-on-call | `soa.jobs.oldest_pending_age_seconds` | oldest pending job age > 900s for 10m | `backlog` |
 | `queue.dead_letter_spike` | queue | high | platform-on-call | `soa.jobs.dead_lettered` | dead-letter rate > 0 sustained 5m | `backlog` |
+| `worker.absent` | queue | high | platform-on-call | `soa.jobs.seconds_since_last_claim` | > 300s while pending queue depth > 0 for 5m | `backlog` |
 | `provider.extraction_unavailable` | provider | critical | platform-on-call | `soa_db.provider_runtime_metrics` | all attempted configured extraction providers degraded/unreachable with no success for 5m | `provider-outage` |
 | `schema.repair_fallback_rate` | schema_error | warning | platform-on-call | pending AIO-012 | repair fallback ratio > 10% over 1h | `bad-release` |
 | `cost.budget_burn` | cost | high | finops | usage ledger (ANA-003) | projected monthly cost > budget (ANA-009) | `quota-exhaustion` |

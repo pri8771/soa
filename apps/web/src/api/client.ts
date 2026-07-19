@@ -375,6 +375,7 @@ export interface JobsPage {
 export interface QueueStats {
   by_status: Record<string, number>;
   oldest_pending_run_after: string | null;
+  last_claim_at: string | null;
 }
 
 export function fetchJobs(

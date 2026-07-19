@@ -114,6 +114,27 @@ CATALOG: tuple[AlertDefinition, ...] = (
         test_signal="force a handler to always fail; assert the dead_lettered counter rises",
     ),
     AlertDefinition(
+        key="worker.absent",
+        title="No worker is draining the job queue",
+        category=AlertCategory.QUEUE,
+        severity=AlertSeverity.HIGH,
+        owner=Owner.PLATFORM_ONCALL,
+        signal="soa.jobs.seconds_since_last_claim",
+        condition=(
+            "soa.jobs.seconds_since_last_claim > 300s while "
+            "soa.jobs.queue_depth{soa.status=pending} > 0 for 5m"
+        ),
+        rationale=(
+            "Zero workers draining the queue is a distinct, more urgent failure "
+            "than a merely-growing backlog: nothing is being attempted at all, so "
+            "queue.backlog_growing would not fire for another ~10 minutes (900s "
+            "threshold). Catching worker absence directly gets an operator paged "
+            "before customer SLAs are at risk."
+        ),
+        runbook="backlog",
+        test_signal="enqueue pending jobs with no worker running; assert the gauge crosses 300s",
+    ),
+    AlertDefinition(
         key="provider.extraction_unavailable",
         title="Extraction/OCR provider is failing or timing out",
         category=AlertCategory.PROVIDER,

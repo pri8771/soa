@@ -1,16 +1,24 @@
 # Runbook: queue backlog / review SLA breach
 
 **Owner:** platform-on-call · **Alerts:** `queue.backlog_growing`,
-`queue.dead_letter_spike`, `sla.review_overdue`
+`queue.dead_letter_spike`, `worker.absent`, `sla.review_overdue`
 
-The job queue is falling behind intake, jobs are dead-lettering, or
-review tasks are breaching SLA. Left alone this cascades into
-customer-visible delays.
+The job queue is falling behind intake, jobs are dead-lettering, no worker
+is draining the queue at all, or review tasks are breaching SLA. Left
+alone this cascades into customer-visible delays.
 
 ## Detection
 
 - `soa.jobs.oldest_pending_age_seconds` climbing, `soa.jobs.queue_depth`
   (per status) rising, or `soa.jobs.dead_lettered` incrementing.
+- `soa.jobs.seconds_since_last_claim` above 300s while pending queue
+  depth is nonzero — no worker has claimed or heartbeated any job
+  recently (`worker.absent`). This is a more urgent, more specific signal
+  than `queue.backlog_growing`: it fires in 5 minutes instead of waiting
+  ~10 for the backlog age threshold, and it means zero jobs are being
+  attempted, not merely falling behind. The Jobs screen and Operations
+  dashboard show a "Worker stalled" badge under the same condition
+  (`last_claim_at` null or stale while jobs are pending).
 - The Queue Health UI (JOB-007) and the operations dashboard (ANA-004)
   show the same backlog and the SLA overdue count.
 

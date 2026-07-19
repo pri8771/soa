@@ -43,6 +43,9 @@ export const DEFAULT_JOBS = {
 export const DEFAULT_JOB_STATS = {
   by_status: { pending: 4, running: 1, succeeded: 20, dead_letter: 2, cancelled: 0 },
   oldest_pending_run_after: "2026-07-12T08:00:00+00:00",
+  // Fresh relative to "now" so the default fixture never trips the
+  // worker-stalled badge (JOB-007 / worker.absent) by accident.
+  last_claim_at: new Date(Date.now() - 60_000).toISOString(),
 };
 
 export const DEFAULT_PROCESSES = [
