@@ -180,6 +180,14 @@ Use environment and secret configuration for:
 
 Do not scatter vendor checks throughout business code. Provider selection is resolved at application composition boundaries.
 
+**Worker concurrency.** `SOA_WORKER_MAX_CONCURRENCY` (`max_concurrency` in
+`apps/worker/src/soa_worker/settings.py`, range 1–32) bounds how many jobs one
+worker instance runs at once. The application default is **1**, which
+serializes every job behind the slowest LLM call — deployments must set this
+explicitly. `infra/terraform/variables.tf`'s `worker_concurrency` variable
+(default `4`) sets it for the Cloud Run worker pool via `compute.tf`; raise or
+lower it per environment in `infra/terraform/environments/*.tfvars`.
+
 ## 8. Free-tier constraints and product impact
 
 Free plans may impose inactivity pausing, storage limits, compute limits, request quotas, short log retention, weak backup options, and no availability commitment.

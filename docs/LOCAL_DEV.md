@@ -152,6 +152,13 @@ the model endpoint is actually reachable:
    Local models on shared hardware can take minutes per document; the generous
    timeout keeps the first (cold-load) call from being cut off.
 
+   The worker processes one job at a time by default
+   (`SOA_WORKER_MAX_CONCURRENCY=1`), so a 45-250s LLM call serializes the
+   whole queue behind it. Add `SOA_WORKER_MAX_CONCURRENCY=4` (range 1-32) to
+   the command above to process documents in parallel; staging/production set
+   this via the `worker_concurrency` Terraform variable (see
+   [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md)).
+
 **Gotcha — a down endpoint poisons routing.** If the model endpoint is
 unreachable when a document runs, the provider records consecutive failures in
 `provider_runtime_metrics` and the AIO-013 router then eliminates it as

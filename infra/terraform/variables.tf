@@ -128,8 +128,8 @@ variable "worker_memory" {
 
 variable "worker_concurrency" {
   type        = number
-  description = "Maximum concurrently active durable jobs per worker instance."
-  default     = 2
+  description = "Maximum concurrently active durable jobs per worker instance. Maps to SOA_WORKER_MAX_CONCURRENCY; the application default is 1, which serializes every job behind the slowest LLM call, so deployments should set this explicitly."
+  default     = 4
   validation {
     condition     = var.worker_concurrency >= 1 && var.worker_concurrency <= 32 && floor(var.worker_concurrency) == var.worker_concurrency
     error_message = "worker_concurrency must be a whole number between 1 and 32."
