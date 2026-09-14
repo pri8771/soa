@@ -1,0 +1,26 @@
+{
+  "project": "soa",
+  "remote": "https://github.com/pri8771/soa",
+  "visibility": null,
+  "previous_dev": "c4b03eb0d478d602405fc4a160bb0bbeed1f2aa0",
+  "status": "in_progress",
+  "source_tip_count": 3,
+  "recovery": [],
+  "excluded": [],
+  "source_merged": [],
+  "windows_imports": [],
+  "source_tips": {
+    "3f83a8c89e3d4cbefa2514324dfec1662e952e60": [
+      "refs/source-heads/0",
+      "refs/source/4a5283df/codex/production-remediation"
+    ],
+    "7bad219f1ce95a20187d492bf547209da60d40de": [
+      "refs/source/4a5283df/dev",
+      "refs/remotes/origin/main"
+    ],
+    "a3c7166f72103297977c5b8e05153f3cf78a8514": [
+      "refs/source/4a5283df/main"
+    ]
+  },
+  "captured_worktrees": []
+}
